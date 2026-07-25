@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # agent: composer-2.5 | 2026-07-25 | full server validation suite | f6a04e
+# agent: composer-2.5 | 2026-07-25 | single server validate | 51bd3a
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
@@ -29,7 +30,6 @@ start_server() {
 stop_server() {
   kill -9 "$SPID" 2>/dev/null || true
   killall -9 ngame_server 2>/dev/null || true
-  # agent: composer-2.5 | 2026-07-25 | validate restart cleanup | 7a540e
   for _ in $(seq 1 30); do
     ss -ulnp 2>/dev/null | grep -q ':27015' || break
     sleep 0.1
@@ -49,9 +49,6 @@ echo "$OUT"
 echo "$OUT" | grep -q "scene=sphere"
 echo "$OUT" | grep -q "scene loaded: sphere"
 
-stop_server
-start_server
-
 echo "== mcp agent bridge =="
 MCP_OUT=$(python3 -c "
 import importlib.util
@@ -63,17 +60,11 @@ print(m.agent_request({'cmd': 'world_snapshot'})['text'])
 echo "$MCP_OUT"
 echo "$MCP_OUT" | grep -q "scene="
 
-stop_server
-start_server
-
-echo "== enet scene cube =="
+echo "== enet scene cube (same server) =="
 ./ng_test_net 127.0.0.1 27015 | tee /tmp/ngame_net.out
-grep -qE 'REPLY: scene loaded: cube|EVENT: cube' /tmp/ngame_net.out
+grep -q 'REPLY: scene loaded: cube' /tmp/ngame_net.out
 
-stop_server
-start_server
-
-echo "== websocket scene cube =="
+echo "== websocket scene cube (same server) =="
 python3 "$ROOT/tools/ws_smoke.py" 127.0.0.1 27016 | tee /tmp/ngame_ws.out
 grep -q 'scene loaded: cube' /tmp/ngame_ws.out
 

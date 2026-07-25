@@ -273,15 +273,29 @@ static void ng_net_dispatch(NgNet *n, NgNetPacketFn fn, void *ctx, ENetEvent *ev
   }
 }
 
-// agent: composer-2.5 | 2026-07-25 | receive priority enet poll | 79008c
+// agent: composer-2.5 | 2026-07-25 | receive first enet poll | af750e
 #define NG_NET_DRAIN_MAX 128
+
+static bool ng_net_user_event(const ENetEvent *ev) {
+  return ev->type == ENET_EVENT_TYPE_RECEIVE || ev->type == ENET_EVENT_TYPE_CONNECT ||
+         ev->type == ENET_EVENT_TYPE_DISCONNECT;
+}
 
 static void ng_net_service(NgNet *n, NgNetPacketFn fn, void *ctx, uint32_t timeout_ms) {
   ENetEvent ev;
-  int drained = 0;
-  while (drained < NG_NET_DRAIN_MAX && enet_host_service(n->host, &ev, 0) > 0) {
+  int other = 0;
+  for (;;) {
+    const int r = enet_host_service(n->host, &ev, 0);
+    if (r <= 0) {
+      break;
+    }
     ng_net_dispatch(n, fn, ctx, &ev);
-    drained++;
+    if (ng_net_user_event(&ev)) {
+      continue;
+    }
+    if (++other >= NG_NET_DRAIN_MAX) {
+      break;
+    }
   }
   if (timeout_ms > 0 && enet_host_service(n->host, &ev, timeout_ms) > 0) {
     ng_net_dispatch(n, fn, ctx, &ev);

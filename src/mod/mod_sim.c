@@ -24,7 +24,6 @@ typedef struct ModSimCtx {
   char feedback[256];
   NgSnapshot snapshot;
   NgSnapshot baseline;
-  bool use_delta;
   float snap_accum;
 } ModSimCtx;
 
@@ -194,7 +193,6 @@ static bool mod_sim_init(void *vctx) {
   ng_world_init(&ctx->world);
   mod_sim_register(ctx, sim_sphere_ops());
   mod_sim_register(ctx, sim_cube_ops());
-  ctx->use_delta = true;
   return mod_sim_load(ctx, "sphere");
 }
 

@@ -16,8 +16,8 @@
 #define NG_PKT_INPUT      2
 #define NG_PKT_CMD        3
 #define NG_PKT_CMD_REPLY  4
+// agent: composer-2.5 | 2026-07-25 | remove dead snap ack wire | b4875f
 #define NG_PKT_EVENT      5
-#define NG_PKT_SNAP_ACK   6
 
 typedef struct NgProtoHeader {
   uint32_t magic;
@@ -49,6 +49,5 @@ bool ng_proto_encode_cmd(NgProtoBuf *b, uint16_t seq, const char *line);
 bool ng_proto_decode_cmd(NgProtoBuf *b, char *line, size_t line_cap);
 bool ng_proto_encode_text(NgProtoBuf *b, uint8_t type, uint16_t seq, const char *text);
 bool ng_proto_decode_text(NgProtoBuf *b, char *text, size_t text_cap);
-bool ng_proto_encode_snap_ack(NgProtoBuf *b, uint16_t seq, uint32_t tick);
 
 #endif

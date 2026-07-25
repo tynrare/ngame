@@ -90,7 +90,8 @@ if(NOT EMSCRIPTEN)
     COMMENT "Copy res/ next to ngame_server binary")
 
   add_executable(ng_test_net tools/net_smoke.c src/core/ng_proto.c src/net/ng_net_enet.c)
+  # agent: composer-2.5 | 2026-07-25 | ng_test_net smoke stderr log | 6fe5db
   target_include_directories(ng_test_net PRIVATE src src/vendor)
-  target_compile_definitions(ng_test_net PRIVATE NG_SERVER ${NG_ENET_DEFS})
+  target_compile_definitions(ng_test_net PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_test_net PRIVATE m)
 endif()

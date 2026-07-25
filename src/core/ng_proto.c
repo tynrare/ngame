@@ -339,16 +339,3 @@ bool ng_proto_decode_text(NgProtoBuf *b, char *text, size_t text_cap) {
   text[n] = '\0';
   return true;
 }
-
-bool ng_proto_encode_snap_ack(NgProtoBuf *b, uint16_t seq, uint32_t tick) {
-  ng_proto_buf_init(b);
-  NgProtoHeader h = {
-      .magic = NG_PROTO_MAGIC,
-      .version = NG_PROTO_VERSION,
-      .channel = NG_CH_RELIABLE,
-      .type = NG_PKT_SNAP_ACK,
-      .seq = seq,
-      .tick = tick,
-  };
-  return ng_proto_write_header(b, &h);
-}

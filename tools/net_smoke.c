@@ -1,11 +1,10 @@
 // agent: composer-2.5 | 2026-07-25 | ENet smoke test client | n7q95l
-// agent: composer-2.5 | 2026-07-25 | wait snapshot before cmd | 1457b1
+// agent: composer-2.5 | 2026-07-25 | smoke flush require reply | a753b1
 #include "core/ng_proto.h"
 #include "net/ng_net.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 static bool g_got_reply = false;
 static bool g_got_snapshot = false;
@@ -43,7 +42,6 @@ static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, si
     char text[256];
     if (ng_proto_decode_text(&buf, text, sizeof(text))) {
       printf("EVENT: %s\n", text);
-      g_got_reply = true;
     }
   }
 }
@@ -64,7 +62,6 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-// agent: composer-2.5 | 2026-07-25 | poll timeout wait connect | 41a7b1
   for (int i = 0; i < 1000 && !ng_net_connected(net); i++) {
     ng_net_poll_wait(net, smoke_on_packet, NULL, 10);
   }
@@ -88,13 +85,20 @@ int main(int argc, char **argv) {
   NgProtoBuf cmd;
   if (ng_proto_encode_cmd(&cmd, 1, "scene cube")) {
     ng_net_send(net, cmd.data, cmd.len, NG_CH_RELIABLE, true);
+    ng_net_flush(net);
   }
 
   for (int i = 0; i < 500 && !g_got_reply; i++) {
     ng_net_poll_wait(net, smoke_on_packet, NULL, 10);
   }
+  if (!g_got_reply) {
+    fprintf(stderr, "timeout waiting for cmd reply\n");
+    ng_net_destroy(net);
+    ng_net_shutdown();
+    return 1;
+  }
 
   ng_net_destroy(net);
   ng_net_shutdown();
-  return g_got_reply ? 0 : 1;
+  return 0;
 }

@@ -169,13 +169,6 @@ static void mod_net_handle_packet(NgNet *net, NgNetPeer *peer, const uint8_t *da
     ng_bus_publish(&msg);
     break;
   }
-  case NG_PKT_SNAP_ACK: {
-    NetPeerState *ps = peer ? (NetPeerState *)ng_net_peer_data(peer) : NULL;
-    if (ps && ps->have_baseline) {
-      ps->baseline.tick = h.tick;
-    }
-    break;
-  }
 #else
   case NG_PKT_SNAPSHOT: {
     bool delta = false;
