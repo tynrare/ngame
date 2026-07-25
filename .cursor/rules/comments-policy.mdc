@@ -1,0 +1,40 @@
+---
+description: Enforce metadata stamps on agent edits in ngame
+globs:
+  - "**/*.c"
+  - "**/*.h"
+  - "**/*.js"
+  - "**/*.html"
+  - "**/CMakeLists.txt"
+  - "**/*.sh"
+alwaysApply: true
+---
+
+# Comment Policy (ngame)
+
+When you **create or edit** a tracked file, add one stamp **immediately above** each logical changed block (or once at file top for new/small files):
+
+```
+# agent: <model> | <YYYY-MM-DD> | <≤8 words> | <6-char hash>
+```
+
+Fields:
+- **model**: agent id (e.g. `composer-2.5`)
+- **date**: ISO date
+- **summary**: what changed, no paths
+- **hash**: first 6 hex chars of SHA256(`summary + filepath`) — unique per stamp
+
+Comment syntax by file type:
+- C/H, JS: `// agent: ...`
+- CMake, shell: `# agent: ...`
+- HTML: `<!-- agent: ... -->` above changed blocks only, never inside tags
+
+**Skip:** `src/vendor/`, `build/`, `build-web/`, lockfiles, pure formatting-only diffs.
+
+**New files:** one header stamp at top describing purpose.
+
+**Bottom duplicate:** repeat the same stamp line(s) as one contiguous block within 3 lines after the last non-comment code line. Character-for-character match with in-file stamps.
+
+Keep stamps concise and factual; no process narration.
+
+Do not finish a coding task without stamps on files you modified.

@@ -1,0 +1,11 @@
+// agent: composer-2.5 | 2026-07-25 | server sim bus module | a9d62e
+#ifndef MOD_SIM_H
+#define MOD_SIM_H
+
+#include "core/ng_mod.h"
+
+const NgModOps *mod_sim_ops(void);
+void *mod_sim_ctx(void);
+NgWorld *mod_sim_world(void);
+
+#endif
