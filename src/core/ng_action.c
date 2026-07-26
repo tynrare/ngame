@@ -53,7 +53,7 @@ bool ng_action_server_exec(NgWorld *w, const NgMsg *cmd, uint16_t action_seq,
   }
 
   // agent: composer-2.5 | 2026-07-26 | slim scene ack client fields | f1a2b3
-  if (ng_scene_client_fields(w->scene_id)) {
+  if (ng_scene_has_js_host(w->scene_id)) {
     out->have_state = false;
   } else {
     ng_world_fill_snapshot(w, &out->state);

@@ -25,6 +25,7 @@ set(NG_CORE_SOURCES
   src/core/ng_proto.c
   src/core/ng_action.c
   src/core/ng_session.c
+  src/core/ng_sync.c
   src/world/ng_world.c
 )
 
@@ -54,6 +55,7 @@ set(NG_CLIENT_SOURCES
   src/mod/mod_input.c
   src/mod/mod_net.c
   src/mod/mod_scene.c
+  src/mod/mod_scene_graph.c
   src/mod/mod_render.c
   src/ng_viewport.c
   src/ng_shader.c
@@ -115,7 +117,7 @@ if(NOT EMSCRIPTEN)
     COMMENT "Copy res/ next to ngame_server binary")
 
   add_executable(ng_test_net tools/net_smoke.c src/core/ng_proto.c src/core/ng_session.c
-                 src/net/ng_net_enet.c)
+                 src/core/ng_sync.c src/net/ng_net_enet.c)
   target_include_directories(ng_test_net PRIVATE src src/vendor)
   target_compile_definitions(ng_test_net PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_test_net PRIVATE m)
@@ -127,16 +129,16 @@ if(NOT EMSCRIPTEN)
 
   add_executable(ng_cmd_loopback_latency tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
                  src/core/ng_embed.c src/mod/mod_input.c src/mod/mod_net.c src/mod/mod_render.c
-                 src/mod/mod_scene.c src/ng_shader.c src/ng_viewport.c src/net/ng_net_enet.c
-                 ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
+                 src/mod/mod_scene.c src/mod/mod_scene_graph.c src/ng_shader.c src/ng_viewport.c
+                 src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m)
 
   add_executable(ng_embed_smoke tools/embed_smoke.c ${NG_CORE_SOURCES} src/core/ng_embed.c
                  src/mod/mod_input.c src/mod/mod_net.c src/mod/mod_render.c src/mod/mod_scene.c
-                 src/ng_shader.c src/ng_viewport.c src/net/ng_net_loopback.c ${NG_SIM_SOURCES}
-                 ${NG_VENDOR_SOURCES})
+                 src/mod/mod_scene_graph.c src/ng_shader.c src/ng_viewport.c
+                 src/net/ng_net_loopback.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_embed_smoke PRIVATE src src/vendor)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_embed_smoke PRIVATE raylib m)

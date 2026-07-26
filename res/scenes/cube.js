@@ -1,42 +1,55 @@
-(function (global) {
-  var state = { entity_id: 0, rot_y: 0, is_controller: false };
+// agent: composer-2.5 | 2026-07-26 | cube scene class lifecycle | c4d5e6
+class Cube {
+  init() {}
+  start() {}
+  step(dt) {
+    // shared: runs on all clients; server skips entity steps
+  }
+  stop() {}
+  dispose() {}
+}
 
-  global.scene_on_session = function (entity_id, is_controller) {
-    state.entity_id = entity_id | 0;
-    state.is_controller = !!is_controller;
-    if (!state.is_controller) {
-      return;
-    }
-    state.rot_y = 0;
-  };
+class Scene {
+  init() {
+    global.describe("mesh", "cube_a_m", { width: 1, height: 1, depth: 1 });
+    global.describe("shader", "cube_a_s", { fragment: "cube.fs", vertex: "mesh.vs" });
+    global.describe("model", "cube_a_mo", { mesh: "cube_a", shader: "cube_a_s" });
+    global.describe("entity", "cube_a_e", {
+      model: "cube_a_mo",
+      func: Cube,
+      sync: "shared",
+    });
+  }
 
-  global.scene_tick = function (dt, buttons, yaw_delta) {
-    if (!state.is_controller) {
-      return;
-    }
-    if (buttons & 1) {
-      state.rot_y -= 1.5 * dt;
-    }
-    if (buttons & 2) {
-      state.rot_y += 1.5 * dt;
-    }
-    state.rot_y += yaw_delta;
-  };
+  start(session) {
+    this.test_cube = global.spawn("cube_a_e", { entity_id: session.entity_id });
+    global.set_position(this.test_cube, { x: 0, y: 0, z: 0 });
+    global.set_rotation(this.test_cube, 0, 0, 0);
+    global.set_scale(this.test_cube, 1);
+  }
 
-  global.scene_flush = function () {
-    if (!state.is_controller || !state.entity_id) {
-      return null;
+  step(dt) {
+    if (global.get_input(KEY_A)) {
+      const ry = global.get_rotation_y(this.test_cube);
+      global.set_rotation_y(this.test_cube, ry - dt * 1.5);
     }
-    return { entity_id: state.entity_id, rot_y: state.rot_y };
-  };
-
-  global.scene_apply_remote = function (entity_id, rot_y) {
-    if ((entity_id | 0) === state.entity_id) {
-      state.rot_y = rot_y;
+    if (global.get_input(KEY_D)) {
+      const rot = global.get_rotation(this.test_cube);
+      rot.y += dt * 1.5;
+      global.set_rotation(this.test_cube, rot);
     }
-  };
+  }
 
-  global.scene_get_rot_y = function () {
-    return state.rot_y;
-  };
-})(this);
+  stop() {
+    if (this.test_cube) {
+      global.despawn(this.test_cube);
+      this.test_cube = null;
+    }
+  }
+
+  dispose() {
+    global.dispose("mesh", "cube_a_m");
+    global.dispose("model", "cube_a_mo");
+    global.dispose("entity", "cube_a_e");
+  }
+}

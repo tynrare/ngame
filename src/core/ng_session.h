@@ -2,6 +2,7 @@
 #ifndef NG_SESSION_H
 #define NG_SESSION_H
 
+#include "ng_sync.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -11,15 +12,17 @@ typedef struct NgSessionState {
   uint8_t controller_id;
   uint8_t your_id;
   uint32_t cube_entity_id;
-  bool client_fields;
+  NgSyncMode scene_sync;
 } NgSessionState;
 
 typedef struct NgStateUpdate {
   uint32_t entity_id;
+  uint8_t comp_mask;
   float rot_y;
   uint32_t tick;
 } NgStateUpdate;
 
-bool ng_scene_client_fields(const char *scene_id);
+NgSyncMode ng_scene_sync_mode(const char *scene_id);
+bool ng_scene_has_js_host(const char *scene_id);
 
 #endif

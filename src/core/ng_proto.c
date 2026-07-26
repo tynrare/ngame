@@ -492,7 +492,7 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
           memcpy(b->data + b->len, session->scene_id, scene_len), b->len += scene_len, true) &&
          ng_proto_write_u8(b, session->controller_id) && ng_proto_write_u8(b, session->your_id) &&
          ng_proto_write_u32(b, session->cube_entity_id) &&
-         ng_proto_write_u8(b, session->client_fields ? 1 : 0);
+         ng_proto_write_u8(b, (uint8_t)session->scene_sync);
 }
 
 bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
@@ -512,10 +512,13 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
     session->scene_id[i] = (char)c;
   }
   session->scene_id[scene_len] = '\0';
-  uint8_t cf = 0;
-  return ng_proto_read_u8(b, &session->controller_id) && ng_proto_read_u8(b, &session->your_id) &&
-         ng_proto_read_u32(b, &session->cube_entity_id) && ng_proto_read_u8(b, &cf) &&
-         (session->client_fields = (cf != 0), true);
+  uint8_t sync = 0;
+  if (!ng_proto_read_u8(b, &session->controller_id) || !ng_proto_read_u8(b, &session->your_id) ||
+      !ng_proto_read_u32(b, &session->cube_entity_id) || !ng_proto_read_u8(b, &sync)) {
+    return false;
+  }
+  session->scene_sync = (NgSyncMode)sync;
+  return true;
 }
 
 bool ng_proto_encode_state_update(NgProtoBuf *b, uint16_t seq, const NgStateUpdate *update) {
@@ -532,12 +535,14 @@ bool ng_proto_encode_state_update(NgProtoBuf *b, uint16_t seq, const NgStateUpda
       .tick = update->tick,
   };
   return ng_proto_write_header(b, &h) && ng_proto_write_u32(b, update->entity_id) &&
-         ng_proto_write_f32(b, update->rot_y);
+         ng_proto_write_u8(b, update->comp_mask) && ng_proto_write_f32(b, update->rot_y);
 }
 
 bool ng_proto_decode_state_update(NgProtoBuf *b, NgStateUpdate *update) {
   if (!b || !update) {
     return false;
   }
-  return ng_proto_read_u32(b, &update->entity_id) && ng_proto_read_f32(b, &update->rot_y);
+  uint8_t mask = 0;
+  return ng_proto_read_u32(b, &update->entity_id) && ng_proto_read_u8(b, &mask) &&
+         ng_proto_read_f32(b, &update->rot_y) && (update->comp_mask = mask, true);
 }

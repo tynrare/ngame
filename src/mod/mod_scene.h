@@ -1,19 +1,25 @@
-// agent: composer-2.5 | 2026-07-26 | client scene JS host | b8c9d0
+// agent: composer-2.5 | 2026-07-26 | scene lifecycle and global API | e1f2a3
 #ifndef MOD_SCENE_H
 #define MOD_SCENE_H
 
 #include "core/ng_mod.h"
 #include "core/ng_session.h"
+#include "core/ng_sync.h"
 #include <stdbool.h>
+
+#define NG_SCENE_KEY_A 1
+#define NG_SCENE_KEY_D 2
 
 const NgModOps *mod_scene_ops(void);
 void *mod_scene_ctx(void);
 
 bool mod_scene_client_fields_active(void);
 bool mod_scene_is_controller(void);
+bool mod_scene_can_author(NgSyncMode sync);
 void mod_scene_on_session(const NgSessionState *session);
 void mod_scene_apply_remote(const NgStateUpdate *update);
 bool mod_scene_take_flush(NgStateUpdate *out);
 float mod_scene_get_rot_y(void);
+bool mod_scene_graph_active(void);
 
 #endif

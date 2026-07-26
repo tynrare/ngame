@@ -185,7 +185,7 @@ static bool mod_sim_on_msg(const NgMsg *msg, void *vctx) {
   case NG_MSG_CMD:
     return mod_sim_handle_cmd(ctx, msg);
   case NG_MSG_INPUT:
-    if (!ng_scene_client_fields(ctx->world.scene_id)) {
+    if (!ng_scene_has_js_host(ctx->world.scene_id)) {
       ng_world_apply_input(&ctx->world, msg->input_buttons, msg->input_yaw_delta);
     }
     return true;
