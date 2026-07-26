@@ -4,7 +4,15 @@ class Cube {
   start() {
   }
   step(dt) {
-    // e.g. global.set_position_x(this.index, 1)
+    // this step depends on enity mode.
+    // server mode does not run on client
+    // shared mode does not run on server
+    // owner mode does not run on other clients
+    // local mode runs only on one client
+    if (globals.get_input(KEY_W)) {
+      const rx = global.get_rotation_x(this.index);
+      global.set_rotation_x(rx + dt * 1);
+    }
   }
   stop() {
   }
@@ -22,8 +30,13 @@ class Scene {
      const test_cube_model = global.describe("model", "cube_a_mo", { mesh: "cube_a", shader: "cube_a_s"});
 
      // note: mode optional
+     // note: sync options:
+     // - server. update complitely runs in server. It has no inputs, skip for now
+     // - shared. any client could post entity update
+     // - owner. One controller authors; entity exists on all peers
+     // - local. Spawn/update only on this client; no wire
      /** @type {number} cube entity id */
-     const test_cube_entity = global.describe("entity", "cube_a_e", { model: "cube_a", mode: Cube });
+     const test_cube_entity = global.describe("entity", "cube_a_e", { model: "cube_a", func: Cube, mode: "shared" });
 	}
 	start() {
      /** @type {number} cube entity index */
@@ -38,13 +51,14 @@ class Scene {
 	step(dt) {
      if (globals.get_input(KEY_A)) {
        const ry = global.get_rotation_y(this.test_cube);
-       global.set_rotation_y(ry + dt * 1);
+       global.set_rotation_y(this.test_cube, ry + dt * 1);
      }
      if (globals.get_input(KEY_D)) {
        const rot = global.get_rotation(this.test_cube);
        rot.y += dt * 1;
        global.set_rotation(this.test_cube, rot);
      }
+     // all changes delta is stored and flushed at step end
 	}
 	stop() {
      // note: may be skipped, if C deletes scene complitely
