@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | action server exec bounce | d2e3f4
 #include "core/ng_action.h"
+#include "core/ng_session.h"
 #include "mod/mod_render.h"
 #include "mod/mod_sim.h"
 #include <stdio.h>
@@ -51,8 +52,13 @@ bool ng_action_server_exec(NgWorld *w, const NgMsg *cmd, uint16_t action_seq,
     return true;
   }
 
-  ng_world_fill_snapshot(w, &out->state);
-  out->have_state = true;
+  // agent: composer-2.5 | 2026-07-26 | slim scene ack client fields | f1a2b3
+  if (ng_scene_client_fields(w->scene_id)) {
+    out->have_state = false;
+  } else {
+    ng_world_fill_snapshot(w, &out->state);
+    out->have_state = true;
+  }
   out->kind = NG_ACT_SCENE_LOAD;
   return true;
 }

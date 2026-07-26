@@ -4,11 +4,18 @@
 #include "core/ng_bus.h"
 #include "core/ng_log.h"
 #include "core/ng_proto.h"
+#include "core/ng_session.h"
 #include "mod/mod_input.h"
 #include "mod/mod_render.h"
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+#include "mod/mod_scene.h"
+#endif
 #include "net/ng_net.h"
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 #include "mod/mod_sim.h"
+#endif
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+#include "sim/sim_types.h"
 #endif
 #if defined(NG_SERVER)
 #include "net/ng_ws_server.h"
@@ -35,6 +42,8 @@ typedef struct NetPeerState {
   bool have_baseline;
   uint16_t seq;
   bool pending_connect_snap;
+  bool pending_connect_session;
+  uint8_t peer_id;
 } NetPeerState;
 #endif
 
@@ -71,7 +80,18 @@ typedef struct ModNetCtx {
   char pending_reply_text[1024];
   uint32_t last_action_tick;
   bool cmd_inflight;
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  uint8_t controller_id;
+  uint8_t next_peer_id;
+#endif
 } ModNetCtx;
+
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+typedef struct NetRelayCtx {
+  ModNetCtx *net_ctx;
+  NgNetPeer *from;
+} NetRelayCtx;
+#endif
 
 // agent: composer-2.5 | 2026-07-25 | snapshot proto scratch buffers | 0009c0
 static void mod_net_rx_load(ModNetCtx *ctx, const uint8_t *data, size_t len) {
@@ -83,6 +103,73 @@ static void mod_net_rx_load(ModNetCtx *ctx, const uint8_t *data, size_t len) {
 }
 
 // agent: composer-2.5 | 2026-07-25 | defer bus from net poll | c210df
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_t your_id) {
+  NgWorld *w = mod_sim_world();
+  memset(session, 0, sizeof(*session));
+  strncpy(session->scene_id, w->scene_id, sizeof(session->scene_id) - 1);
+  session->tick = w->tick;
+  session->controller_id = ctx->controller_id;
+  session->your_id = your_id;
+  session->client_fields = ng_scene_client_fields(w->scene_id);
+  if (session->client_fields) {
+    session->cube_entity_id = sim_cube_entity_id();
+  }
+}
+
+static void mod_net_send_session_peer(NgNet *net, NgNetPeer *peer, void *vctx) {
+  ModNetCtx *ctx = (ModNetCtx *)vctx;
+  NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+  if (!ps) {
+    return;
+  }
+  NgSessionState session;
+  mod_net_fill_session(ctx, &session, ps->peer_id);
+  if (!ng_proto_encode_session(&ctx->tx_buf, ++ctx->seq, &session)) {
+    return;
+  }
+  ng_net_send_to(net, peer, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+}
+
+static void mod_net_broadcast_session(ModNetCtx *ctx, NgNet *net) {
+  if (!net) {
+    return;
+  }
+  ng_net_foreach_peer(net, mod_net_send_session_peer, ctx);
+  ng_net_flush(net);
+}
+
+static void mod_net_apply_state_update(NgWorld *w, const NgStateUpdate *update) {
+  const int idx = ng_world_find_index(w, update->entity_id);
+  if (idx >= 0) {
+    w->rot_y[idx] = update->rot_y;
+  }
+}
+
+static void mod_net_relay_state_update(NgNet *net, NgNetPeer *peer, void *vctx) {
+  NetRelayCtx *relay = (NetRelayCtx *)vctx;
+  if (peer == relay->from) {
+    return;
+  }
+  ng_net_send_to(net, peer, relay->net_ctx->tx_buf.data, relay->net_ctx->tx_buf.len,
+                 NG_CH_UNRELIABLE, false);
+}
+
+static void mod_net_pick_controller(NgNet *net, NgNetPeer *peer, void *vctx) {
+  ModNetCtx *ctx = (ModNetCtx *)vctx;
+  (void)net;
+  if (ctx->controller_id != 0) {
+    return;
+  }
+  NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+  if (ps) {
+    ctx->controller_id = ps->peer_id;
+  }
+}
+
+static void mod_net_send_snapshot_peer(NgNet *net, NgNetPeer *peer, void *vctx);
+#endif
+
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 static void mod_net_queue_input(ModNetCtx *ctx, uint16_t seq, int buttons, float yaw) {
   ctx->pending_input = true;
@@ -219,8 +306,14 @@ static void mod_net_exec_host_cmd(ModNetCtx *ctx, NgNet *net, NgNetPeer *peer,
     if (ng_action_server_exec(mod_sim_world(), &cmd, cmd_seq, &result)) {
       if (result.have_state) {
         ctx->snapshot_buf = result.state;
+      } else if (strncmp(line, "scene ", 6) == 0) {
+        ng_world_fill_snapshot(mod_sim_world(), &ctx->snapshot_buf);
       }
       mod_net_send_action_result(ctx, net, peer, &result);
+      if (strncmp(line, "scene ", 6) == 0) {
+        mod_net_broadcast_session(ctx, net);
+        ng_net_foreach_peer(net, mod_net_send_snapshot_peer, ctx);
+      }
       ng_net_flush(net);
     }
     return;
@@ -276,14 +369,20 @@ static void mod_net_send_action_to_peer(NgNet *net, NgNetPeer *peer, void *vctx)
 static void mod_net_send_connect_snapshot(NgNet *net, NgNetPeer *peer, void *vctx) {
   ModNetCtx *ctx = (ModNetCtx *)vctx;
   NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
-  if (!ps || !ps->pending_connect_snap) {
+  if (!ps) {
     return;
   }
-  ps->pending_connect_snap = false;
-  if (ng_proto_encode_snapshot(&ctx->tx_buf, &ctx->snapshot_buf, ++ps->seq, false)) {
-    ng_net_send_to(net, peer, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
-    ps->baseline = ctx->snapshot_buf;
-    ps->have_baseline = true;
+  if (ps->pending_connect_snap) {
+    ps->pending_connect_snap = false;
+    if (ng_proto_encode_snapshot(&ctx->tx_buf, &ctx->snapshot_buf, ++ps->seq, false)) {
+      ng_net_send_to(net, peer, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+      ps->baseline = ctx->snapshot_buf;
+      ps->have_baseline = true;
+    }
+  }
+  if (ps->pending_connect_session) {
+    ps->pending_connect_session = false;
+    mod_net_send_session_peer(net, peer, ctx);
   }
 }
 #endif
@@ -402,6 +501,9 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
 
   switch (h.type) {
   case NG_PKT_INPUT: {
+    if (ng_scene_client_fields(mod_sim_world()->scene_id)) {
+      return;
+    }
     uint16_t seq = 0;
     uint32_t tick = 0;
     int buttons = 0;
@@ -418,6 +520,23 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
       return;
     }
     mod_net_exec_host_cmd(ctx, net, peer, line, h.seq);
+    break;
+  }
+  case NG_PKT_STATE_UPDATE: {
+    NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+    if (!ps || ps->peer_id != ctx->controller_id) {
+      return;
+    }
+    NgStateUpdate update = {.tick = h.tick};
+    if (!ng_proto_decode_state_update(buf, &update)) {
+      return;
+    }
+    mod_net_apply_state_update(mod_sim_world(), &update);
+    if (!ng_proto_encode_state_update(&ctx->tx_buf, ++ctx->seq, &update)) {
+      return;
+    }
+    NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
+    ng_net_foreach_peer(net, mod_net_relay_state_update, &relay);
     break;
   }
   default:
@@ -486,6 +605,26 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     ctx->cmd_inflight = false;
     break;
   }
+  case NG_PKT_SESSION: {
+    NgSessionState session = {.tick = h.tick};
+    if (!ng_proto_decode_session(buf, &session)) {
+      return;
+    }
+    session.tick = h.tick;
+    mod_scene_on_session(&session);
+    break;
+  }
+  case NG_PKT_STATE_UPDATE: {
+    if (mod_scene_is_controller()) {
+      return;
+    }
+    NgStateUpdate update = {.tick = h.tick};
+    if (!ng_proto_decode_state_update(buf, &update)) {
+      return;
+    }
+    mod_scene_apply_remote(&update);
+    break;
+  }
   default:
     break;
   }
@@ -504,12 +643,24 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
   ModNetCtx *ctx = (ModNetCtx *)vctx;
   if (connected) {
     NetPeerState *ps = (NetPeerState *)calloc(1, sizeof(NetPeerState));
+    ps->peer_id = ++ctx->next_peer_id;
+    if (ctx->controller_id == 0) {
+      ctx->controller_id = ps->peer_id;
+    }
     ng_net_peer_set_data(peer, ps);
     ng_world_fill_snapshot(mod_sim_world(), &ctx->snapshot_buf);
     ps->pending_connect_snap = true;
+    ps->pending_connect_session = true;
   } else {
-    free(ng_net_peer_data(peer));
+    NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+    const bool was_controller = ps && ps->peer_id == ctx->controller_id;
+    free(ps);
     ng_net_peer_set_data(peer, NULL);
+    if (was_controller) {
+      ctx->controller_id = 0;
+      ng_net_foreach_peer(net, mod_net_pick_controller, ctx);
+      mod_net_broadcast_session(ctx, net);
+    }
   }
 }
 
@@ -578,7 +729,29 @@ static void mod_net_handle_ws_packet(const uint8_t *data, size_t len, void *vctx
 #endif
 
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+static void mod_net_flush_state_update(ModNetCtx *ctx) {
+  if (!mod_scene_client_fields_active() || !mod_scene_is_controller()) {
+    return;
+  }
+  NgNet *link = mod_net_client_link(ctx);
+  if (!ng_net_connected(link)) {
+    return;
+  }
+  NgStateUpdate update;
+  if (!mod_scene_take_flush(&update)) {
+    return;
+  }
+  update.tick = ctx->last_snap_tick;
+  if (!ng_proto_encode_state_update(&ctx->tx_buf, ++ctx->seq, &update)) {
+    return;
+  }
+  ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+}
+
 static void mod_net_send_input(ModNetCtx *ctx) {
+  if (mod_scene_client_fields_active()) {
+    return;
+  }
   NgNet *link = mod_net_client_link(ctx);
   if (!ng_net_connected(link)) {
     return;
@@ -697,6 +870,7 @@ static bool mod_net_on_msg(const NgMsg *msg, void *vctx) {
     }
 #endif
     mod_net_send_input(ctx);
+    mod_net_flush_state_update(ctx);
     return true;
   }
 #endif

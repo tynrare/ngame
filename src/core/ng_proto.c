@@ -471,3 +471,73 @@ bool ng_proto_decode_text(NgProtoBuf *b, char *text, size_t text_cap) {
   text[n] = '\0';
   return true;
 }
+
+// agent: composer-2.5 | 2026-07-26 | session state update wire | e7f8a9
+bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *session) {
+  if (!b || !session) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_SESSION,
+      .seq = seq,
+      .tick = session->tick,
+  };
+  const size_t scene_len = strnlen(session->scene_id, sizeof(session->scene_id) - 1);
+  return ng_proto_write_header(b, &h) && ng_proto_write_u8(b, (uint8_t)scene_len) &&
+         (scene_len == 0 ||
+          memcpy(b->data + b->len, session->scene_id, scene_len), b->len += scene_len, true) &&
+         ng_proto_write_u8(b, session->controller_id) && ng_proto_write_u8(b, session->your_id) &&
+         ng_proto_write_u32(b, session->cube_entity_id) &&
+         ng_proto_write_u8(b, session->client_fields ? 1 : 0);
+}
+
+bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
+  if (!b || !session) {
+    return false;
+  }
+  memset(session, 0, sizeof(*session));
+  uint8_t scene_len = 0;
+  if (!ng_proto_read_u8(b, &scene_len) || scene_len >= sizeof(session->scene_id)) {
+    return false;
+  }
+  for (int i = 0; i < scene_len; i++) {
+    uint8_t c;
+    if (!ng_proto_read_u8(b, &c)) {
+      return false;
+    }
+    session->scene_id[i] = (char)c;
+  }
+  session->scene_id[scene_len] = '\0';
+  uint8_t cf = 0;
+  return ng_proto_read_u8(b, &session->controller_id) && ng_proto_read_u8(b, &session->your_id) &&
+         ng_proto_read_u32(b, &session->cube_entity_id) && ng_proto_read_u8(b, &cf) &&
+         (session->client_fields = (cf != 0), true);
+}
+
+bool ng_proto_encode_state_update(NgProtoBuf *b, uint16_t seq, const NgStateUpdate *update) {
+  if (!b || !update) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_UNRELIABLE,
+      .type = NG_PKT_STATE_UPDATE,
+      .seq = seq,
+      .tick = update->tick,
+  };
+  return ng_proto_write_header(b, &h) && ng_proto_write_u32(b, update->entity_id) &&
+         ng_proto_write_f32(b, update->rot_y);
+}
+
+bool ng_proto_decode_state_update(NgProtoBuf *b, NgStateUpdate *update) {
+  if (!b || !update) {
+    return false;
+  }
+  return ng_proto_read_u32(b, &update->entity_id) && ng_proto_read_f32(b, &update->rot_y);
+}

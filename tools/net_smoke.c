@@ -2,6 +2,7 @@
 // agent: composer-2.5 | 2026-07-25 | smoke ACTION_RESULT decode | b1c2d3
 #include "core/ng_action.h"
 #include "core/ng_proto.h"
+#include "core/ng_session.h"
 #include "net/ng_net.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,15 @@ static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, si
         printf("REPLY: %s\n", result.reply);
         g_got_reply = true;
       }
+    }
+  } else if (h.type == NG_PKT_SESSION) {
+    NgSessionState session = {.tick = h.tick};
+    if (ng_proto_decode_session(&buf, &session)) {
+      session.tick = h.tick;
+      printf("SESSION scene=%s controller=%u you=%u cube=%u client_fields=%d\n", session.scene_id,
+             session.controller_id, session.your_id, session.cube_entity_id,
+             session.client_fields ? 1 : 0);
+      g_got_reply = true;
     }
   } else if (h.type == NG_PKT_CMD_REPLY) {
     char text[1024];

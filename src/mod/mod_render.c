@@ -7,6 +7,7 @@
 #include "core/ng_action.h"
 #include "mod/mod_input.h"
 #include "mod/mod_net.h"
+#include "mod/mod_scene.h"
 #include "ng_path.h"
 #include "ng_shader.h"
 #include "world/ng_world.h"
@@ -33,6 +34,8 @@ typedef struct ModRenderCtx {
   bool have_curr;
   float alpha;
   char scene_label[32];
+  bool have_session;
+  bool client_fields;
   Camera3D camera;
   uint16_t last_input_seq;
 } ModRenderCtx;
@@ -90,7 +93,9 @@ static float mod_render_lerp(float a, float b, float t) { return a + (b - a) * t
 static void mod_render_update_camera(ModRenderCtx *ctx, const char *scene) {
   // agent: composer-2.5 | 2026-07-25 | client-only camera hot path | b3d7e2
   const float client_t = (float)GetTime();
-  const float yaw = mod_input_pred_yaw();
+  const float yaw =
+      (strcmp(scene, "cube") == 0 && mod_scene_client_fields_active()) ? mod_scene_get_rot_y()
+                                                                        : mod_input_pred_yaw();
 
   if (strcmp(scene, "sphere") == 0) {
     const float radius = 6.0f;
@@ -215,7 +220,11 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
         }
       }
     }
-    if (e->type == NG_ENTITY_SPHERE) {
+    if (e->type == NG_ENTITY_CUBE && mod_scene_client_fields_active()) {
+      NgEntitySnap cube = *e;
+      cube.rot_y = mod_scene_get_rot_y();
+      mod_render_draw_entity(&ctx->cube, &cube, p, ctx->alpha);
+    } else if (e->type == NG_ENTITY_SPHERE) {
       mod_render_draw_entity(&ctx->sphere, e, p, ctx->alpha);
     } else if (e->type == NG_ENTITY_CUBE) {
       mod_render_draw_entity(&ctx->cube, e, p, ctx->alpha);
@@ -227,6 +236,24 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
 }
 
 // agent: composer-2.5 | 2026-07-25 | apply action bounce state | b5c6d7
+// agent: composer-2.5 | 2026-07-26 | session bootstrap render state | d8e9f0
+void mod_render_apply_session(const NgSessionState *session) {
+  ModRenderCtx *ctx = &g_render_ctx;
+  if (!session) {
+    return;
+  }
+  strncpy(ctx->scene_label, session->scene_id, sizeof(ctx->scene_label) - 1);
+  ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
+  ctx->have_session = true;
+  ctx->client_fields = session->client_fields;
+}
+
+void mod_render_set_cube_rot_y(float rot_y) {
+  if (mod_scene_client_fields_active()) {
+    mod_input_set_pred_yaw(rot_y);
+  }
+}
+
 void mod_render_apply_action(const NgActionResult *result) {
   ModRenderCtx *ctx = &g_render_ctx;
   if (!result) {
@@ -241,7 +268,7 @@ void mod_render_apply_action(const NgActionResult *result) {
     strncpy(ctx->scene_label, result->state.scene_id, sizeof(ctx->scene_label) - 1);
     ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
     for (int i = 0; i < ctx->curr.entity_count; i++) {
-      if (ctx->curr.entities[i].type == NG_ENTITY_CUBE) {
+      if (ctx->curr.entities[i].type == NG_ENTITY_CUBE && !mod_scene_client_fields_active()) {
         mod_input_set_pred_yaw(ctx->curr.entities[i].rot_y);
         break;
       }
@@ -267,7 +294,7 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
       ctx->alpha = 0.0f;
       strncpy(ctx->scene_label, msg->snapshot->scene_id, sizeof(ctx->scene_label) - 1);
       for (int i = 0; i < ctx->curr.entity_count; i++) {
-        if (ctx->curr.entities[i].type == NG_ENTITY_CUBE) {
+        if (ctx->curr.entities[i].type == NG_ENTITY_CUBE && !mod_scene_client_fields_active()) {
           mod_input_set_pred_yaw(ctx->curr.entities[i].rot_y);
           break;
         }
@@ -301,7 +328,7 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
       return true;
     }
 #endif
-    if (ctx->have_curr) {
+    if (ctx->have_curr || ctx->have_session) {
       mod_render_draw_scene(ctx);
     } else {
       // agent: composer-2.5 | 2026-07-25 | embedded waiting UI text | 9236ea
@@ -386,5 +413,5 @@ bool mod_render_has_snapshot(void) {
     return ng_embed_ready();
   }
 #endif
-  return g_render_ctx.have_curr;
+  return g_render_ctx.have_curr || g_render_ctx.have_session;
 }

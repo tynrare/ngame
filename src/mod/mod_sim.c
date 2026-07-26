@@ -12,6 +12,7 @@
 #endif
 #include "core/ng_bus.h"
 #include "core/ng_log.h"
+#include "core/ng_session.h"
 #include "sim/sim_types.h"
 #include "world/ng_world.h"
 #include <stdio.h>
@@ -91,7 +92,8 @@ static void mod_sim_publish_snapshot(ModSimCtx *ctx) {
     return;
   }
 #endif
-  ng_world_fill_snapshot_aoi(&ctx->world, &ctx->snapshot, 0.0f, 0.0f, 99999.0f, ctx->world.tick);
+  // agent: composer-2.5 | 2026-07-26 | full snapshot not aoi hack | e5f6a7
+  ng_world_fill_snapshot(&ctx->world, &ctx->snapshot);
   if (ctx->baseline.tick > 0 && strcmp(ctx->snapshot.scene_id, ctx->baseline.scene_id) == 0) {
     ng_world_fill_snapshot_delta(&ctx->world, &ctx->snapshot, &ctx->baseline, &ctx->wire_snap);
     if (ctx->wire_snap.entity_count == 0) {
@@ -183,7 +185,9 @@ static bool mod_sim_on_msg(const NgMsg *msg, void *vctx) {
   case NG_MSG_CMD:
     return mod_sim_handle_cmd(ctx, msg);
   case NG_MSG_INPUT:
-    ng_world_apply_input(&ctx->world, msg->input_buttons, msg->input_yaw_delta);
+    if (!ng_scene_client_fields(ctx->world.scene_id)) {
+      ng_world_apply_input(&ctx->world, msg->input_buttons, msg->input_yaw_delta);
+    }
     return true;
   case NG_MSG_TICK:
     if (msg->to != NG_BUS_SIM) {

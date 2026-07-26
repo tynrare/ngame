@@ -18,21 +18,16 @@ static void sim_cube_exit(NgWorld *w) {
   }
 }
 
+// agent: composer-2.5 | 2026-07-26 | server cube rot client owned | c3d4e5
 static void sim_cube_update(NgWorld *w, float dt) {
   const int idx = ng_world_find_index(w, g_cube_entity);
   if (idx < 0) {
     return;
   }
   w->phase[idx] += dt;
-  if (w->input_buttons & NG_INPUT_A) {
-    w->rot_y[idx] -= 1.5f * dt;
-  }
-  if (w->input_buttons & NG_INPUT_D) {
-    w->rot_y[idx] += 1.5f * dt;
-  }
-  w->rot_y[idx] += w->input_yaw_delta;
-  w->input_yaw_delta = 0.0f;
 }
+
+uint32_t sim_cube_entity_id(void) { return g_cube_entity; }
 
 static const SimOps g_sim_cube = {
     .id = "cube",

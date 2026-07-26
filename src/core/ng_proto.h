@@ -21,6 +21,10 @@ struct NgActionResult;
 // agent: composer-2.5 | 2026-07-25 | remove dead snap ack wire | b4875f
 #define NG_PKT_EVENT      5
 #define NG_PKT_ACTION_RESULT 6
+#define NG_PKT_SESSION       7
+#define NG_PKT_STATE_UPDATE  8
+
+#include "ng_session.h"
 
 typedef struct NgProtoHeader {
   uint32_t magic;
@@ -54,5 +58,9 @@ bool ng_proto_encode_text(NgProtoBuf *b, uint8_t type, uint16_t seq, const char 
 bool ng_proto_decode_text(NgProtoBuf *b, char *text, size_t text_cap);
 bool ng_proto_encode_action_result(NgProtoBuf *b, const struct NgActionResult *result);
 bool ng_proto_decode_action_result(NgProtoBuf *b, struct NgActionResult *result);
+bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *session);
+bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session);
+bool ng_proto_encode_state_update(NgProtoBuf *b, uint16_t seq, const NgStateUpdate *update);
+bool ng_proto_decode_state_update(NgProtoBuf *b, NgStateUpdate *update);
 
 #endif

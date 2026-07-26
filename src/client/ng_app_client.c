@@ -9,6 +9,7 @@
 #include "mod/mod_input.h"
 #include "mod/mod_net.h"
 #include "mod/mod_render.h"
+#include "mod/mod_scene.h"
 #include "net/ng_net.h"
 #include "ng_shader.h"
 #include "ng_viewport.h"
@@ -92,6 +93,7 @@ void ng_app_client_init(int argc, char **argv) {
   ng_mod_register(mod_console_ops(), mod_console_ctx());
   ng_mod_register(mod_net_ops(), mod_net_ctx());
   ng_mod_register(mod_render_ops(), mod_render_ctx());
+  ng_mod_register(mod_scene_ops(), mod_scene_ctx());
 
   if (!ng_mod_init_all()) {
     NG_LOG_ERROR("client module init failed");

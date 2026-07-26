@@ -13,5 +13,6 @@ typedef struct SimOps {
 
 const SimOps *sim_sphere_ops(void);
 const SimOps *sim_cube_ops(void);
+uint32_t sim_cube_entity_id(void);
 
 #endif
