@@ -749,6 +749,11 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
   }
 }
 
+// agent: composer-2.5 | 2026-07-26 | flush after scene step end | c6d7e8
+void mod_net_flush_scene_updates(void) {
+  mod_net_flush_state_update(&g_net_ctx);
+}
+
 static void mod_net_send_input(ModNetCtx *ctx) {
   if (mod_scene_client_fields_active()) {
     return;
@@ -871,7 +876,6 @@ static bool mod_net_on_msg(const NgMsg *msg, void *vctx) {
     }
 #endif
     mod_net_send_input(ctx);
-    mod_net_flush_state_update(ctx);
     return true;
   }
 #endif

@@ -171,18 +171,15 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
       inst->comp_dirty = 0;
       continue;
     }
+    if (!(inst->comp_dirty & NG_COMP_ROT)) {
+      inst->comp_dirty = 0;
+      continue;
+    }
     out->entity_id = inst->id;
-    out->comp_mask = (uint8_t)inst->comp_dirty;
+    out->comp_mask = NG_COMP_ROT;
     out->rot_y = inst->rot[1];
     out->tick = 0;
-    if (inst->comp_dirty & NG_COMP_ROT) {
-      inst->comp_dirty &= ~NG_COMP_ROT;
-    } else {
-      inst->comp_dirty = 0;
-    }
-    if (inst->comp_dirty == 0) {
-      return true;
-    }
+    inst->comp_dirty &= ~NG_COMP_ROT;
     return true;
   }
   return false;

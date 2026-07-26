@@ -91,9 +91,9 @@ void ng_app_client_init(int argc, char **argv) {
 #endif
 
   ng_mod_register(mod_console_ops(), mod_console_ctx());
+  ng_mod_register(mod_scene_ops(), mod_scene_ctx());
   ng_mod_register(mod_net_ops(), mod_net_ctx());
   ng_mod_register(mod_render_ops(), mod_render_ctx());
-  ng_mod_register(mod_scene_ops(), mod_scene_ctx());
 
   if (!ng_mod_init_all()) {
     NG_LOG_ERROR("client module init failed");
@@ -130,8 +130,9 @@ void ng_app_client_frame(void) {
   ng_viewport_poll();
   ng_shader_poll();
   mod_input_begin_frame();
-  ng_mod_publish_tick(GetFrameTime());
+  // agent: composer-2.5 | 2026-07-26 | poll recv before tick | 46cc4f
   mod_net_poll_recv();
+  ng_mod_publish_tick(GetFrameTime());
 
   BeginDrawing();
   ng_mod_publish_draw();

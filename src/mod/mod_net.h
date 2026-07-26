@@ -21,6 +21,7 @@ void mod_net_endpoint(char *host, size_t host_cap, uint16_t *port);
 double mod_net_connect_elapsed(void);
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
 void mod_net_poll_recv(void);
+void mod_net_flush_scene_updates(void);
 #endif
 #if defined(NG_HAS_EMBEDDED)
 void mod_net_set_embedded(bool embedded);

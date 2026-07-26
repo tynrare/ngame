@@ -94,9 +94,7 @@ static float mod_render_lerp(float a, float b, float t) { return a + (b - a) * t
 static void mod_render_update_camera(ModRenderCtx *ctx, const char *scene) {
   // agent: composer-2.5 | 2026-07-25 | client-only camera hot path | b3d7e2
   const float client_t = (float)GetTime();
-  const float yaw =
-      (strcmp(scene, "cube") == 0 && mod_scene_graph_active()) ? mod_scene_get_rot_y()
-                                                                : mod_input_pred_yaw();
+  const float yaw = mod_input_pred_yaw();
 
   if (strcmp(scene, "sphere") == 0) {
     const float radius = 6.0f;
@@ -106,9 +104,16 @@ static void mod_render_update_camera(ModRenderCtx *ctx, const char *scene) {
     ctx->camera.target = (Vector3){0.0f, 0.0f, 0.0f};
   } else if (strcmp(scene, "cube") == 0) {
     const float dist = 6.0f;
-    ctx->camera.position.x = sinf(yaw) * dist;
-    ctx->camera.position.z = cosf(yaw) * dist;
-    ctx->camera.position.y = 2.5f;
+    // agent: composer-2.5 | 2026-07-26 | graph draw client fields gate | 359454
+    if (mod_scene_client_fields_active()) {
+      ctx->camera.position.x = 0.0f;
+      ctx->camera.position.z = dist;
+      ctx->camera.position.y = 2.5f;
+    } else {
+      ctx->camera.position.x = sinf(yaw) * dist;
+      ctx->camera.position.z = cosf(yaw) * dist;
+      ctx->camera.position.y = 2.5f;
+    }
     ctx->camera.target = (Vector3){0.0f, 0.0f, 0.0f};
   }
 }
@@ -230,7 +235,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   ClearBackground(bg);
   mod_render_update_camera(ctx, ctx->scene_label);
 
-  if (mod_scene_graph_active()) {
+  if (mod_scene_client_fields_active()) {
     mod_render_draw_scene_graph(ctx);
   } else {
     BeginMode3D(ctx->camera);
@@ -271,7 +276,7 @@ void mod_render_apply_session(const NgSessionState *session) {
 }
 
 void mod_render_set_cube_rot_y(float rot_y) {
-  if (mod_scene_graph_active()) {
+  if (!mod_scene_client_fields_active()) {
     mod_input_set_pred_yaw(rot_y);
   }
 }
@@ -290,7 +295,7 @@ void mod_render_apply_action(const NgActionResult *result) {
     strncpy(ctx->scene_label, result->state.scene_id, sizeof(ctx->scene_label) - 1);
     ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
     for (int i = 0; i < ctx->curr.entity_count; i++) {
-      if (ctx->curr.entities[i].type == NG_ENTITY_CUBE && !mod_scene_graph_active()) {
+      if (ctx->curr.entities[i].type == NG_ENTITY_CUBE && !mod_scene_client_fields_active()) {
         mod_input_set_pred_yaw(ctx->curr.entities[i].rot_y);
         break;
       }
@@ -316,7 +321,7 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
       ctx->alpha = 0.0f;
       strncpy(ctx->scene_label, msg->snapshot->scene_id, sizeof(ctx->scene_label) - 1);
       for (int i = 0; i < ctx->curr.entity_count; i++) {
-        if (ctx->curr.entities[i].type == NG_ENTITY_CUBE && !mod_scene_graph_active()) {
+        if (ctx->curr.entities[i].type == NG_ENTITY_CUBE && !mod_scene_client_fields_active()) {
           mod_input_set_pred_yaw(ctx->curr.entities[i].rot_y);
           break;
         }
@@ -341,7 +346,9 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
         ctx->alpha = 1.0f;
       }
     }
-    mod_input_apply_pred(msg->dt);
+    if (!mod_scene_client_fields_active()) {
+      mod_input_apply_pred(msg->dt);
+    }
     return true;
   case NG_MSG_DRAW:
 #if defined(NG_HAS_EMBEDDED)

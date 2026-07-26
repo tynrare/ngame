@@ -7,8 +7,12 @@
 #include "mod/mod_input.h"
 #include "mod/mod_render.h"
 #include "mod/mod_scene_graph.h"
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+#include "mod/mod_net.h"
+#endif
 #include "ng_path.h"
 #include "vendor/duktape.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -138,6 +142,7 @@ static duk_ret_t bind_get_input(duk_context *ctx) {
   return 1;
 }
 
+// agent: composer-2.5 | 2026-07-26 | local-only pos no wire dirty | f3a4b5
 static duk_ret_t bind_set_position(duk_context *ctx) {
   NgSceneInst *inst = mod_scene_inst_from_handle(duk_require_int(ctx, 0));
   if (!inst) {
@@ -154,7 +159,6 @@ static duk_ret_t bind_set_position(duk_context *ctx) {
     inst->pos[2] = (float)duk_get_number(ctx, -1);
     duk_pop(ctx);
   }
-  mod_scene_graph_mark_dirty(inst, NG_COMP_POS);
   return 0;
 }
 
@@ -223,7 +227,6 @@ static duk_ret_t bind_set_scale(duk_context *ctx) {
     return 0;
   }
   inst->scale = (float)duk_get_number(ctx, 1);
-  mod_scene_graph_mark_dirty(inst, NG_COMP_FLAGS);
   return 0;
 }
 
@@ -472,6 +475,12 @@ void mod_scene_apply_remote(const NgStateUpdate *update) {
   if (!update || !ctx->loaded || !ng_scene_has_js_host(ctx->scene_id)) {
     return;
   }
+  // agent: composer-2.5 | 2026-07-26 | ignore stale shared rot snap | bc2454
+  NgSceneInst *inst = mod_scene_graph_inst_by_id(update->entity_id);
+  if (inst && inst->sync == NG_SYNC_SHARED && (update->comp_mask & NG_COMP_ROT) &&
+      fabsf(inst->rot[1]) > 0.05f && fabsf(update->rot_y) < 0.05f) {
+    return;
+  }
   mod_scene_graph_apply_update(update);
 }
 
@@ -510,6 +519,9 @@ static bool mod_scene_on_msg(const NgMsg *msg, void *vctx) {
   duk_push_number(ctx->ctx, msg->dt);
   mod_scene_call_method(ctx, "step", 1);
   mod_scene_run_entity_steps(ctx, msg->dt);
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+  mod_net_flush_scene_updates();
+#endif
   return true;
 }
 

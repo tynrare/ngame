@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | SoA entity world store | c4d91e
 #include "ng_world.h"
+#include "core/ng_session.h"
 #include <math.h>
 #include <string.h>
 
@@ -154,8 +155,13 @@ void ng_world_fill_snapshot(NgWorld *w, NgSnapshot *out) {
   strncpy(out->scene_id, w->scene_id, sizeof(out->scene_id) - 1);
   out->scene_id[sizeof(out->scene_id) - 1] = '\0';
   out->entity_count = 0;
+  // agent: composer-2.5 | 2026-07-26 | omit client cube snapshot | 2bb1db
+  const bool skip_client_cube = ng_scene_has_js_host(w->scene_id);
   for (int i = 0; i < NG_WORLD_ENTITY_MAX; i++) {
     if (!w->alive[i]) {
+      continue;
+    }
+    if (skip_client_cube && w->type[i] == NG_ENTITY_CUBE) {
       continue;
     }
     if (out->entity_count >= NG_SNAPSHOT_ENTITY_MAX) {
@@ -221,6 +227,9 @@ void ng_world_fill_snapshot_delta(NgWorld *w, NgSnapshot *cur, const NgSnapshot 
 
   for (int i = 0; i < cur->entity_count; i++) {
     const NgEntitySnap *c = &cur->entities[i];
+    if (ng_scene_has_js_host(w->scene_id) && c->type == NG_ENTITY_CUBE) {
+      continue;
+    }
     const NgEntitySnap *b = NULL;
     for (int j = 0; j < baseline->entity_count; j++) {
       if (baseline->entities[j].id == c->id) {
