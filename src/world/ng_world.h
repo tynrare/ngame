@@ -5,10 +5,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// agent: composer-2.5 | 2026-07-25 | web smaller snapshot caps | d34d5e
+#if defined(__EMSCRIPTEN__)
+#define NG_WORLD_ENTITY_MAX 256
+#define NG_SNAPSHOT_ENTITY_MAX 64
+#else
 #define NG_WORLD_ENTITY_MAX 4096
+#define NG_SNAPSHOT_ENTITY_MAX NG_WORLD_ENTITY_MAX
+#endif
 #define NG_WORLD_GRID_DIM   64
 #define NG_WORLD_GRID_CELL  16.0f
-#define NG_SNAPSHOT_ENTITY_MAX NG_WORLD_ENTITY_MAX
 
 typedef enum NgEntityType {
   NG_ENTITY_NONE = 0,
@@ -76,5 +82,8 @@ void ng_world_fill_snapshot_aoi(NgWorld *w, NgSnapshot *out, float cx, float cy,
                                 float radius, uint32_t tick_mod);
 void ng_world_fill_snapshot_delta(NgWorld *w, NgSnapshot *cur, const NgSnapshot *baseline,
                                   NgSnapshot *out);
+
+// agent: composer-2.5 | 2026-07-25 | FNV-1a world state hash | c4e8d1
+uint32_t ng_world_hash(const NgWorld *w);
 
 #endif

@@ -40,7 +40,7 @@ static duk_ret_t bind_bus_reply(duk_context *ctx) {
   NgMsg msg = {
       .kind = NG_MSG_REPLY,
       .from = NG_BUS_SCRIPT,
-#ifdef NG_SERVER
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
       .to = NG_BUS_ANY,
 #else
       .to = NG_BUS_CONSOLE,

@@ -8,8 +8,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct NgNet NgNet;
+typedef struct NgNetLoopbackPair NgNetLoopbackPair;
+
 struct NgNetPeer {
-  ENetPeer *peer;
+  bool lb;
+  union {
+    ENetPeer *peer;
+    void *lb_data;
+  } u;
 };
 
 struct NgNet {
@@ -19,7 +26,37 @@ struct NgNet {
   bool connected;
   NgNetPeerFn peer_fn;
   void *peer_ctx;
+#if defined(NG_HAS_EMBEDDED)
+  bool lb;
+  NgNetLoopbackPair *lb_pair;
+  NgNetPeer *lb_peer;
+#endif
 };
+
+#if defined(NG_HAS_EMBEDDED)
+#define NG_LOOPBACK_QCAP 16
+#define NG_LOOPBACK_PKT_MAX 8192
+
+typedef struct NgLoopbackPkt {
+  uint8_t data[NG_LOOPBACK_PKT_MAX];
+  size_t len;
+  uint8_t channel;
+} NgLoopbackPkt;
+
+struct NgNetLoopbackPair {
+  NgLoopbackPkt to_host[NG_LOOPBACK_QCAP];
+  int to_host_r;
+  int to_host_w;
+  NgLoopbackPkt to_client[NG_LOOPBACK_QCAP];
+  int to_client_r;
+  int to_client_w;
+  bool linked;
+  NgNet *host;
+  NgNet *client;
+  NgNetPeer host_peer;
+  NgNetPeer client_peer;
+};
+#endif
 
 // agent: composer-2.5 | 2026-07-25 | enet refcount not global kill | b8e41a
 static int g_enet_users = 0;
@@ -37,6 +74,22 @@ static bool ng_net_init_once(void) {
 
 static bool ng_net_peer_connected(ENetPeer *p) {
   return p && p->state == ENET_PEER_STATE_CONNECTED;
+}
+
+// agent: composer-2.5 | 2026-07-26 | localhost enet RTT tune | 78e1d8
+static void ng_net_tune_peer(ENetPeer *peer) {
+  if (!peer) {
+    return;
+  }
+  peer->roundTripTime = 1;
+  peer->roundTripTimeVariance = 0;
+  peer->lastRoundTripTime = 1;
+  peer->lowestRoundTripTime = 1;
+  peer->packetThrottle = ENET_PEER_PACKET_THROTTLE_SCALE;
+  peer->packetThrottleLimit = ENET_PEER_PACKET_THROTTLE_SCALE;
+  peer->packetThrottleCounter = 0;
+  enet_peer_ping_interval(peer, 50);
+  enet_peer_ping(peer);
 }
 
 NgNet *ng_net_create(NgNetRole role, const char *host, uint16_t port) {
@@ -128,17 +181,30 @@ void ng_net_set_peer_fn(NgNet *n, NgNetPeerFn fn, void *ctx) {
 }
 
 void *ng_net_peer_data(NgNetPeer *peer) {
-  if (!peer || !peer->peer) {
+  if (!peer) {
     return NULL;
   }
-  return peer->peer->data;
+  if (peer->lb) {
+    return peer->u.lb_data;
+  }
+  if (!peer->u.peer) {
+    return NULL;
+  }
+  return peer->u.peer->data;
 }
 
 void ng_net_peer_set_data(NgNetPeer *peer, void *data) {
-  if (!peer || !peer->peer) {
+  if (!peer) {
     return;
   }
-  peer->peer->data = data;
+  if (peer->lb) {
+    peer->u.lb_data = data;
+    return;
+  }
+  if (!peer->u.peer) {
+    return;
+  }
+  peer->u.peer->data = data;
 }
 
 // agent: composer-2.5 | 2026-07-25 | verify client peer state | 24b873
@@ -146,6 +212,14 @@ bool ng_net_connected(NgNet *n) {
   if (!n) {
     return false;
   }
+#if defined(NG_HAS_EMBEDDED)
+  if (n->lb) {
+    if (n->role == NG_NET_ROLE_HOST) {
+      return n->lb_pair && n->lb_pair->linked;
+    }
+    return n->connected && n->lb_peer;
+  }
+#endif
   if (n->role == NG_NET_ROLE_HOST) {
     if (!n->host) {
       return false;
@@ -164,6 +238,11 @@ bool ng_net_connected(NgNet *n) {
 }
 
 void ng_net_flush(NgNet *n) {
+#if defined(NG_HAS_EMBEDDED)
+  if (n && n->lb) {
+    return;
+  }
+#endif
   if (n && n->host) {
     enet_host_flush(n->host);
   }
@@ -187,16 +266,43 @@ bool ng_net_send_to(NgNet *n, NgNetPeer *peer, const uint8_t *data, size_t len,
   if (!n || !data || len == 0) {
     return false;
   }
+#if defined(NG_HAS_EMBEDDED)
+  if (n->lb && n->lb_pair) {
+    NgLoopbackPkt *q;
+    int *r;
+    int *w;
+    if (n->role == NG_NET_ROLE_CLIENT) {
+      q = n->lb_pair->to_host;
+      r = &n->lb_pair->to_host_r;
+      w = &n->lb_pair->to_host_w;
+    } else {
+      (void)peer;
+      q = n->lb_pair->to_client;
+      r = &n->lb_pair->to_client_r;
+      w = &n->lb_pair->to_client_w;
+    }
+    const int next = (*w + 1) % NG_LOOPBACK_QCAP;
+    if (next == *r || len > NG_LOOPBACK_PKT_MAX) {
+      return false;
+    }
+    memcpy(q[*w].data, data, len);
+    q[*w].len = len;
+    q[*w].channel = channel;
+    *w = next;
+    (void)reliable;
+    return true;
+  }
+#endif
   if (n->role == NG_NET_ROLE_CLIENT) {
     if (!n->connected || !n->peer) {
       return false;
     }
     return ng_net_send_peer(n->peer, data, len, channel, reliable);
   }
-  if (!peer || !peer->peer) {
+  if (!peer || !peer->u.peer) {
     return false;
   }
-  return ng_net_send_peer(peer->peer, data, len, channel, reliable);
+  return ng_net_send_peer(peer->u.peer, data, len, channel, reliable);
 }
 
 bool ng_net_send(NgNet *n, const uint8_t *data, size_t len, uint8_t channel, bool reliable) {
@@ -212,7 +318,16 @@ bool ng_net_send(NgNet *n, const uint8_t *data, size_t len, uint8_t channel, boo
 
 void ng_net_broadcast(NgNet *n, const uint8_t *data, size_t len, uint8_t channel,
                       bool reliable) {
-  if (!n || n->role != NG_NET_ROLE_HOST || !n->host || !data || len == 0) {
+  if (!n || n->role != NG_NET_ROLE_HOST || !data || len == 0) {
+    return;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  if (n->lb) {
+    ng_net_send_to(n, &n->lb_pair->host_peer, data, len, channel, reliable);
+    return;
+  }
+#endif
+  if (!n->host) {
     return;
   }
   for (size_t i = 0; i < n->host->peerCount; i++) {
@@ -225,7 +340,18 @@ void ng_net_broadcast(NgNet *n, const uint8_t *data, size_t len, uint8_t channel
 
 // agent: composer-2.5 | 2026-07-25 | foreach peer iterator | 12ae60
 void ng_net_foreach_peer(NgNet *n, NgNetPeerIterFn fn, void *ctx) {
-  if (!n || !fn || n->role != NG_NET_ROLE_HOST || !n->host) {
+  if (!n || !fn || n->role != NG_NET_ROLE_HOST) {
+    return;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  if (n->lb) {
+    if (n->lb_pair && n->lb_pair->linked) {
+      fn(n, &n->lb_pair->host_peer, ctx);
+    }
+    return;
+  }
+#endif
+  if (!n->host) {
     return;
   }
   NgNetPeer wrap = {0};
@@ -234,20 +360,23 @@ void ng_net_foreach_peer(NgNet *n, NgNetPeerIterFn fn, void *ctx) {
     if (!ng_net_peer_connected(p)) {
       continue;
     }
-    wrap.peer = p;
+    wrap.lb = false;
+    wrap.u.peer = p;
     fn(n, &wrap, ctx);
   }
 }
 
 static void ng_net_dispatch(NgNet *n, NgNetPacketFn fn, void *ctx, ENetEvent *ev) {
   NgNetPeer wrap = {0};
-  wrap.peer = ev->peer;
+  wrap.lb = false;
+  wrap.u.peer = ev->peer;
   switch (ev->type) {
   case ENET_EVENT_TYPE_CONNECT:
     if (n->role == NG_NET_ROLE_CLIENT) {
       n->peer = ev->peer;
       n->connected = true;
     }
+    ng_net_tune_peer(ev->peer);
     NG_LOG_INFO("net peer connected");
     if (n->peer_fn) {
       n->peer_fn(n, &wrap, true, n->peer_ctx);
@@ -303,15 +432,121 @@ static void ng_net_service(NgNet *n, NgNetPacketFn fn, void *ctx, uint32_t timeo
 }
 
 void ng_net_poll(NgNet *n, NgNetPacketFn fn, void *ctx) {
-  if (!n || !n->host || !fn) {
+  if (!n || !fn) {
+    return;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  if (n->lb && n->lb_pair) {
+    NgLoopbackPkt *q;
+    int *r;
+    int *w;
+    NgNetPeer *from;
+    if (n->role == NG_NET_ROLE_HOST) {
+      q = n->lb_pair->to_host;
+      r = &n->lb_pair->to_host_r;
+      w = &n->lb_pair->to_host_w;
+      from = &n->lb_pair->client_peer;
+    } else {
+      q = n->lb_pair->to_client;
+      r = &n->lb_pair->to_client_r;
+      w = &n->lb_pair->to_client_w;
+      from = &n->lb_pair->host_peer;
+    }
+    // agent: composer-2.5 | 2026-07-25 | loopback drain no stack copy | 99466a
+    while (*r != *w) {
+      NgLoopbackPkt *pkt = &q[*r];
+      *r = (*r + 1) % NG_LOOPBACK_QCAP;
+      fn(n, from, pkt->data, pkt->len, pkt->channel, ctx);
+    }
+    return;
+  }
+#endif
+  if (!n->host) {
     return;
   }
   ng_net_service(n, fn, ctx, 0);
 }
 
 void ng_net_poll_wait(NgNet *n, NgNetPacketFn fn, void *ctx, uint32_t timeout_ms) {
-  if (!n || !n->host || !fn) {
+  if (!n || !fn) {
+    return;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  if (n->lb) {
+    ng_net_poll(n, fn, ctx);
+    return;
+  }
+#endif
+  if (!n->host) {
     return;
   }
   ng_net_service(n, fn, ctx, timeout_ms);
 }
+
+#if defined(NG_HAS_EMBEDDED)
+// agent: composer-2.5 | 2026-07-25 | enet defer loopback connect | 3895fa
+void ng_net_loopback_connect(NgNetLoopbackPair *pair) {
+  if (!pair || pair->linked) {
+    return;
+  }
+  pair->linked = true;
+  pair->host->connected = true;
+  pair->client->connected = true;
+  pair->host_peer.lb = true;
+  pair->client_peer.lb = true;
+  pair->client->lb_peer = &pair->client_peer;
+  NG_LOG_INFO("net loopback connected");
+  if (pair->host->peer_fn) {
+    pair->host->peer_fn(pair->host, &pair->host_peer, true, pair->host->peer_ctx);
+  }
+  if (pair->client->peer_fn) {
+    pair->client->peer_fn(pair->client, &pair->client_peer, true, pair->client->peer_ctx);
+  }
+}
+
+NgNetLoopbackPair *ng_net_loopback_create(void) {
+  NgNetLoopbackPair *pair = (NgNetLoopbackPair *)calloc(1, sizeof(NgNetLoopbackPair));
+  if (!pair) {
+    return NULL;
+  }
+  pair->host = (NgNet *)calloc(1, sizeof(NgNet));
+  pair->client = (NgNet *)calloc(1, sizeof(NgNet));
+  if (!pair->host || !pair->client) {
+    free(pair->host);
+    free(pair->client);
+    free(pair);
+    return NULL;
+  }
+  pair->host->lb = true;
+  pair->host->role = NG_NET_ROLE_HOST;
+  pair->host->lb_pair = pair;
+  pair->client->lb = true;
+  pair->client->role = NG_NET_ROLE_CLIENT;
+  pair->client->lb_pair = pair;
+  NG_LOG_INFO("net loopback pair ready");
+  return pair;
+}
+
+void ng_net_loopback_destroy(NgNetLoopbackPair *pair) {
+  if (!pair) {
+    return;
+  }
+  if (pair->host && pair->host->peer_fn) {
+    pair->host->peer_fn(pair->host, &pair->host_peer, false, pair->host->peer_ctx);
+  }
+  if (pair->client && pair->client->peer_fn) {
+    pair->client->peer_fn(pair->client, &pair->client_peer, false, pair->client->peer_ctx);
+  }
+  free(pair->host);
+  free(pair->client);
+  free(pair);
+}
+
+NgNet *ng_net_loopback_host(NgNetLoopbackPair *pair) {
+  return pair ? pair->host : NULL;
+}
+
+NgNet *ng_net_loopback_client(NgNetLoopbackPair *pair) {
+  return pair ? pair->client : NULL;
+}
+#endif

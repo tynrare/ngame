@@ -145,8 +145,24 @@ static bool ng_world_tier_visible(int dist_cells, uint32_t tick) {
   return (tick % 8u) == 0u;
 }
 
+// agent: composer-2.5 | 2026-07-26 | fix fill snapshot hot path | 0ddb84
 void ng_world_fill_snapshot(NgWorld *w, NgSnapshot *out) {
-  ng_world_fill_snapshot_aoi(w, out, 0.0f, 0.0f, 99999.0f, w->tick);
+  if (!w || !out) {
+    return;
+  }
+  out->tick = w->tick;
+  strncpy(out->scene_id, w->scene_id, sizeof(out->scene_id) - 1);
+  out->scene_id[sizeof(out->scene_id) - 1] = '\0';
+  out->entity_count = 0;
+  for (int i = 0; i < NG_WORLD_ENTITY_MAX; i++) {
+    if (!w->alive[i]) {
+      continue;
+    }
+    if (out->entity_count >= NG_SNAPSHOT_ENTITY_MAX) {
+      break;
+    }
+    ng_world_snap_entity(w, i, &out->entities[out->entity_count++]);
+  }
 }
 
 void ng_world_fill_snapshot_aoi(NgWorld *w, NgSnapshot *out, float cx, float cy,
@@ -245,4 +261,41 @@ void ng_world_fill_snapshot_delta(NgWorld *w, NgSnapshot *cur, const NgSnapshot 
       out->entity_count++;
     }
   }
+}
+
+// agent: composer-2.5 | 2026-07-25 | FNV-1a world state hash | c4e8d1
+static uint32_t ng_hash_u32(uint32_t h, uint32_t v) {
+  h ^= v;
+  return h * 16777619u;
+}
+
+static uint32_t ng_hash_f32(uint32_t h, float v) {
+  uint32_t u;
+  memcpy(&u, &v, sizeof(u));
+  return ng_hash_u32(h, u);
+}
+
+uint32_t ng_world_hash(const NgWorld *w) {
+  if (!w) {
+    return 0;
+  }
+  uint32_t h = 2166136261u;
+  h = ng_hash_u32(h, w->tick);
+  for (int i = 0; w->scene_id[i] != '\0'; i++) {
+    h = ng_hash_u32(h, (uint8_t)w->scene_id[i]);
+  }
+  h = ng_hash_u32(h, (uint32_t)w->live_count);
+  for (int i = 0; i < NG_WORLD_ENTITY_MAX; i++) {
+    if (!w->alive[i]) {
+      continue;
+    }
+    h = ng_hash_u32(h, (uint32_t)(i + 1));
+    h = ng_hash_u32(h, w->type[i]);
+    h = ng_hash_f32(h, w->pos_x[i]);
+    h = ng_hash_f32(h, w->pos_y[i]);
+    h = ng_hash_f32(h, w->pos_z[i]);
+    h = ng_hash_f32(h, w->rot_y[i]);
+    h = ng_hash_f32(h, w->phase[i]);
+  }
+  return h;
 }

@@ -68,6 +68,12 @@ void ng_app_server_frame(void) {
     return;
   }
 
+  // agent: composer-2.5 | 2026-07-26 | poll net before sim tick | f0a1b2
+  for (int i = 0; i < 8; i++) {
+    mod_net_server_poll();
+  }
+  mod_agent_poll();
+
   const double now = ng_server_now();
   const float dt = (float)(now - g_last_time);
   g_last_time = now;

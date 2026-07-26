@@ -7,5 +7,7 @@
 const NgModOps *mod_render_ops(void);
 void *mod_render_ctx(void);
 bool mod_render_has_snapshot(void);
+struct NgActionResult;
+void mod_render_apply_action(const struct NgActionResult *result);
 
 #endif

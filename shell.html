@@ -7,6 +7,7 @@
     <style>
       html, body {
         margin: 0;
+        width: 100%;
         height: 100%;
         background: #000;
         overflow: hidden;
@@ -14,8 +15,7 @@
       canvas.emscripten {
         border: 0;
         display: block;
-        width: 100%;
-        height: 100%;
+        outline: none;
       }
     </style>
   </head>
@@ -24,9 +24,11 @@
     <script>
       var Module = {
         canvas: document.getElementById('canvas'),
-        print: function(text) { console.log(text); }
+        print: function(text) { console.log(text); },
+        onRuntimeInitialized: function() {
+          window.dispatchEvent(new Event('resize'));
+        }
       };
-      // Serve this page over HTTP; run ./build/ngame_server (WS :27016) first.
     </script>
     {{{ SCRIPT }}}
   </body>

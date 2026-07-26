@@ -1,7 +1,14 @@
 // agent: composer-2.5 | 2026-07-25 | server sim bus module | a9d62e
 #include "mod_sim.h"
 #ifdef NG_SERVER
+#include "core/ng_action.h"
 #include "mod/mod_net.h"
+#include "mod/mod_render.h"
+#elif defined(NG_HAS_EMBEDDED)
+#include "core/ng_action.h"
+#include "core/ng_embed.h"
+#include "mod/mod_net.h"
+#include "mod/mod_render.h"
 #endif
 #include "core/ng_bus.h"
 #include "core/ng_log.h"
@@ -24,6 +31,7 @@ typedef struct ModSimCtx {
   char feedback[256];
   NgSnapshot snapshot;
   NgSnapshot baseline;
+  NgSnapshot wire_snap;
   float snap_accum;
 } ModSimCtx;
 
@@ -71,38 +79,26 @@ static bool mod_sim_load(ModSimCtx *ctx, const char *id) {
   return true;
 }
 
-static void mod_sim_reply(ModSimCtx *ctx) {
-  NgMsg reply = {
-      .kind = NG_MSG_REPLY,
-      .from = NG_BUS_SIM,
-#ifdef NG_SERVER
-      .to = NG_BUS_ANY,
-#else
-      .to = NG_BUS_CONSOLE,
-#endif
-      .text = ctx->feedback,
-  };
-  ng_bus_publish(&reply);
-}
-
-// agent: composer-2.5 | 2026-07-25 | skip unchanged sim snap | 18fe4e
+// agent: composer-2.5 | 2026-07-25 | sim snapshot scratch reuse | 3c08c0
 static void mod_sim_publish_snapshot(ModSimCtx *ctx) {
-#ifdef NG_SERVER
+#if defined(NG_HAS_EMBEDDED)
+  if (mod_net_is_embedded()) {
+    return;
+  }
+#endif
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   if (!mod_net_has_clients()) {
     return;
   }
 #endif
-  NgSnapshot full = {0};
-  ng_world_fill_snapshot_aoi(&ctx->world, &full, 0.0f, 0.0f, 99999.0f, ctx->world.tick);
-  if (ctx->baseline.tick > 0 && strcmp(full.scene_id, ctx->baseline.scene_id) == 0) {
-    NgSnapshot wire = {0};
-    ng_world_fill_snapshot_delta(&ctx->world, &full, &ctx->baseline, &wire);
-    if (wire.entity_count == 0) {
+  ng_world_fill_snapshot_aoi(&ctx->world, &ctx->snapshot, 0.0f, 0.0f, 99999.0f, ctx->world.tick);
+  if (ctx->baseline.tick > 0 && strcmp(ctx->snapshot.scene_id, ctx->baseline.scene_id) == 0) {
+    ng_world_fill_snapshot_delta(&ctx->world, &ctx->snapshot, &ctx->baseline, &ctx->wire_snap);
+    if (ctx->wire_snap.entity_count == 0) {
       return;
     }
   }
-  ctx->snapshot = full;
-  ctx->baseline = full;
+  ctx->baseline = ctx->snapshot;
 
   NgMsg snap = {
       .kind = NG_MSG_SNAPSHOT,
@@ -113,14 +109,14 @@ static void mod_sim_publish_snapshot(ModSimCtx *ctx) {
   ng_bus_publish(&snap);
 }
 
-static bool mod_sim_handle_cmd(ModSimCtx *ctx, const NgMsg *msg) {
-  if (!msg) {
+bool mod_sim_run_cmd(const NgMsg *msg, char *reply, size_t reply_cap) {
+  ModSimCtx *ctx = &g_sim_ctx;
+  if (!msg || !reply || reply_cap == 0) {
     return false;
   }
   if (msg->line && strcmp(msg->line, "__agent_snapshot__") == 0) {
-    snprintf(ctx->feedback, sizeof(ctx->feedback), "scene=%s entities=%d tick=%u",
-             ctx->world.scene_id, ctx->world.live_count, ctx->world.tick);
-    mod_sim_reply(ctx);
+    snprintf(reply, reply_cap, "scene=%s entities=%d tick=%u", ctx->world.scene_id,
+             ctx->world.live_count, ctx->world.tick);
     return true;
   }
   if (msg->argc <= 0 || !msg->argv[0]) {
@@ -130,22 +126,51 @@ static bool mod_sim_handle_cmd(ModSimCtx *ctx, const NgMsg *msg) {
     return false;
   }
   if (msg->argc < 2) {
-    snprintf(ctx->feedback, sizeof(ctx->feedback), "usage: scene <id>");
-    mod_sim_reply(ctx);
+    snprintf(reply, reply_cap, "usage: scene <id>");
     return true;
   }
   mod_sim_load(ctx, msg->argv[1]);
-  mod_sim_reply(ctx);
-  mod_sim_publish_snapshot(ctx);
+  strncpy(reply, ctx->feedback, reply_cap - 1);
+  reply[reply_cap - 1] = '\0';
+  return true;
+}
 
-  NgMsg ev = {
-      .kind = NG_MSG_EVENT,
+static bool mod_sim_handle_cmd(ModSimCtx *ctx, const NgMsg *msg) {
+  if (!msg) {
+    return false;
+  }
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  NgActionResult result = {0};
+  if (!ng_action_server_exec(&ctx->world, msg, 0, &result)) {
+    return false;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  if (mod_net_is_embedded()) {
+    mod_render_apply_action(&result);
+    NgMsg reply = {
+        .kind = NG_MSG_REPLY,
+        .from = NG_BUS_SIM,
+        .to = NG_BUS_CONSOLE,
+        .text = result.reply,
+    };
+    ng_bus_publish(&reply);
+    return true;
+  }
+#endif
+#if defined(NG_SERVER)
+  NgMsg out = {
+      .kind = NG_MSG_ACTION_RESULT,
       .from = NG_BUS_SIM,
       .to = NG_BUS_NET,
-      .text = ctx->world.scene_id,
+      .action_result = &result,
   };
-  ng_bus_publish(&ev);
+  ng_bus_publish(&out);
+#endif
   return true;
+#else
+  (void)ctx;
+  return false;
+#endif
 }
 
 static bool mod_sim_on_msg(const NgMsg *msg, void *vctx) {
@@ -164,6 +189,11 @@ static bool mod_sim_on_msg(const NgMsg *msg, void *vctx) {
     if (msg->to != NG_BUS_SIM) {
       return false;
     }
+#if defined(NG_HAS_EMBEDDED)
+    if (mod_net_is_embedded()) {
+      return false;
+    }
+#endif
     if (!ng_bus_gate(NG_BUS_SIM)) {
       return false;
     }
@@ -193,7 +223,15 @@ static bool mod_sim_init(void *vctx) {
   ng_world_init(&ctx->world);
   mod_sim_register(ctx, sim_sphere_ops());
   mod_sim_register(ctx, sim_cube_ops());
-  return mod_sim_load(ctx, "sphere");
+  if (!mod_sim_load(ctx, "sphere")) {
+    return false;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  if (mod_net_is_embedded()) {
+    ng_embed_bind(&ctx->world);
+  }
+#endif
+  return true;
 }
 
 static void mod_sim_shutdown(void *vctx) {

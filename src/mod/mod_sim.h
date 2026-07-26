@@ -3,9 +3,11 @@
 #define MOD_SIM_H
 
 #include "core/ng_mod.h"
+#include "world/ng_world.h"
 
 const NgModOps *mod_sim_ops(void);
 void *mod_sim_ctx(void);
 NgWorld *mod_sim_world(void);
+bool mod_sim_run_cmd(const NgMsg *msg, char *reply, size_t reply_cap);
 
 #endif

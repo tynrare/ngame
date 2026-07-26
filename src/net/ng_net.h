@@ -43,4 +43,14 @@ void ng_net_poll(NgNet *n, NgNetPacketFn fn, void *ctx);
 void ng_net_poll_wait(NgNet *n, NgNetPacketFn fn, void *ctx, uint32_t timeout_ms);
 void ng_net_foreach_peer(NgNet *n, NgNetPeerIterFn fn, void *ctx);
 
+#if defined(NG_HAS_EMBEDDED) || defined(NG_EMBEDDED)
+typedef struct NgNetLoopbackPair NgNetLoopbackPair;
+NgNetLoopbackPair *ng_net_loopback_create(void);
+// agent: composer-2.5 | 2026-07-25 | export loopback connect API | 44b6a7
+void ng_net_loopback_connect(NgNetLoopbackPair *pair);
+void ng_net_loopback_destroy(NgNetLoopbackPair *pair);
+NgNet *ng_net_loopback_host(NgNetLoopbackPair *pair);
+NgNet *ng_net_loopback_client(NgNetLoopbackPair *pair);
+#endif
+
 #endif

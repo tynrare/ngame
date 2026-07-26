@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | ENet smoke test client | n7q95l
-// agent: composer-2.5 | 2026-07-25 | smoke flush require reply | a753b1
+// agent: composer-2.5 | 2026-07-25 | smoke ACTION_RESULT decode | b1c2d3
+#include "core/ng_action.h"
 #include "core/ng_proto.h"
 #include "net/ng_net.h"
 #include <stdio.h>
@@ -32,16 +33,23 @@ static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, si
              snap.entity_count, delta ? 1 : 0);
       g_got_snapshot = true;
     }
+  } else if (h.type == NG_PKT_ACTION_RESULT) {
+    NgActionResult result = {0};
+    if (ng_proto_decode_action_result(&buf, &result)) {
+      if (result.have_state) {
+        printf("ACTION scene=%s tick=%u hash=%u\n", result.state.scene_id, result.server_tick,
+               result.state_hash);
+      }
+      if (result.reply[0] != '\0') {
+        printf("REPLY: %s\n", result.reply);
+        g_got_reply = true;
+      }
+    }
   } else if (h.type == NG_PKT_CMD_REPLY) {
     char text[1024];
     if (ng_proto_decode_text(&buf, text, sizeof(text))) {
       printf("REPLY: %s\n", text);
       g_got_reply = true;
-    }
-  } else if (h.type == NG_PKT_EVENT) {
-    char text[256];
-    if (ng_proto_decode_text(&buf, text, sizeof(text))) {
-      printf("EVENT: %s\n", text);
     }
   }
 }

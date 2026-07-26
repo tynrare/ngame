@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+struct NgActionResult;
+
 #define NG_BUS_ARGV_MAX 16
 #define NG_BUS_DEST_MAX 8
 
@@ -29,6 +31,7 @@ typedef enum NgMsgKind {
   NG_MSG_INPUT,
   NG_MSG_SNAPSHOT,
   NG_MSG_EVENT,
+  NG_MSG_ACTION_RESULT,
 } NgMsgKind;
 
 typedef struct NgMsg {
@@ -44,6 +47,7 @@ typedef struct NgMsg {
   float input_yaw_delta;
   uint16_t input_seq;
   const NgSnapshot *snapshot;
+  const struct NgActionResult *action_result;
 } NgMsg;
 
 typedef bool (*NgBusHandler)(const NgMsg *msg, void *ctx);

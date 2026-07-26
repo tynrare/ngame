@@ -8,5 +8,6 @@
 
 const NgModOps *mod_agent_ops(void);
 void *mod_agent_ctx(void);
+void mod_agent_poll(void);
 
 #endif

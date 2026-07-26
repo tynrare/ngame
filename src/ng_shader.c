@@ -1,25 +1,24 @@
 // agent: composer-2.5 | 2026-07-25 | shader load and uniforms | 2d8f6b
 #include "ng_shader.h"
+#include "ng_viewport.h"
 #include <raylib.h>
 #include <stdio.h>
 #include <string.h>
 
-#if defined(PLATFORM_DESKTOP)
-#define NG_GLSL 330
-#elif defined(GRAPHICS_API_OPENGL_ES3)
-#define NG_GLSL 300
-#else
-#define NG_GLSL 100
-#endif
-
-static char *ng_shader_prepend_version(const char *source) {
+static char *ng_shader_prepend_version(const char *source, bool fragment) {
   const char *header;
-#if defined(PLATFORM_DESKTOP)
+#if defined(PLATFORM_DESKTOP) && !defined(GRAPHICS_API_OPENGL_ES2)
+  (void)fragment;
   header = "#version 330\n";
-#elif defined(GRAPHICS_API_OPENGL_ES3)
-  header = "#version 300 es\n"
-           "precision mediump float;\n";
+#elif defined(GRAPHICS_API_OPENGL_ES3) || defined(__EMSCRIPTEN__)
+  if (fragment) {
+    header = "#version 300 es\n"
+             "precision mediump float;\n";
+  } else {
+    header = "#version 300 es\n";
+  }
 #else
+  (void)fragment;
   header = "#version 100\n";
 #endif
 
@@ -36,6 +35,13 @@ static char *ng_shader_prepend_version(const char *source) {
 
 static char *ng_shader_read(const char *path) {
   char *text = LoadFileText(path);
+#if defined(__EMSCRIPTEN__)
+  if (!text && path[0] != '/') {
+    char abs[512];
+    snprintf(abs, sizeof(abs), "/%s", path);
+    text = LoadFileText(abs);
+  }
+#endif
   if (!text) {
     TraceLog(LOG_ERROR, "NG: shader file not found: %s", path);
   }
@@ -53,8 +59,9 @@ NgShader ng_shader_load(const char *vs_path, const char *fs_path) {
     return out;
   }
 
-  char *vs_full = ng_shader_prepend_version(vs_src);
-  char *fs_full = ng_shader_prepend_version(fs_src);
+  // agent: composer-2.5 | 2026-07-25 | ES3 shader path detection | 4a9a01
+  char *vs_full = ng_shader_prepend_version(vs_src, false);
+  char *fs_full = ng_shader_prepend_version(fs_src, true);
   UnloadFileText(vs_src);
   UnloadFileText(fs_src);
 
@@ -96,7 +103,8 @@ void ng_shader_set_common(NgShader *shader, float time) {
     SetShaderValue(shader->handle, shader->loc_time, &time, SHADER_UNIFORM_FLOAT);
   }
   if (shader->loc_resolution >= 0) {
-    const float res[2] = {(float)GetScreenWidth(), (float)GetScreenHeight()};
+    // agent: composer-2.5 | 2026-07-25 | use equilized viewport size | e1f2a3
+    const float res[2] = {(float)ng_viewport_width(), (float)ng_viewport_height()};
     SetShaderValue(shader->handle, shader->loc_resolution, res, SHADER_UNIFORM_VEC2);
   }
 }

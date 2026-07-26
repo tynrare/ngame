@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # agent: composer-2.5 | 2026-07-25 | websocket smoke client | e5f93b
-"""Send scene cube over WebSocket; print cmd reply text."""
+# agent: composer-2.5 | 2026-07-25 | ws ACTION_RESULT decode | c4d5e6
+"""Send scene cube over WebSocket; print action result reply text."""
 
 import socket
 import struct
@@ -11,7 +12,7 @@ PORT = 27016
 NG_PROTO_MAGIC = 0x4E474D45
 NG_PKT_CMD = 3
 NG_PKT_CMD_REPLY = 4
-NG_PKT_EVENT = 5
+NG_PKT_ACTION_RESULT = 6
 
 
 def ws_handshake(sock: socket.socket, host: str, port: int) -> None:
@@ -46,21 +47,29 @@ def encode_cmd(line: str) -> bytes:
     return hdr + body
 
 
-def decode_text_packet(payload: bytes) -> str | None:
+def decode_action_result(payload: bytes) -> str | None:
     if len(payload) < 16:
         return None
     magic, = struct.unpack_from("<I", payload, 0)
     if magic != NG_PROTO_MAGIC:
         return None
     ptype = payload[6]
-    if ptype not in (NG_PKT_CMD_REPLY, NG_PKT_EVENT):
-        return None
     pos = 14
-    (n,) = struct.unpack_from("<H", payload, pos)
-    pos += 2
-    if pos + n > len(payload):
+    if ptype == NG_PKT_CMD_REPLY:
+        (n,) = struct.unpack_from("<H", payload, pos)
+        pos += 2
+        if pos + n > len(payload):
+            return None
+        return payload[pos : pos + n].decode(errors="replace")
+    if ptype != NG_PKT_ACTION_RESULT:
         return None
-    return payload[pos : pos + n].decode(errors="replace")
+    pos += 4  # state_hash
+    pos += 1  # kind
+    (reply_len,) = struct.unpack_from("<H", payload, pos)
+    pos += 2
+    if pos + reply_len > len(payload):
+        return None
+    return payload[pos : pos + reply_len].decode(errors="replace")
 
 
 def recv_frames(sock: socket.socket) -> str | None:
@@ -81,7 +90,7 @@ def recv_frames(sock: socket.socket) -> str | None:
             if not chunk:
                 break
             payload += chunk
-        text = decode_text_packet(payload)
+        text = decode_action_result(payload)
         if text and ("cube" in text or "scene loaded" in text):
             return text
     return None

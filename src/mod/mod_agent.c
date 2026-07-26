@@ -1,5 +1,7 @@
 // agent: composer-2.5 | 2026-07-25 | agent TCP JSON bridge | h1k39f
+// agent: composer-2.5 | 2026-07-25 | agent scene sync action exec | e8f9a0
 #include "mod_agent.h"
+#include "core/ng_action.h"
 #include "core/ng_bus.h"
 #include "core/ng_log.h"
 #include "mod/mod_sim.h"
@@ -8,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,11 @@ static void mod_agent_set_nonblock(int fd) {
   if (flags >= 0) {
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
   }
+}
+
+static void mod_agent_set_nodelay(int fd) {
+  const int yes = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 }
 
 static void mod_agent_set_blocking(int fd) {
@@ -123,11 +131,13 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
         .argc = 2,
         .argv = argv_buf,
     };
-    ctx->have_reply = false;
-    ng_bus_publish(&msg);
+    NgActionResult result = {0};
+    if (!ng_action_server_exec(mod_sim_world(), &msg, 0, &result)) {
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"scene exec failed\"}");
+      return;
+    }
     char out[1200];
-    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}",
-             ctx->have_reply ? ctx->pending_reply : "done");
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", result.reply);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }
@@ -166,6 +176,7 @@ static void mod_agent_poll_io(ModAgentCtx *ctx) {
     const int fd = accept(ctx->listen_fd, (struct sockaddr *)&addr, &len);
     if (fd >= 0) {
       mod_agent_set_nonblock(fd);
+      mod_agent_set_nodelay(fd);
       ctx->client_fd = fd;
       NG_LOG_INFO("agent client connected");
     } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -279,3 +290,6 @@ static const NgModOps g_agent_ops = {
 const NgModOps *mod_agent_ops(void) { return &g_agent_ops; }
 
 void *mod_agent_ctx(void) { return &g_agent_ctx; }
+
+// agent: composer-2.5 | 2026-07-26 | agent poll outside tick | d7e8f9
+void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }

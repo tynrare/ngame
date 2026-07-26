@@ -13,7 +13,7 @@ done
 sleep 0.3
 
 cd "$BUILD"
-cmake --build . --target ngame_server ng_test_net 2>&1 | tail -3
+cmake --build . --target ngame_server ng_test_net ng_cmd_latency ng_cmd_loopback_latency ng_embed_smoke 2>&1 | tail -3
 
 start_server() {
   ./ngame_server > /tmp/ngame_validate.log 2>&1 &
@@ -64,9 +64,26 @@ echo "== enet scene cube (same server) =="
 ./ng_test_net 127.0.0.1 27015 | tee /tmp/ngame_net.out
 grep -q 'REPLY: scene loaded: cube' /tmp/ngame_net.out
 
+echo "== cmd latency loopback (local) =="
+LAT_OUT=$(./ng_cmd_loopback_latency)
+echo "$LAT_OUT"
+echo "$LAT_OUT" | grep -q 'CMD_LATENCY_MS'
+MS=$(echo "$LAT_OUT" | awk '/CMD_LATENCY_MS/{print $2}')
+awk -v ms="$MS" 'BEGIN { exit !(ms+0 <= 100) }'
+
+echo "== cmd latency enet (smoke) =="
+ENET_LAT=$(./ng_cmd_latency 127.0.0.1 27015 || true)
+echo "$ENET_LAT"
+echo "$ENET_LAT" | grep -q 'CMD_LATENCY_MS'
+
 echo "== websocket scene cube (same server) =="
 python3 "$ROOT/tools/ws_smoke.py" 127.0.0.1 27016 | tee /tmp/ngame_ws.out
 grep -q 'scene loaded: cube' /tmp/ngame_ws.out
+
+echo "== embedded loopback (native) =="
+EMBED_OUT=$(./ng_embed_smoke)
+echo "$EMBED_OUT"
+echo "$EMBED_OUT" | grep -q 'EMBED_SNAPSHOT scene='
 
 stop_server
 

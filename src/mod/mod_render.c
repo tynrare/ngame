@@ -1,6 +1,11 @@
 // agent: composer-2.5 | 2026-07-25 | client render module | g0j28e
 #include "mod_render.h"
 #include "core/ng_bus.h"
+#if defined(NG_HAS_EMBEDDED)
+#include "core/ng_embed.h"
+#endif
+#include "core/ng_action.h"
+#include "mod/mod_input.h"
 #include "mod/mod_net.h"
 #include "ng_path.h"
 #include "ng_shader.h"
@@ -29,7 +34,6 @@ typedef struct ModRenderCtx {
   float alpha;
   char scene_label[32];
   Camera3D camera;
-  float pred_yaw;
   uint16_t last_input_seq;
 } ModRenderCtx;
 
@@ -48,6 +52,10 @@ static void mod_render_load_asset(RenderAsset *a, const char *mesh_kind,
   }
   a->model = LoadModelFromMesh(mesh);
   a->shader = ng_shader_load(NG_RES_ROOT "shaders/mesh.vs", fs_path);
+  if (a->shader.handle.id == 0) {
+    UnloadModel(a->model);
+    return;
+  }
   a->model.materials[0].shader = a->shader.handle;
   a->bg = bg;
   a->tint = tint;
@@ -79,49 +87,95 @@ static void mod_render_init_assets(ModRenderCtx *ctx) {
 
 static float mod_render_lerp(float a, float b, float t) { return a + (b - a) * t; }
 
-static void mod_render_update_camera(ModRenderCtx *ctx) {
-  float phase = 0.0f;
-  float yaw = ctx->pred_yaw;
-  for (int i = 0; i < ctx->curr.entity_count; i++) {
-    const NgEntitySnap *e = &ctx->curr.entities[i];
-    const NgEntitySnap *p = e;
-    if (ctx->have_prev) {
-      for (int j = 0; j < ctx->prev.entity_count; j++) {
-        if (ctx->prev.entities[j].id == e->id) {
-          p = &ctx->prev.entities[j];
-          break;
-        }
-      }
-    }
-    phase = mod_render_lerp(p->phase, e->phase, ctx->alpha);
-    if (e->type == NG_ENTITY_CUBE) {
-      yaw = mod_render_lerp(p->rot_y, e->rot_y, ctx->alpha);
-      ctx->pred_yaw = yaw;
-    }
-  }
+static void mod_render_update_camera(ModRenderCtx *ctx, const char *scene) {
+  // agent: composer-2.5 | 2026-07-25 | client-only camera hot path | b3d7e2
+  const float client_t = (float)GetTime();
+  const float yaw = mod_input_pred_yaw();
 
-  if (strcmp(ctx->scene_label, "sphere") == 0) {
+  if (strcmp(scene, "sphere") == 0) {
     const float radius = 6.0f;
-    ctx->camera.position.x = sinf(phase * 0.6f) * radius;
-    ctx->camera.position.z = cosf(phase * 0.6f) * radius;
-    ctx->camera.position.y = 2.0f + sinf(phase * 0.3f) * 0.5f;
-  } else if (strcmp(ctx->scene_label, "cube") == 0) {
+    ctx->camera.position.x = sinf(client_t * 0.6f) * radius;
+    ctx->camera.position.z = cosf(client_t * 0.6f) * radius;
+    ctx->camera.position.y = 2.0f + sinf(client_t * 0.3f) * 0.5f;
+    ctx->camera.target = (Vector3){0.0f, 0.0f, 0.0f};
+  } else if (strcmp(scene, "cube") == 0) {
     const float dist = 6.0f;
     ctx->camera.position.x = sinf(yaw) * dist;
     ctx->camera.position.z = cosf(yaw) * dist;
     ctx->camera.position.y = 2.5f;
+    ctx->camera.target = (Vector3){0.0f, 0.0f, 0.0f};
   }
+}
+
+static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type, float x, float y,
+                                        float z, float rot_y) {
+  if (!a->ready || a->shader.handle.id == 0) {
+    return;
+  }
+  const float client_t = (float)GetTime();
+  ng_shader_set_common((NgShader *)&a->shader, client_t);
+  if (a->shader.loc_tint >= 0) {
+    const float tint[3] = {(float)a->tint.r / 255.0f, (float)a->tint.g / 255.0f,
+                           (float)a->tint.b / 255.0f};
+    SetShaderValue(a->shader.handle, a->shader.loc_tint, tint, SHADER_UNIFORM_VEC3);
+  }
+
+  const Vector3 pos = {x, y, z};
+  if (type == NG_ENTITY_CUBE) {
+    DrawModelEx(a->model, pos, (Vector3){0.0f, 1.0f, 0.0f}, rot_y * 57.2958f,
+                (Vector3){1.0f, 1.0f, 1.0f}, WHITE);
+  } else {
+    DrawModel(a->model, pos, 1.0f, WHITE);
+  }
+}
+
+// agent: composer-2.5 | 2026-07-25 | embedded shared world draw | a9f1c4
+static void mod_render_draw_embedded(ModRenderCtx *ctx) {
+  const NgWorld *w = ng_embed_world();
+  if (!w || w->live_count <= 0) {
+    ClearBackground(BLACK);
+    DrawText("embedded: waiting for world...", 20, 20, 18, GRAY);
+    return;
+  }
+
+  Color bg = (Color){0, 0, 0, 255};
+  if (strcmp(w->scene_id, "sphere") == 0) {
+    bg = ctx->sphere.bg;
+  } else if (strcmp(w->scene_id, "cube") == 0) {
+    bg = ctx->cube.bg;
+  }
+  ClearBackground(bg);
+  mod_render_update_camera(ctx, w->scene_id);
+
+  const float cube_yaw = mod_input_pred_yaw();
+  BeginMode3D(ctx->camera);
+  for (int i = 0; i < NG_WORLD_ENTITY_MAX; i++) {
+    if (!w->alive[i]) {
+      continue;
+    }
+    const NgEntityType type = (NgEntityType)w->type[i];
+    const float rot_y = (type == NG_ENTITY_CUBE) ? cube_yaw : w->rot_y[i];
+    if (type == NG_ENTITY_SPHERE) {
+      mod_render_draw_entity_live(&ctx->sphere, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y);
+    } else if (type == NG_ENTITY_CUBE) {
+      mod_render_draw_entity_live(&ctx->cube, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y);
+    }
+  }
+  EndMode3D();
+
+  DrawText(TextFormat("scene: %s (embed)", w->scene_id), 10, 10, 20, RAYWHITE);
 }
 
 static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
                                    const NgEntitySnap *p, float alpha) {
-  if (!a->ready) {
+  // agent: composer-2.5 | 2026-07-25 | skip draw invalid shader | 9b4abd
+  if (!a->ready || a->shader.handle.id == 0) {
     return;
   }
-  const float phase = mod_render_lerp(p ? p->phase : e->phase, e->phase, alpha);
+  const float client_t = (float)GetTime();
   const float yaw = mod_render_lerp(p ? p->rot_y : e->rot_y, e->rot_y, alpha);
 
-  ng_shader_set_common((NgShader *)&a->shader, phase);
+  ng_shader_set_common((NgShader *)&a->shader, client_t);
   if (a->shader.loc_tint >= 0) {
     const float tint[3] = {(float)a->tint.r / 255.0f, (float)a->tint.g / 255.0f,
                            (float)a->tint.b / 255.0f};
@@ -147,7 +201,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
     bg = ctx->cube.bg;
   }
   ClearBackground(bg);
-  mod_render_update_camera(ctx);
+  mod_render_update_camera(ctx, ctx->scene_label);
 
   BeginMode3D(ctx->camera);
   for (int i = 0; i < ctx->curr.entity_count; i++) {
@@ -172,6 +226,31 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   DrawText(TextFormat("scene: %s (net)", ctx->scene_label), 10, 10, 20, RAYWHITE);
 }
 
+// agent: composer-2.5 | 2026-07-25 | apply action bounce state | b5c6d7
+void mod_render_apply_action(const NgActionResult *result) {
+  ModRenderCtx *ctx = &g_render_ctx;
+  if (!result) {
+    return;
+  }
+  if (result->have_state) {
+    ctx->prev = ctx->curr;
+    ctx->curr = result->state;
+    ctx->have_prev = ctx->have_curr;
+    ctx->have_curr = true;
+    ctx->alpha = 0.0f;
+    strncpy(ctx->scene_label, result->state.scene_id, sizeof(ctx->scene_label) - 1);
+    ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
+    for (int i = 0; i < ctx->curr.entity_count; i++) {
+      if (ctx->curr.entities[i].type == NG_ENTITY_CUBE) {
+        mod_input_set_pred_yaw(ctx->curr.entities[i].rot_y);
+        break;
+      }
+    }
+  } else if (result->reply[0] != '\0') {
+    /* reply-only action (e.g. agent snapshot query) */
+  }
+}
+
 static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
   ModRenderCtx *ctx = (ModRenderCtx *)vctx;
   if (!ctx || !msg) {
@@ -189,7 +268,7 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
       strncpy(ctx->scene_label, msg->snapshot->scene_id, sizeof(ctx->scene_label) - 1);
       for (int i = 0; i < ctx->curr.entity_count; i++) {
         if (ctx->curr.entities[i].type == NG_ENTITY_CUBE) {
-          ctx->pred_yaw = ctx->curr.entities[i].rot_y;
+          mod_input_set_pred_yaw(ctx->curr.entities[i].rot_y);
           break;
         }
       }
@@ -201,47 +280,72 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
     }
     return true;
   case NG_MSG_TICK:
+#if defined(NG_HAS_EMBEDDED)
+    if (mod_net_is_embedded()) {
+      mod_input_apply_pred(msg->dt);
+      return true;
+    }
+#endif
     if (ctx->have_curr) {
       ctx->alpha += msg->dt * 20.0f;
       if (ctx->alpha > 1.0f) {
         ctx->alpha = 1.0f;
       }
     }
-    if (IsKeyDown(KEY_A)) {
-      ctx->pred_yaw -= 1.5f * msg->dt;
-    }
-    if (IsKeyDown(KEY_D)) {
-      ctx->pred_yaw += 1.5f * msg->dt;
-    }
+    mod_input_apply_pred(msg->dt);
     return true;
   case NG_MSG_DRAW:
+#if defined(NG_HAS_EMBEDDED)
+    if (mod_net_is_embedded()) {
+      mod_render_draw_embedded(ctx);
+      return true;
+    }
+#endif
     if (ctx->have_curr) {
       mod_render_draw_scene(ctx);
     } else {
-      // agent: composer-2.5 | 2026-07-25 | connect timeout hint UI | b2e81a
+      // agent: composer-2.5 | 2026-07-25 | embedded waiting UI text | 9236ea
       ClearBackground(BLACK);
-      char host[64];
-      uint16_t port = 0;
-      mod_net_endpoint(host, sizeof(host), &port);
       char line[160];
-      const double elapsed = mod_net_connect_elapsed();
-      if (!mod_net_is_connected()) {
+#if defined(NG_HAS_EMBEDDED)
+      if (mod_net_is_embedded()) {
+        const double elapsed = mod_net_connect_elapsed();
         if (elapsed > 8.0) {
-          snprintf(line, sizeof(line), "no server at %s:%u — run ./build/ngame_server", host,
+          snprintf(line, sizeof(line), "embedded: no snapshot — restart client");
+        } else {
+          snprintf(line, sizeof(line), "embedded: waiting for snapshot...");
+        }
+      } else
+#endif
+      {
+        char host[64];
+        uint16_t port = 0;
+        mod_net_endpoint(host, sizeof(host), &port);
+        const double elapsed = mod_net_connect_elapsed();
+        if (!mod_net_is_connected()) {
+          if (elapsed > 8.0) {
+            snprintf(line, sizeof(line), "no server at %s:%u — run ./build/ngame_server", host,
+                     port);
+          } else {
+            snprintf(line, sizeof(line), "connecting to %s:%u...", host, port);
+          }
+        } else if (elapsed > 8.0) {
+          snprintf(line, sizeof(line), "no snapshot from %s:%u — restart ngame_server", host,
                    port);
         } else {
-          snprintf(line, sizeof(line), "connecting to %s:%u...", host, port);
+          snprintf(line, sizeof(line), "waiting for snapshot from %s:%u...", host, port);
         }
-      } else if (elapsed > 8.0) {
-        // agent: composer-2.5 | 2026-07-25 | snapshot timeout hint | 44214c
-        snprintf(line, sizeof(line), "no snapshot from %s:%u — restart ngame_server", host, port);
-      } else {
-        snprintf(line, sizeof(line), "waiting for snapshot from %s:%u...", host, port);
       }
       DrawText(line, 20, 20, 18, GRAY);
-      if (elapsed > 8.0) {
-        DrawText("client keeps retrying; start server then leave this window open", 20, 44, 14,
-                 DARKGRAY);
+#if defined(NG_HAS_EMBEDDED)
+      if (!mod_net_is_embedded())
+#endif
+      {
+        const double elapsed = mod_net_connect_elapsed();
+        if (elapsed > 8.0) {
+          DrawText("client keeps retrying; start server then leave this window open", 20, 44, 14,
+                   DARKGRAY);
+        }
       }
     }
     return true;
@@ -276,4 +380,11 @@ const NgModOps *mod_render_ops(void) { return &g_render_ops; }
 
 void *mod_render_ctx(void) { return &g_render_ctx; }
 
-bool mod_render_has_snapshot(void) { return g_render_ctx.have_curr; }
+bool mod_render_has_snapshot(void) {
+#if defined(NG_HAS_EMBEDDED)
+  if (mod_net_is_embedded()) {
+    return ng_embed_ready();
+  }
+#endif
+  return g_render_ctx.have_curr;
+}

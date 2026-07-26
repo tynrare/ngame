@@ -7,13 +7,6 @@
 #endif
 
 int main(int argc, char **argv) {
-  const int width = 800;
-  const int height = 450;
-
-  InitWindow(width, height, "ngame");
-  SetWindowState(FLAG_WINDOW_RESIZABLE);
-  SetTargetFPS(60);
-
   ng_app_client_init(argc, argv);
 
 #if defined(PLATFORM_WEB)

@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-07-25 | binary wire codec | b5e73f
 // agent: composer-2.5 | 2026-07-25 | input on unreliable channel | f1418f
-#include "ng_proto.h"
+#include "core/ng_proto.h"
+#include "core/ng_action.h"
 #include <string.h>
 
 static bool ng_proto_write_u8(NgProtoBuf *b, uint8_t v) {
@@ -306,6 +307,137 @@ bool ng_proto_decode_cmd(NgProtoBuf *b, char *line, size_t line_cap) {
     line[i] = (char)c;
   }
   line[n] = '\0';
+  return true;
+}
+
+// agent: composer-2.5 | 2026-07-25 | snapshot payload sans header | a8b9c0
+static bool ng_proto_write_snapshot_payload(NgProtoBuf *b, const NgSnapshot *snap) {
+  if (!ng_proto_write_u8(b, 0)) {
+    return false;
+  }
+  const size_t scene_len = strnlen(snap->scene_id, 31);
+  if (!ng_proto_write_u8(b, (uint8_t)scene_len)) {
+    return false;
+  }
+  for (size_t i = 0; i < scene_len; i++) {
+    if (!ng_proto_write_u8(b, (uint8_t)snap->scene_id[i])) {
+      return false;
+    }
+  }
+  if (!ng_proto_write_u16(b, (uint16_t)snap->entity_count)) {
+    return false;
+  }
+  for (int i = 0; i < snap->entity_count; i++) {
+    const NgEntitySnap *e = &snap->entities[i];
+    if (!ng_proto_write_u32(b, e->id) || !ng_proto_write_u8(b, e->type) ||
+        !ng_proto_write_u32(b, e->comp_mask)) {
+      return false;
+    }
+    if (e->comp_mask & NG_COMP_POS) {
+      if (!ng_proto_write_f32(b, e->pos[0]) || !ng_proto_write_f32(b, e->pos[1]) ||
+          !ng_proto_write_f32(b, e->pos[2])) {
+        return false;
+      }
+    }
+    if (e->comp_mask & NG_COMP_ROT) {
+      if (!ng_proto_write_f32(b, e->rot_y)) {
+        return false;
+      }
+    }
+    if (e->comp_mask & NG_COMP_PHASE) {
+      if (!ng_proto_write_f32(b, e->phase)) {
+        return false;
+      }
+    }
+    if (e->comp_mask & NG_COMP_FLAGS) {
+      if (!ng_proto_write_u32(b, e->flags)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool ng_proto_read_snapshot_payload(NgProtoBuf *b, NgSnapshot *snap) {
+  bool delta = false;
+  return ng_proto_decode_snapshot(b, snap, &delta);
+}
+
+bool ng_proto_encode_action_result(NgProtoBuf *b, const NgActionResult *result) {
+  if (!b || !result) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_ACTION_RESULT,
+      .seq = result->action_seq,
+      .tick = result->server_tick,
+  };
+  const size_t reply_len = strnlen(result->reply, sizeof(result->reply) - 1);
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u32(b, result->state_hash) ||
+      !ng_proto_write_u8(b, (uint8_t)result->kind) ||
+      !ng_proto_write_u16(b, (uint16_t)reply_len)) {
+    return false;
+  }
+  for (size_t i = 0; i < reply_len; i++) {
+    if (!ng_proto_write_u8(b, (uint8_t)result->reply[i])) {
+      return false;
+    }
+  }
+  if (!ng_proto_write_u8(b, result->have_state ? 1 : 0)) {
+    return false;
+  }
+  if (result->have_state && !ng_proto_write_snapshot_payload(b, &result->state)) {
+    return false;
+  }
+  return true;
+}
+
+bool ng_proto_decode_action_result(NgProtoBuf *b, NgActionResult *result) {
+  if (!b || !result) {
+    return false;
+  }
+  NgProtoHeader h;
+  b->pos = 0;
+  if (!ng_proto_read_header(b, &h)) {
+    return false;
+  }
+  result->action_seq = h.seq;
+  result->server_tick = h.tick;
+  uint32_t hash = 0;
+  uint8_t kind = 0;
+  uint16_t reply_len = 0;
+  if (!ng_proto_read_u32(b, &hash) || !ng_proto_read_u8(b, &kind) ||
+      !ng_proto_read_u16(b, &reply_len)) {
+    return false;
+  }
+  result->state_hash = hash;
+  result->kind = (NgActionKind)kind;
+  if (reply_len >= sizeof(result->reply)) {
+    return false;
+  }
+  for (int i = 0; i < reply_len; i++) {
+    uint8_t c;
+    if (!ng_proto_read_u8(b, &c)) {
+      return false;
+    }
+    result->reply[i] = (char)c;
+  }
+  result->reply[reply_len] = '\0';
+  uint8_t have_state = 0;
+  if (!ng_proto_read_u8(b, &have_state)) {
+    return false;
+  }
+  result->have_state = (have_state != 0);
+  if (result->have_state) {
+    memset(&result->state, 0, sizeof(result->state));
+    if (!ng_proto_read_snapshot_payload(b, &result->state)) {
+      return false;
+    }
+  }
   return true;
 }
 
