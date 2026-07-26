@@ -64,17 +64,15 @@ echo "== enet scene cube (same server) =="
 ./ng_test_net 127.0.0.1 27015 | tee /tmp/ngame_net.out
 grep -q 'REPLY: scene loaded: cube' /tmp/ngame_net.out
 
-echo "== cmd latency loopback (local) =="
-LAT_OUT=$(./ng_cmd_loopback_latency)
+echo "== cmd latency enet (local path) =="
+LAT_OUT=$(./ng_cmd_latency 127.0.0.1 27015)
 echo "$LAT_OUT"
 echo "$LAT_OUT" | grep -q 'CMD_LATENCY_MS'
 MS=$(echo "$LAT_OUT" | awk '/CMD_LATENCY_MS/{print $2}')
 awk -v ms="$MS" 'BEGIN { exit !(ms+0 <= 100) }'
 
-echo "== cmd latency enet (smoke) =="
-ENET_LAT=$(./ng_cmd_latency 127.0.0.1 27015 || true)
-echo "$ENET_LAT"
-echo "$ENET_LAT" | grep -q 'CMD_LATENCY_MS'
+echo "== cmd latency loopback (tooling smoke) =="
+./ng_cmd_loopback_latency
 
 echo "== websocket scene cube (same server) =="
 python3 "$ROOT/tools/ws_smoke.py" 127.0.0.1 27016 | tee /tmp/ngame_ws.out

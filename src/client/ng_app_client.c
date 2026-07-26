@@ -9,8 +9,7 @@
 #include "mod/mod_input.h"
 #include "mod/mod_net.h"
 #include "mod/mod_render.h"
-#include "mod/mod_script.h"
-#include "mod/mod_sim.h"
+#include "net/ng_net.h"
 #include "ng_shader.h"
 #include "ng_viewport.h"
 #include <raylib.h>
@@ -24,21 +23,7 @@
 
 static bool g_ready = false;
 static bool g_embedded = false;
-static bool g_local_loopback = false;
 static NgLaunchConfig g_launch = {0};
-
-#define NG_LOCAL_SIM_HZ 60.0f
-#define NG_LOCAL_SIM_STEP (1.0f / NG_LOCAL_SIM_HZ)
-
-static void ng_app_client_sim_tick(float dt) {
-  NgMsg sim_tick = {
-      .kind = NG_MSG_TICK,
-      .from = NG_BUS_ANY,
-      .to = NG_BUS_SIM,
-      .dt = dt,
-  };
-  ng_bus_publish(&sim_tick);
-}
 
 static bool ng_app_client_bootstrap(void) {
   const double deadline = GetTime() + 5.0;
@@ -64,14 +49,11 @@ void ng_app_client_init(int argc, char **argv) {
     return;
   }
   g_embedded = g_launch.mode == NG_LAUNCH_EMBEDDED;
-  g_local_loopback = g_launch.mode == NG_LAUNCH_LOCAL;
 
   if (g_launch.mode == NG_LAUNCH_REMOTE) {
     mod_net_configure(g_launch.host, g_launch.port);
   } else if (g_launch.mode == NG_LAUNCH_LOCAL) {
-    // agent: composer-2.5 | 2026-07-26 | local in-process loopback | e8f9a0
-    mod_net_set_local_loopback(true);
-    mod_net_configure(g_launch.host, g_launch.port);
+    mod_net_configure(NG_NET_HOST, g_launch.port);
   }
 
   InitWindow(800, 450, "ngame");
@@ -97,10 +79,16 @@ void ng_app_client_init(int argc, char **argv) {
   ng_viewport_init(GetScreenWidth(), GetScreenHeight());
   ng_bus_init();
 
-  if (g_local_loopback) {
-    ng_mod_register(mod_sim_ops(), mod_sim_ctx());
-    ng_mod_register(mod_script_ops(), mod_script_ctx());
+  // agent: composer-2.5 | 2026-07-26 | restore local spawn UDP | 53fe75
+#if !defined(__EMSCRIPTEN__)
+  if (g_launch.mode == NG_LAUNCH_LOCAL) {
+    if (!ng_launch_spawn_server(g_launch.port)) {
+      NG_LOG_ERROR("failed to spawn ngame_server");
+      return;
+    }
   }
+#endif
+
   ng_mod_register(mod_console_ops(), mod_console_ctx());
   ng_mod_register(mod_net_ops(), mod_net_ctx());
   ng_mod_register(mod_render_ops(), mod_render_ctx());
@@ -141,9 +129,6 @@ void ng_app_client_frame(void) {
   ng_shader_poll();
   mod_input_begin_frame();
   ng_mod_publish_tick(GetFrameTime());
-  if (g_local_loopback) {
-    ng_app_client_sim_tick(NG_LOCAL_SIM_STEP);
-  }
   mod_net_poll_recv();
 
   BeginDrawing();
