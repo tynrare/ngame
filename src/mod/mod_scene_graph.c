@@ -222,15 +222,6 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
   return NULL;
 }
 
-float mod_scene_graph_primary_rot_y(void) {
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    if (g_graph.insts[i].alive) {
-      return g_graph.insts[i].rot[1];
-    }
-  }
-  return 0.0f;
-}
-
 bool mod_scene_graph_has_client_entities(void) {
   for (int i = 0; i < g_graph.inst_count; i++) {
     if (g_graph.insts[i].alive && ng_sync_runs_on_client(g_graph.insts[i].sync)) {

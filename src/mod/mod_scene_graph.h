@@ -51,7 +51,6 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out);
 void mod_scene_graph_apply_update(const NgStateUpdate *update);
 int mod_scene_graph_inst_count(void);
 const NgSceneInst *mod_scene_graph_inst_at(int index);
-float mod_scene_graph_primary_rot_y(void);
 bool mod_scene_graph_has_client_entities(void);
 
 #endif

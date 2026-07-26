@@ -421,8 +421,6 @@ bool mod_scene_can_author(NgSyncMode sync) {
   return false;
 }
 
-float mod_scene_get_rot_y(void) { return mod_scene_graph_primary_rot_y(); }
-
 void mod_scene_on_session(const NgSessionState *session) {
   ModSceneCtx *ctx = &g_scene_ctx;
   if (!session) {

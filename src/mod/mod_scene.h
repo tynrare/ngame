@@ -19,7 +19,6 @@ bool mod_scene_can_author(NgSyncMode sync);
 void mod_scene_on_session(const NgSessionState *session);
 void mod_scene_apply_remote(const NgStateUpdate *update);
 bool mod_scene_take_flush(NgStateUpdate *out);
-float mod_scene_get_rot_y(void);
 bool mod_scene_graph_active(void);
 
 #endif
