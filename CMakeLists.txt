@@ -127,6 +127,16 @@ if(NOT EMSCRIPTEN)
   target_compile_definitions(ng_cmd_latency PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_cmd_latency PRIVATE m)
 
+  add_executable(ng_scene_js_smoke tools/scene_js_smoke.c src/mod/mod_scene.c src/mod/mod_scene_graph.c
+                 src/core/ng_session.c src/core/ng_sync.c ${NG_VENDOR_SOURCES})
+  target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor)
+  target_compile_definitions(ng_scene_js_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
+  add_custom_command(TARGET ng_scene_js_smoke POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/res $<TARGET_FILE_DIR:ng_scene_js_smoke>/res
+    COMMENT "Copy res/ next to ng_scene_js_smoke binary")
+  target_link_libraries(ng_scene_js_smoke PRIVATE m)
+
   add_executable(ng_cmd_loopback_latency tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
                  src/core/ng_embed.c src/mod/mod_input.c src/mod/mod_net.c src/mod/mod_render.c
                  src/mod/mod_scene.c src/mod/mod_scene_graph.c src/ng_shader.c src/ng_viewport.c

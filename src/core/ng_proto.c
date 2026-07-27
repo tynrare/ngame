@@ -487,12 +487,36 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
       .tick = session->tick,
   };
   const size_t scene_len = strnlen(session->scene_id, sizeof(session->scene_id) - 1);
-  return ng_proto_write_header(b, &h) && ng_proto_write_u8(b, (uint8_t)scene_len) &&
-         (scene_len == 0 ||
-          memcpy(b->data + b->len, session->scene_id, scene_len), b->len += scene_len, true) &&
-         ng_proto_write_u8(b, session->controller_id) && ng_proto_write_u8(b, session->your_id) &&
-         ng_proto_write_u32(b, session->cube_entity_id) &&
-         ng_proto_write_u8(b, (uint8_t)session->scene_sync);
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u8(b, (uint8_t)scene_len)) {
+    return false;
+  }
+  if (scene_len > 0) {
+    memcpy(b->data + b->len, session->scene_id, scene_len);
+    b->len += scene_len;
+  }
+  if (!ng_proto_write_u8(b, session->controller_id) || !ng_proto_write_u8(b, session->your_id) ||
+      !ng_proto_write_u32(b, session->cube_entity_id) ||
+      !ng_proto_write_u8(b, (uint8_t)session->scene_sync) ||
+      !ng_proto_write_u8(b, (uint8_t)session->spawn_count) ||
+      session->spawn_count > NG_SESSION_SPAWN_MAX) {
+    return false;
+  }
+  for (int i = 0; i < session->spawn_count; i++) {
+    const NgSessionSpawn *sp = &session->spawns[i];
+    const size_t name_len = strnlen(sp->desc_name, sizeof(sp->desc_name) - 1);
+    if (!ng_proto_write_u32(b, sp->entity_id) || !ng_proto_write_u8(b, (uint8_t)name_len)) {
+      return false;
+    }
+    for (size_t j = 0; j < name_len; j++) {
+      if (!ng_proto_write_u8(b, (uint8_t)sp->desc_name[j])) {
+        return false;
+      }
+    }
+    if (!ng_proto_write_u8(b, (uint8_t)sp->sync)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
@@ -518,6 +542,35 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
     return false;
   }
   session->scene_sync = (NgSyncMode)sync;
+  if (b->pos >= b->len) {
+    return true;
+  }
+  uint8_t spawn_count = 0;
+  if (!ng_proto_read_u8(b, &spawn_count) || spawn_count > NG_SESSION_SPAWN_MAX) {
+    return false;
+  }
+  session->spawn_count = spawn_count;
+  for (int i = 0; i < spawn_count; i++) {
+    NgSessionSpawn *sp = &session->spawns[i];
+    uint8_t name_len = 0;
+    if (!ng_proto_read_u32(b, &sp->entity_id) || !ng_proto_read_u8(b, &name_len) ||
+        name_len >= sizeof(sp->desc_name)) {
+      return false;
+    }
+    for (int j = 0; j < name_len; j++) {
+      uint8_t c;
+      if (!ng_proto_read_u8(b, &c)) {
+        return false;
+      }
+      sp->desc_name[j] = (char)c;
+    }
+    sp->desc_name[name_len] = '\0';
+    uint8_t sp_sync = 0;
+    if (!ng_proto_read_u8(b, &sp_sync)) {
+      return false;
+    }
+    sp->sync = (NgSyncMode)sp_sync;
+  }
   return true;
 }
 
@@ -535,7 +588,14 @@ bool ng_proto_encode_state_update(NgProtoBuf *b, uint16_t seq, const NgStateUpda
       .tick = update->tick,
   };
   return ng_proto_write_header(b, &h) && ng_proto_write_u32(b, update->entity_id) &&
-         ng_proto_write_u8(b, update->comp_mask) && ng_proto_write_f32(b, update->rot_y);
+         ng_proto_write_u16(b, update->seq) && ng_proto_write_u8(b, update->comp_mask) &&
+         (!(update->comp_mask & NG_COMP_POS) ||
+          (ng_proto_write_f32(b, update->pos[0]) && ng_proto_write_f32(b, update->pos[1]) &&
+           ng_proto_write_f32(b, update->pos[2]))) &&
+         (!(update->comp_mask & NG_COMP_ROT) ||
+          (ng_proto_write_f32(b, update->rot[0]) && ng_proto_write_f32(b, update->rot[1]) &&
+           ng_proto_write_f32(b, update->rot[2]))) &&
+         (!(update->comp_mask & NG_COMP_SCALE) || ng_proto_write_f32(b, update->scale));
 }
 
 bool ng_proto_decode_state_update(NgProtoBuf *b, NgStateUpdate *update) {
@@ -543,6 +603,23 @@ bool ng_proto_decode_state_update(NgProtoBuf *b, NgStateUpdate *update) {
     return false;
   }
   uint8_t mask = 0;
-  return ng_proto_read_u32(b, &update->entity_id) && ng_proto_read_u8(b, &mask) &&
-         ng_proto_read_f32(b, &update->rot_y) && (update->comp_mask = mask, true);
+  if (!ng_proto_read_u32(b, &update->entity_id) || !ng_proto_read_u16(b, &update->seq) ||
+      !ng_proto_read_u8(b, &mask)) {
+    return false;
+  }
+  update->comp_mask = mask;
+  if ((mask & NG_COMP_POS) &&
+      (!ng_proto_read_f32(b, &update->pos[0]) || !ng_proto_read_f32(b, &update->pos[1]) ||
+       !ng_proto_read_f32(b, &update->pos[2]))) {
+    return false;
+  }
+  if ((mask & NG_COMP_ROT) &&
+      (!ng_proto_read_f32(b, &update->rot[0]) || !ng_proto_read_f32(b, &update->rot[1]) ||
+       !ng_proto_read_f32(b, &update->rot[2]))) {
+    return false;
+  }
+  if ((mask & NG_COMP_SCALE) && !ng_proto_read_f32(b, &update->scale)) {
+    return false;
+  }
+  return true;
 }

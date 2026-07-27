@@ -104,6 +104,7 @@ static void mod_net_rx_load(ModNetCtx *ctx, const uint8_t *data, size_t len) {
 
 // agent: composer-2.5 | 2026-07-25 | defer bus from net poll | c210df
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+// agent: composer-2.5 | 2026-07-26 | session spawns bootstrap | 065d45
 static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_t your_id) {
   NgWorld *w = mod_sim_world();
   memset(session, 0, sizeof(*session));
@@ -114,6 +115,20 @@ static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_
   session->scene_sync = ng_scene_sync_mode(w->scene_id);
   if (ng_scene_has_js_host(w->scene_id)) {
     session->cube_entity_id = sim_cube_entity_id();
+    session->spawn_count = 1;
+    session->spawns[0].entity_id = session->cube_entity_id;
+    strncpy(session->spawns[0].desc_name, "cube_a_e", sizeof(session->spawns[0].desc_name) - 1);
+    session->spawns[0].sync = NG_SYNC_SHARED;
+  }
+}
+
+static void mod_net_apply_state_update(NgWorld *w, const NgStateUpdate *update) {
+  const int idx = ng_world_find_index(w, update->entity_id);
+  if (idx < 0) {
+    return;
+  }
+  if (update->comp_mask & NG_COMP_ROT) {
+    w->rot_y[idx] = update->rot[1];
   }
 }
 
@@ -137,13 +152,6 @@ static void mod_net_broadcast_session(ModNetCtx *ctx, NgNet *net) {
   }
   ng_net_foreach_peer(net, mod_net_send_session_peer, ctx);
   ng_net_flush(net);
-}
-
-static void mod_net_apply_state_update(NgWorld *w, const NgStateUpdate *update) {
-  const int idx = ng_world_find_index(w, update->entity_id);
-  if (idx >= 0) {
-    w->rot_y[idx] = update->rot_y;
-  }
 }
 
 static void mod_net_relay_state_update(NgNet *net, NgNetPeer *peer, void *vctx) {
@@ -336,6 +344,27 @@ static void mod_net_client_apply_action(ModNetCtx *ctx, const NgActionResult *re
   }
   mod_render_apply_action(result);
   if (result->reply[0] != '\0') {
+    if (strncmp(result->reply, "scene loaded: ", 14) == 0) {
+      NgSessionState session = {0};
+      strncpy(session.scene_id, result->reply + 14, sizeof(session.scene_id) - 1);
+      char *nl = strchr(session.scene_id, '\n');
+      if (nl) {
+        *nl = '\0';
+      }
+      nl = strchr(session.scene_id, '\r');
+      if (nl) {
+        *nl = '\0';
+      }
+      session.scene_sync = ng_scene_sync_mode(session.scene_id);
+      if (ng_scene_has_js_host(session.scene_id)) {
+        session.cube_entity_id = 1;
+        session.spawn_count = 1;
+        session.spawns[0].entity_id = 1;
+        strncpy(session.spawns[0].desc_name, "cube_a_e", sizeof(session.spawns[0].desc_name) - 1);
+        session.spawns[0].sync = NG_SYNC_SHARED;
+      }
+      mod_scene_on_session(&session);
+    }
     NgMsg reply = {
         .kind = NG_MSG_REPLY,
         .from = NG_BUS_NET,

@@ -9,7 +9,7 @@
 struct NgActionResult;
 
 #define NG_PROTO_MAGIC   0x4E474D45u /* NGME */
-#define NG_PROTO_VERSION 2
+#define NG_PROTO_VERSION 3
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1

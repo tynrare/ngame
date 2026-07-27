@@ -28,7 +28,8 @@ typedef enum NgCompMask {
   NG_COMP_ROT   = 1u << 2,
   NG_COMP_PHASE = 1u << 3,
   NG_COMP_FLAGS = 1u << 4,
-  NG_COMP_ALL   = 0x1fu,
+  NG_COMP_SCALE = 1u << 5,
+  NG_COMP_ALL   = 0x3fu,
 } NgCompMask;
 
 typedef struct NgEntitySnap {

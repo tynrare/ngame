@@ -9,7 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static bool g_got_reply = false;
+static bool g_got_cmd_reply = false;
+static bool g_got_cube_session = false;
 static bool g_got_snapshot = false;
 
 static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, size_t len,
@@ -44,23 +45,25 @@ static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, si
       }
       if (result.reply[0] != '\0') {
         printf("REPLY: %s\n", result.reply);
-        g_got_reply = true;
+        g_got_cmd_reply = true;
       }
     }
   } else if (h.type == NG_PKT_SESSION) {
     NgSessionState session = {.tick = h.tick};
     if (ng_proto_decode_session(&buf, &session)) {
       session.tick = h.tick;
-      printf("SESSION scene=%s controller=%u you=%u cube=%u sync=%s\n", session.scene_id,
-             session.controller_id, session.your_id, session.cube_entity_id,
-             ng_sync_mode_name(session.scene_sync));
-      g_got_reply = true;
+      printf("SESSION scene=%s controller=%u you=%u cube=%u sync=%s spawns=%d\n",
+             session.scene_id, session.controller_id, session.your_id, session.cube_entity_id,
+             ng_sync_mode_name(session.scene_sync), session.spawn_count);
+      if (strcmp(session.scene_id, "cube") == 0) {
+        g_got_cube_session = true;
+      }
     }
   } else if (h.type == NG_PKT_CMD_REPLY) {
     char text[1024];
     if (ng_proto_decode_text(&buf, text, sizeof(text))) {
       printf("REPLY: %s\n", text);
-      g_got_reply = true;
+      g_got_cmd_reply = true;
     }
   }
 }
@@ -107,11 +110,21 @@ int main(int argc, char **argv) {
     ng_net_flush(net);
   }
 
-  for (int i = 0; i < 500 && !g_got_reply; i++) {
+  for (int i = 0; i < 500 && !g_got_cmd_reply; i++) {
     ng_net_poll_wait(net, smoke_on_packet, NULL, 10);
   }
-  if (!g_got_reply) {
+  if (!g_got_cmd_reply) {
     fprintf(stderr, "timeout waiting for cmd reply\n");
+    ng_net_destroy(net);
+    ng_net_shutdown();
+    return 1;
+  }
+
+  for (int i = 0; i < 500 && !g_got_cube_session; i++) {
+    ng_net_poll_wait(net, smoke_on_packet, NULL, 10);
+  }
+  if (!g_got_cube_session) {
+    fprintf(stderr, "timeout waiting for cube SESSION\n");
     ng_net_destroy(net);
     ng_net_shutdown();
     return 1;

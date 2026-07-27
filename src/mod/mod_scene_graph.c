@@ -9,6 +9,7 @@ typedef struct ModSceneGraphCtx {
   NgSceneInst insts[NG_SCENE_INST_MAX];
   int inst_count;
   uint32_t next_local_id;
+  uint16_t next_seq;
 } ModSceneGraphCtx;
 
 static ModSceneGraphCtx g_graph;
@@ -158,6 +159,7 @@ void mod_scene_graph_mark_dirty(NgSceneInst *inst, uint32_t comp) {
   }
 }
 
+// agent: composer-2.5 | 2026-07-26 | graph full state delta | 02bd0f
 bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
   if (!out) {
     return false;
@@ -171,15 +173,29 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
       inst->comp_dirty = 0;
       continue;
     }
-    if (!(inst->comp_dirty & NG_COMP_ROT)) {
+    const uint32_t wire_mask = inst->comp_dirty & (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE);
+    if (wire_mask == 0) {
       inst->comp_dirty = 0;
       continue;
     }
     out->entity_id = inst->id;
-    out->comp_mask = NG_COMP_ROT;
-    out->rot_y = inst->rot[1];
+    out->seq = ++g_graph.next_seq;
+    out->comp_mask = (uint8_t)wire_mask;
     out->tick = 0;
-    inst->comp_dirty &= ~NG_COMP_ROT;
+    if (wire_mask & NG_COMP_POS) {
+      out->pos[0] = inst->pos[0];
+      out->pos[1] = inst->pos[1];
+      out->pos[2] = inst->pos[2];
+    }
+    if (wire_mask & NG_COMP_ROT) {
+      out->rot[0] = inst->rot[0];
+      out->rot[1] = inst->rot[1];
+      out->rot[2] = inst->rot[2];
+    }
+    if (wire_mask & NG_COMP_SCALE) {
+      out->scale = inst->scale;
+    }
+    inst->comp_dirty &= ~wire_mask;
     return true;
   }
   return false;
@@ -193,8 +209,18 @@ void mod_scene_graph_apply_update(const NgStateUpdate *update) {
   if (!inst) {
     return;
   }
+  if (update->comp_mask & NG_COMP_POS) {
+    inst->pos[0] = update->pos[0];
+    inst->pos[1] = update->pos[1];
+    inst->pos[2] = update->pos[2];
+  }
   if (update->comp_mask & NG_COMP_ROT) {
-    inst->rot[1] = update->rot_y;
+    inst->rot[0] = update->rot[0];
+    inst->rot[1] = update->rot[1];
+    inst->rot[2] = update->rot[2];
+  }
+  if (update->comp_mask & NG_COMP_SCALE) {
+    inst->scale = update->scale;
   }
 }
 

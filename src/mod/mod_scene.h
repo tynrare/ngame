@@ -20,5 +20,6 @@ void mod_scene_on_session(const NgSessionState *session);
 void mod_scene_apply_remote(const NgStateUpdate *update);
 bool mod_scene_take_flush(NgStateUpdate *out);
 bool mod_scene_graph_active(void);
+bool mod_scene_smoke_test(void);
 
 #endif

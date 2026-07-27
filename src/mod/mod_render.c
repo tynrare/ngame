@@ -113,7 +113,7 @@ static void mod_render_update_camera(ModRenderCtx *ctx, const char *scene) {
 }
 
 static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type, float x, float y,
-                                        float z, float rot_y) {
+                                        float z, float rot_y, float scale) {
   if (!a->ready || a->shader.handle.id == 0) {
     return;
   }
@@ -126,9 +126,10 @@ static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type,
   }
 
   const Vector3 pos = {x, y, z};
+  const float s = scale > 0.0f ? scale : 1.0f;
   if (type == NG_ENTITY_CUBE) {
     DrawModelEx(a->model, pos, (Vector3){0.0f, 1.0f, 0.0f}, rot_y * 57.2958f,
-                (Vector3){1.0f, 1.0f, 1.0f}, WHITE);
+                (Vector3){s, s, s}, WHITE);
   } else {
     DrawModel(a->model, pos, 1.0f, WHITE);
   }
@@ -160,9 +161,11 @@ static void mod_render_draw_embedded(ModRenderCtx *ctx) {
     const NgEntityType type = (NgEntityType)w->type[i];
     const float rot_y = w->rot_y[i];
     if (type == NG_ENTITY_SPHERE) {
-      mod_render_draw_entity_live(&ctx->sphere, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y);
+      mod_render_draw_entity_live(&ctx->sphere, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y,
+                                  1.0f);
     } else if (type == NG_ENTITY_CUBE) {
-      mod_render_draw_entity_live(&ctx->cube, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y);
+      mod_render_draw_entity_live(&ctx->cube, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y,
+                                  1.0f);
     }
   }
   EndMode3D();
@@ -197,13 +200,14 @@ static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
   }
 }
 
+// agent: composer-2.5 | 2026-07-26 | graph render gate scale | 4652d0
 static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *inst) {
   const RenderAsset *a = &ctx->cube;
   if (strstr(inst->model, "sphere") != NULL) {
     a = &ctx->sphere;
   }
   mod_render_draw_entity_live(a, NG_ENTITY_CUBE, inst->pos[0], inst->pos[1], inst->pos[2],
-                              inst->rot[1]);
+                              inst->rot[1], inst->scale);
 }
 
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
@@ -228,7 +232,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   ClearBackground(bg);
   mod_render_update_camera(ctx, ctx->scene_label);
 
-  if (mod_scene_client_fields_active()) {
+  if (mod_scene_graph_active() || (ng_scene_has_js_host(ctx->scene_label) && mod_scene_client_fields_active())) {
     mod_render_draw_scene_graph(ctx);
   } else {
     BeginMode3D(ctx->camera);

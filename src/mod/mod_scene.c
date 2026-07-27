@@ -99,9 +99,37 @@ static duk_ret_t bind_describe(duk_context *ctx) {
   return 1;
 }
 
+static bool mod_scene_call_entity_method(ModSceneCtx *ctx, NgSceneInst *inst, const char *method) {
+  if (!ctx->ctx || !inst) {
+    return false;
+  }
+  char key[48];
+  snprintf(key, sizeof(key), "inst_%d", inst->handle);
+  duk_push_global_stash(ctx->ctx);
+  duk_get_prop_string(ctx->ctx, -1, key);
+  if (!duk_is_object(ctx->ctx, -1)) {
+    duk_pop_n(ctx->ctx, 2);
+    return false;
+  }
+  duk_get_prop_string(ctx->ctx, -1, method);
+  if (!duk_is_function(ctx->ctx, -1)) {
+    duk_pop_n(ctx->ctx, 3);
+    return false;
+  }
+  duk_insert(ctx->ctx, -2);
+  if (duk_pcall_method(ctx->ctx, 0) != DUK_EXEC_SUCCESS) {
+    NG_LOG_ERROR("entity.%s: %s", method, duk_safe_to_string(ctx->ctx, -1));
+    duk_pop(ctx->ctx);
+    return false;
+  }
+  duk_pop(ctx->ctx);
+  return true;
+}
+
 static duk_ret_t bind_spawn(duk_context *ctx) {
+  ModSceneCtx *scene = mod_scene_from_ctx(ctx);
   const char *name = duk_require_string(ctx, 0);
-  uint32_t entity_id = g_scene_ctx.bootstrap_entity_id;
+  uint32_t entity_id = scene->bootstrap_entity_id;
   const int func_idx = mod_scene_stash_func(ctx, name);
 
   if (duk_is_object(ctx, 1)) {
@@ -112,13 +140,32 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     duk_pop(ctx);
   }
 
+  if (entity_id) {
+    NgSceneInst *existing = mod_scene_graph_inst_by_id(entity_id);
+    if (existing) {
+      duk_push_int(ctx, existing->handle);
+      return 1;
+    }
+  }
+
   const int handle = mod_scene_graph_spawn(name, entity_id, ctx, func_idx);
+  NgSceneInst *inst = mod_scene_inst_from_handle(handle);
+  if (inst) {
+    mod_scene_call_entity_method(scene, inst, "init");
+    mod_scene_call_entity_method(scene, inst, "start");
+  }
   duk_push_int(ctx, handle);
   return 1;
 }
 
 static duk_ret_t bind_despawn(duk_context *ctx) {
+  ModSceneCtx *scene = mod_scene_from_ctx(ctx);
   const int handle = duk_require_int(ctx, 0);
+  NgSceneInst *inst = mod_scene_inst_from_handle(handle);
+  if (inst) {
+    mod_scene_call_entity_method(scene, inst, "stop");
+    mod_scene_call_entity_method(scene, inst, "dispose");
+  }
   mod_scene_graph_despawn(handle);
   return 0;
 }
@@ -158,6 +205,9 @@ static duk_ret_t bind_set_position(duk_context *ctx) {
     duk_get_prop_string(ctx, 1, "z");
     inst->pos[2] = (float)duk_get_number(ctx, -1);
     duk_pop(ctx);
+  }
+  if (ng_sync_posts_wire(inst->sync)) {
+    mod_scene_graph_mark_dirty(inst, NG_COMP_POS);
   }
   return 0;
 }
@@ -221,12 +271,35 @@ static duk_ret_t bind_get_rotation(duk_context *ctx) {
   return 1;
 }
 
+static duk_ret_t bind_set_rotation_x(duk_context *ctx) {
+  NgSceneInst *inst = mod_scene_inst_from_handle(duk_require_int(ctx, 0));
+  if (!inst) {
+    return 0;
+  }
+  inst->rot[0] = (float)duk_get_number(ctx, 1);
+  mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
+  return 0;
+}
+
+static duk_ret_t bind_get_rotation_x(duk_context *ctx) {
+  NgSceneInst *inst = mod_scene_inst_from_handle(duk_require_int(ctx, 0));
+  if (!inst) {
+    duk_push_number(ctx, 0);
+    return 1;
+  }
+  duk_push_number(ctx, inst->rot[0]);
+  return 1;
+}
+
 static duk_ret_t bind_set_scale(duk_context *ctx) {
   NgSceneInst *inst = mod_scene_inst_from_handle(duk_require_int(ctx, 0));
   if (!inst) {
     return 0;
   }
   inst->scale = (float)duk_get_number(ctx, 1);
+  if (ng_sync_posts_wire(inst->sync)) {
+    mod_scene_graph_mark_dirty(inst, NG_COMP_SCALE);
+  }
   return 0;
 }
 
@@ -245,7 +318,9 @@ static void mod_scene_bind_global(duk_context *ctx) {
   BIND("set_position", bind_set_position, 2);
   BIND("set_rotation", bind_set_rotation, DUK_VARARGS);
   BIND("set_rotation_y", bind_set_rotation_y, 2);
+  BIND("set_rotation_x", bind_set_rotation_x, 2);
   BIND("get_rotation_y", bind_get_rotation_y, 1);
+  BIND("get_rotation_x", bind_get_rotation_x, 1);
   BIND("get_rotation", bind_get_rotation, 1);
   BIND("set_scale", bind_set_scale, 2);
 
@@ -313,14 +388,23 @@ static bool mod_scene_call_method(ModSceneCtx *ctx, const char *method, int narg
   }
   duk_push_global_stash(ctx->ctx);
   duk_get_prop_string(ctx->ctx, -1, NG_SCENE_STASH_KEY);
-  duk_insert(ctx->ctx, -(nargs + 1));
-  duk_get_prop_string(ctx->ctx, -(nargs + 2), method);
-  if (!duk_is_function(ctx->ctx, -1)) {
-    duk_pop_n(ctx->ctx, nargs + 3);
+  duk_remove(ctx->ctx, -2);
+  if (!duk_is_object(ctx->ctx, -1)) {
+    duk_pop(ctx->ctx);
     return false;
   }
-  duk_insert(ctx->ctx, -(nargs + 2));
-  if (duk_pcall(ctx->ctx, nargs) != DUK_EXEC_SUCCESS) {
+  duk_get_prop_string(ctx->ctx, -1, method);
+  if (!duk_is_function(ctx->ctx, -1)) {
+    duk_pop_n(ctx->ctx, 2);
+    return false;
+  }
+  if (nargs > 0) {
+    duk_insert(ctx->ctx, -(nargs + 2));
+    duk_insert(ctx->ctx, -(nargs + 1));
+  } else {
+    duk_insert(ctx->ctx, -2);
+  }
+  if (duk_pcall_method(ctx->ctx, nargs) != DUK_EXEC_SUCCESS) {
     NG_LOG_ERROR("scene.%s: %s", method, duk_safe_to_string(ctx->ctx, -1));
     duk_pop(ctx->ctx);
     return false;
@@ -459,6 +543,22 @@ void mod_scene_on_session(const NgSessionState *session) {
     mod_scene_call_lifecycle(ctx, "init");
     ctx->inited = true;
   }
+
+  for (int i = 0; i < session->spawn_count; i++) {
+    const NgSessionSpawn *sp = &session->spawns[i];
+    if (mod_scene_graph_inst_by_id(sp->entity_id)) {
+      continue;
+    }
+    const int func_idx = mod_scene_stash_func(ctx->ctx, sp->desc_name);
+    const int handle = mod_scene_graph_spawn(sp->desc_name, sp->entity_id, ctx->ctx, func_idx);
+    NgSceneInst *inst = mod_scene_inst_from_handle(handle);
+    if (inst) {
+      inst->sync = sp->sync;
+      mod_scene_call_entity_method(ctx, inst, "init");
+      mod_scene_call_entity_method(ctx, inst, "start");
+    }
+  }
+
   if (!ctx->started) {
     mod_scene_push_session_obj(ctx, session);
     mod_scene_call_method(ctx, "start", 1);
@@ -476,7 +576,7 @@ void mod_scene_apply_remote(const NgStateUpdate *update) {
   // agent: composer-2.5 | 2026-07-26 | ignore stale shared rot snap | bc2454
   NgSceneInst *inst = mod_scene_graph_inst_by_id(update->entity_id);
   if (inst && inst->sync == NG_SYNC_SHARED && (update->comp_mask & NG_COMP_ROT) &&
-      fabsf(inst->rot[1]) > 0.05f && fabsf(update->rot_y) < 0.05f) {
+      fabsf(inst->rot[1]) > 0.05f && fabsf(update->rot[1]) < 0.05f) {
     return;
   }
   mod_scene_graph_apply_update(update);
@@ -548,3 +648,36 @@ const NgModOps *mod_scene_ops(void) { return &g_scene_ops; }
 void *mod_scene_ctx(void) { return &g_scene_ctx; }
 
 bool mod_scene_graph_active(void) { return mod_scene_graph_inst_count() > 0; }
+
+// agent: composer-2.5 | 2026-07-26 | entity lifecycle bindings | 0e7a27
+bool mod_scene_smoke_test(void) {
+  mod_scene_unload(&g_scene_ctx);
+  ModSceneCtx *ctx = &g_scene_ctx;
+  ctx->ctx = duk_create_heap_default();
+  if (!ctx->ctx) {
+    return false;
+  }
+  strncpy(ctx->scene_id, "cube", sizeof(ctx->scene_id) - 1);
+  mod_scene_graph_reset();
+  if (!mod_scene_load_js(ctx, "cube")) {
+    mod_scene_unload(ctx);
+    return false;
+  }
+  ctx->loaded = true;
+  ctx->scene_sync = NG_SYNC_SHARED;
+  ctx->bootstrap_entity_id = 1;
+  mod_scene_call_lifecycle(ctx, "init");
+  NgSessionState session = {0};
+  strncpy(session.scene_id, "cube", sizeof(session.scene_id) - 1);
+  session.cube_entity_id = 1;
+  session.scene_sync = NG_SYNC_SHARED;
+  mod_scene_push_session_obj(ctx, &session);
+  if (!mod_scene_call_method(ctx, "start", 1)) {
+    mod_scene_unload(ctx);
+    return false;
+  }
+  ctx->started = true;
+  const bool ok = mod_scene_graph_inst_count() >= 1;
+  mod_scene_unload(ctx);
+  return ok;
+}

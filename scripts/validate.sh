@@ -13,7 +13,7 @@ done
 sleep 0.3
 
 cd "$BUILD"
-cmake --build . --target ngame_server ng_test_net ng_cmd_latency ng_cmd_loopback_latency ng_embed_smoke 2>&1 | tail -3
+cmake --build . --target ngame_server ng_test_net ng_cmd_latency ng_cmd_loopback_latency ng_embed_smoke ng_scene_js_smoke 2>&1 | tail -3
 
 start_server() {
   ./ngame_server > /tmp/ngame_validate.log 2>&1 &
@@ -63,6 +63,10 @@ echo "$MCP_OUT" | grep -q "scene="
 echo "== enet scene cube (same server) =="
 ./ng_test_net 127.0.0.1 27015 | tee /tmp/ngame_net.out
 grep -q 'REPLY: scene loaded: cube' /tmp/ngame_net.out
+grep -q 'SESSION scene=cube' /tmp/ngame_net.out
+
+echo "== scene js smoke =="
+./ng_scene_js_smoke
 
 echo "== cmd latency enet (local path) =="
 LAT_OUT=$(./ng_cmd_latency 127.0.0.1 27015)
