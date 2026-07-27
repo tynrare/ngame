@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-07-26 | scene lifecycle and global API | e1f2a3
+// agent: composer-2.5 | 2026-07-27 | js scene lifecycle host | f3a4b5
 #ifndef MOD_SCENE_H
 #define MOD_SCENE_H
 
@@ -13,7 +13,11 @@
 const NgModOps *mod_scene_ops(void);
 void *mod_scene_ctx(void);
 
-bool mod_scene_client_fields_active(void);
+bool mod_scene_load(const char *scene_id);
+bool mod_scene_is_loaded(void);
+const char *mod_scene_current_id(void);
+int mod_scene_entity_count(void);
+void mod_scene_fill_session(NgSessionState *session);
 bool mod_scene_is_controller(void);
 bool mod_scene_can_author(NgSyncMode sync);
 void mod_scene_on_session(const NgSessionState *session);

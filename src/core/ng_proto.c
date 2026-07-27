@@ -495,7 +495,6 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
     b->len += scene_len;
   }
   if (!ng_proto_write_u8(b, session->controller_id) || !ng_proto_write_u8(b, session->your_id) ||
-      !ng_proto_write_u32(b, session->cube_entity_id) ||
       !ng_proto_write_u8(b, (uint8_t)session->scene_sync) ||
       !ng_proto_write_u8(b, (uint8_t)session->spawn_count) ||
       session->spawn_count > NG_SESSION_SPAWN_MAX) {
@@ -538,7 +537,7 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
   session->scene_id[scene_len] = '\0';
   uint8_t sync = 0;
   if (!ng_proto_read_u8(b, &session->controller_id) || !ng_proto_read_u8(b, &session->your_id) ||
-      !ng_proto_read_u32(b, &session->cube_entity_id) || !ng_proto_read_u8(b, &sync)) {
+      !ng_proto_read_u8(b, &sync)) {
     return false;
   }
   session->scene_sync = (NgSyncMode)sync;

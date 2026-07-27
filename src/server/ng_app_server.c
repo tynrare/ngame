@@ -5,6 +5,7 @@
 #include "core/ng_mod.h"
 #include "mod/mod_agent.h"
 #include "mod/mod_net.h"
+#include "mod/mod_scene.h"
 #include "mod/mod_script.h"
 #include "mod/mod_sim.h"
 #include "net/ng_net.h"
@@ -50,6 +51,7 @@ void ng_app_server_init(int argc, char **argv) {
 
   ng_mod_register(mod_net_ops(), mod_net_ctx());
   ng_mod_register(mod_script_ops(), mod_script_ctx());
+  ng_mod_register(mod_scene_ops(), mod_scene_ctx());
   ng_mod_register(mod_sim_ops(), mod_sim_ctx());
   ng_mod_register(mod_agent_ops(), mod_agent_ctx());
 

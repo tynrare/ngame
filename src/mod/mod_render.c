@@ -1,11 +1,10 @@
 // agent: composer-2.5 | 2026-07-25 | client render module | g0j28e
 #include "mod_render.h"
+#include "core/ng_action.h"
 #include "core/ng_bus.h"
 #if defined(NG_HAS_EMBEDDED)
 #include "core/ng_embed.h"
 #endif
-#include "core/ng_action.h"
-#include "core/ng_session.h"
 #include "mod/mod_input.h"
 #include "mod/mod_net.h"
 #include "mod/mod_scene.h"
@@ -135,42 +134,44 @@ static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type,
   }
 }
 
-// agent: composer-2.5 | 2026-07-25 | embedded shared world draw | a9f1c4
-static void mod_render_draw_embedded(ModRenderCtx *ctx) {
-  const NgWorld *w = ng_embed_world();
-  if (!w || w->live_count <= 0) {
-    ClearBackground(BLACK);
-    DrawText("embedded: waiting for world...", 20, 20, 18, GRAY);
-    return;
+static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *inst) {
+  const RenderAsset *a = &ctx->cube;
+  if (strstr(inst->model, "sphere") != NULL) {
+    a = &ctx->sphere;
   }
+  mod_render_draw_entity_live(a, NG_ENTITY_CUBE, inst->pos[0], inst->pos[1], inst->pos[2],
+                              inst->rot[1], inst->scale);
+}
 
-  Color bg = (Color){0, 0, 0, 255};
-  if (strcmp(w->scene_id, "sphere") == 0) {
-    bg = ctx->sphere.bg;
-  } else if (strcmp(w->scene_id, "cube") == 0) {
-    bg = ctx->cube.bg;
-  }
-  ClearBackground(bg);
-  mod_render_update_camera(ctx, w->scene_id);
-
+static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
+  const int n = mod_scene_graph_inst_count();
   BeginMode3D(ctx->camera);
-  for (int i = 0; i < NG_WORLD_ENTITY_MAX; i++) {
-    if (!w->alive[i]) {
-      continue;
-    }
-    const NgEntityType type = (NgEntityType)w->type[i];
-    const float rot_y = w->rot_y[i];
-    if (type == NG_ENTITY_SPHERE) {
-      mod_render_draw_entity_live(&ctx->sphere, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y,
-                                  1.0f);
-    } else if (type == NG_ENTITY_CUBE) {
-      mod_render_draw_entity_live(&ctx->cube, type, w->pos_x[i], w->pos_y[i], w->pos_z[i], rot_y,
-                                  1.0f);
+  for (int i = 0; i < n; i++) {
+    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+    if (inst) {
+      mod_render_draw_graph_inst(ctx, inst);
     }
   }
   EndMode3D();
+}
 
-  DrawText(TextFormat("scene: %s (embed)", w->scene_id), 10, 10, 20, RAYWHITE);
+static void mod_render_draw_embedded(ModRenderCtx *ctx) {
+  if (mod_scene_is_loaded()) {
+    Color bg = (Color){0, 0, 0, 255};
+    const char *scene = mod_scene_current_id();
+    if (scene && strcmp(scene, "sphere") == 0) {
+      bg = ctx->sphere.bg;
+    } else if (scene && strcmp(scene, "cube") == 0) {
+      bg = ctx->cube.bg;
+    }
+    ClearBackground(bg);
+    mod_render_update_camera(ctx, scene ? scene : "sphere");
+    mod_render_draw_scene_graph(ctx);
+    DrawText(TextFormat("scene: %s (embed)", scene ? scene : "?"), 10, 10, 20, RAYWHITE);
+    return;
+  }
+  ClearBackground(BLACK);
+  DrawText("embedded: waiting for scene...", 20, 20, 18, GRAY);
 }
 
 static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
@@ -200,28 +201,6 @@ static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
   }
 }
 
-// agent: composer-2.5 | 2026-07-26 | graph render gate scale | 4652d0
-static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *inst) {
-  const RenderAsset *a = &ctx->cube;
-  if (strstr(inst->model, "sphere") != NULL) {
-    a = &ctx->sphere;
-  }
-  mod_render_draw_entity_live(a, NG_ENTITY_CUBE, inst->pos[0], inst->pos[1], inst->pos[2],
-                              inst->rot[1], inst->scale);
-}
-
-static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
-  const int n = mod_scene_graph_inst_count();
-  BeginMode3D(ctx->camera);
-  for (int i = 0; i < n; i++) {
-    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (inst) {
-      mod_render_draw_graph_inst(ctx, inst);
-    }
-  }
-  EndMode3D();
-}
-
 static void mod_render_draw_scene(ModRenderCtx *ctx) {
   Color bg = (Color){0, 0, 0, 255};
   if (strcmp(ctx->scene_label, "sphere") == 0) {
@@ -232,9 +211,9 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   ClearBackground(bg);
   mod_render_update_camera(ctx, ctx->scene_label);
 
-  if (mod_scene_graph_active() || (ng_scene_has_js_host(ctx->scene_label) && mod_scene_client_fields_active())) {
+  if (mod_scene_graph_active() || mod_scene_is_loaded()) {
     mod_render_draw_scene_graph(ctx);
-  } else {
+  } else if (ctx->have_curr) {
     BeginMode3D(ctx->camera);
     for (int i = 0; i < ctx->curr.entity_count; i++) {
       const NgEntitySnap *e = &ctx->curr.entities[i];
@@ -249,7 +228,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       }
       if (e->type == NG_ENTITY_SPHERE) {
         mod_render_draw_entity(&ctx->sphere, e, p, ctx->alpha);
-      } else if (e->type == NG_ENTITY_CUBE && !ng_scene_has_js_host(ctx->scene_label)) {
+      } else if (e->type == NG_ENTITY_CUBE) {
         mod_render_draw_entity(&ctx->cube, e, p, ctx->alpha);
       }
     }
@@ -258,8 +237,6 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
 
   DrawText(TextFormat("scene: %s (net)", ctx->scene_label), 10, 10, 20, RAYWHITE);
 }
-
-// agent: composer-2.5 | 2026-07-25 | apply action bounce state | b5c6d7
 // agent: composer-2.5 | 2026-07-26 | session bootstrap render state | d8e9f0
 void mod_render_apply_session(const NgSessionState *session) {
   ModRenderCtx *ctx = &g_render_ctx;

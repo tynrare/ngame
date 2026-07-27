@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-07-26 | session spawn table v3 | d3e4f5
+// agent: composer-2.5 | 2026-07-27 | session spawn table only | a8b9c0
 #ifndef NG_SESSION_H
 #define NG_SESSION_H
 
@@ -19,7 +19,6 @@ typedef struct NgSessionState {
   uint32_t tick;
   uint8_t controller_id;
   uint8_t your_id;
-  uint32_t cube_entity_id;
   NgSyncMode scene_sync;
   int spawn_count;
   NgSessionSpawn spawns[NG_SESSION_SPAWN_MAX];
@@ -34,8 +33,5 @@ typedef struct NgStateUpdate {
   float rot[3];
   float scale;
 } NgStateUpdate;
-
-NgSyncMode ng_scene_sync_mode(const char *scene_id);
-bool ng_scene_has_js_host(const char *scene_id);
 
 #endif

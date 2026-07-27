@@ -30,8 +30,6 @@ set(NG_CORE_SOURCES
 )
 
 set(NG_SIM_SOURCES
-  src/sim/sim_sphere.c
-  src/sim/sim_cube.c
   src/mod/mod_sim.c
 )
 
@@ -67,6 +65,9 @@ set(NG_SERVER_SOURCES
   src/mod/mod_script.c
   src/mod/mod_net.c
   src/mod/mod_agent.c
+  src/mod/mod_scene.c
+  src/mod/mod_scene_graph.c
+  src/mod/mod_input.c
   src/net/ng_ws_server.c
   ${NG_SIM_SOURCES}
   ${NG_VENDOR_SOURCES}
@@ -128,7 +129,7 @@ if(NOT EMSCRIPTEN)
   target_link_libraries(ng_cmd_latency PRIVATE m)
 
   add_executable(ng_scene_js_smoke tools/scene_js_smoke.c src/mod/mod_scene.c src/mod/mod_scene_graph.c
-                 src/core/ng_session.c src/core/ng_sync.c ${NG_VENDOR_SOURCES})
+                 src/mod/mod_input.c src/core/ng_session.c src/core/ng_sync.c ${NG_VENDOR_SOURCES})
   target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor)
   target_compile_definitions(ng_scene_js_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
   add_custom_command(TARGET ng_scene_js_smoke POST_BUILD

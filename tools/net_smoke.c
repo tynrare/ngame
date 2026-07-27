@@ -52,8 +52,8 @@ static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, si
     NgSessionState session = {.tick = h.tick};
     if (ng_proto_decode_session(&buf, &session)) {
       session.tick = h.tick;
-      printf("SESSION scene=%s controller=%u you=%u cube=%u sync=%s spawns=%d\n",
-             session.scene_id, session.controller_id, session.your_id, session.cube_entity_id,
+      printf("SESSION scene=%s controller=%u you=%u sync=%s spawns=%d\n",
+             session.scene_id, session.controller_id, session.your_id,
              ng_sync_mode_name(session.scene_sync), session.spawn_count);
       if (strcmp(session.scene_id, "cube") == 0) {
         g_got_cube_session = true;

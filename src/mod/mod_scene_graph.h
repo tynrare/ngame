@@ -1,10 +1,9 @@
-// agent: composer-2.5 | 2026-07-26 | client scene graph store | b7c8d9
+// agent: composer-2.5 | 2026-07-27 | spawn registry and routing | e2f3a4
 #ifndef MOD_SCENE_GRAPH_H
 #define MOD_SCENE_GRAPH_H
 
 #include "core/ng_session.h"
 #include "core/ng_sync.h"
-#include "world/ng_world.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -39,18 +38,24 @@ typedef struct NgSceneInst {
 void mod_scene_graph_reset(void);
 bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode sync,
                               const char *model, int func_stash_idx);
+NgSceneDesc *mod_scene_graph_entity_desc(const char *name);
 bool mod_scene_graph_dispose_desc(const char *kind, const char *name);
+uint32_t mod_scene_graph_alloc_id(void);
+bool mod_scene_graph_registry_add(const char *desc_name, uint32_t entity_id, NgSyncMode sync);
+uint32_t mod_scene_graph_registry_id_for_desc(const char *desc_name);
+bool mod_scene_graph_registry_ensure(const char *desc_name, NgSyncMode sync, uint32_t *out_id);
+void mod_scene_graph_fill_session_spawns(NgSessionState *session);
 int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, struct duk_hthread *ctx,
                           int func_stash_idx);
 bool mod_scene_graph_despawn(int handle);
 NgSceneInst *mod_scene_graph_inst_by_handle(int handle);
 NgSceneInst *mod_scene_graph_inst_by_id(uint32_t entity_id);
+NgSceneInst *mod_scene_graph_inst_by_desc(const char *desc_name);
 NgSyncMode mod_scene_graph_sync_for_entity(uint32_t entity_id);
 void mod_scene_graph_mark_dirty(NgSceneInst *inst, uint32_t comp);
 bool mod_scene_graph_take_dirty(NgStateUpdate *out);
 void mod_scene_graph_apply_update(const NgStateUpdate *update);
 int mod_scene_graph_inst_count(void);
 const NgSceneInst *mod_scene_graph_inst_at(int index);
-bool mod_scene_graph_has_client_entities(void);
 
 #endif

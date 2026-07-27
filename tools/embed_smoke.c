@@ -4,6 +4,7 @@
 #include "core/ng_log.h"
 #include "core/ng_mod.h"
 #include "mod/mod_net.h"
+#include "mod/mod_scene.h"
 #include "mod/mod_sim.h"
 #include <raylib.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@ int main(void) {
   ng_bus_init();
   mod_net_set_embedded(true);
   ng_mod_register(mod_net_ops(), mod_net_ctx());
+  ng_mod_register(mod_scene_ops(), mod_scene_ctx());
   ng_mod_register(mod_sim_ops(), mod_sim_ctx());
 
   if (!ng_mod_init_all()) {
@@ -25,16 +27,15 @@ int main(void) {
     return 1;
   }
 
-  const NgWorld *w = ng_embed_world();
-  if (!ng_embed_ready() || !w) {
-    fprintf(stderr, "embed_smoke: world not ready\n");
+  if (!ng_embed_ready()) {
+    fprintf(stderr, "embed_smoke: scene not ready\n");
     ng_mod_shutdown_all();
     ng_bus_shutdown();
     CloseWindow();
     return 1;
   }
 
-  printf("EMBED_SNAPSHOT scene=%s\n", w->scene_id);
+  printf("EMBED_SNAPSHOT scene=%s\n", mod_scene_current_id());
 
   NgMsg shutdown = {
       .kind = NG_MSG_SHUTDOWN,

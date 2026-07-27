@@ -5,6 +5,7 @@
 #include "core/ng_bus.h"
 #include "core/ng_log.h"
 #include "mod/mod_sim.h"
+#include "mod/mod_scene.h"
 #include "world/ng_world.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -116,7 +117,7 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
     char out[1200];
     snprintf(out, sizeof(out),
              "{\"ok\":true,\"text\":\"scene=%s entities=%d tick=%u\"}",
-             w ? w->scene_id : "?", w ? w->live_count : 0, w ? w->tick : 0);
+             mod_scene_current_id(), mod_scene_entity_count(), w ? w->tick : 0);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }

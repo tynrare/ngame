@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-07-26 | cube js ES5 duktape scene | a7b8c9
+// agent: composer-2.5 | 2026-07-27 | cube js spawn by name | d1e2f3
 function Cube() {}
 
 Cube.prototype.init = function () {};
@@ -21,7 +21,7 @@ Scene.prototype.init = function () {
 };
 
 Scene.prototype.start = function (session) {
-  this.test_cube = global.spawn("cube_a_e", { entity_id: session.entity_id });
+  this.test_cube = global.spawn("cube_a_e");
   global.set_position(this.test_cube, { x: 0, y: 0, z: 0 });
   global.set_rotation(this.test_cube, 0, 0, 0);
   global.set_scale(this.test_cube, 1);

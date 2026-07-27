@@ -1,13 +1,23 @@
-// agent: composer-2.5 | 2026-07-26 | client scene graph store | b7c8d9
+// agent: composer-2.5 | 2026-07-27 | spawn registry and routing | e2f3a4
 #include "mod_scene_graph.h"
+#include "world/ng_world.h"
 #include "vendor/duktape.h"
 #include <string.h>
+
+typedef struct NgSceneRegistry {
+  char desc_name[32];
+  uint32_t entity_id;
+  NgSyncMode sync;
+  bool alive;
+} NgSceneRegistry;
 
 typedef struct ModSceneGraphCtx {
   NgSceneDesc descs[NG_SCENE_DESC_MAX];
   int desc_count;
   NgSceneInst insts[NG_SCENE_INST_MAX];
   int inst_count;
+  NgSceneRegistry registry[NG_SCENE_INST_MAX];
+  int registry_count;
   uint32_t next_local_id;
   uint16_t next_seq;
 } ModSceneGraphCtx;
@@ -24,13 +34,9 @@ static NgSceneDesc *mod_scene_graph_find_desc(const char *kind, const char *name
   return NULL;
 }
 
-static NgSceneDesc *mod_scene_graph_find_entity_desc(const char *name) {
-  return mod_scene_graph_find_desc("entity", name);
-}
-
 void mod_scene_graph_reset(void) {
   memset(&g_graph, 0, sizeof(g_graph));
-  g_graph.next_local_id = 0x80000000u;
+  g_graph.next_local_id = 1u;
 }
 
 bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode sync,
@@ -63,6 +69,10 @@ bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode syn
   return true;
 }
 
+NgSceneDesc *mod_scene_graph_entity_desc(const char *name) {
+  return mod_scene_graph_find_desc("entity", name);
+}
+
 bool mod_scene_graph_dispose_desc(const char *kind, const char *name) {
   NgSceneDesc *d = mod_scene_graph_find_desc(kind, name);
   if (!d) {
@@ -72,12 +82,86 @@ bool mod_scene_graph_dispose_desc(const char *kind, const char *name) {
   return true;
 }
 
+uint32_t mod_scene_graph_alloc_id(void) { return g_graph.next_local_id++; }
+
+static NgSceneRegistry *mod_scene_graph_find_registry(const char *desc_name) {
+  for (int i = 0; i < g_graph.registry_count; i++) {
+    NgSceneRegistry *r = &g_graph.registry[i];
+    if (r->alive && strcmp(r->desc_name, desc_name) == 0) {
+      return r;
+    }
+  }
+  return NULL;
+}
+
+bool mod_scene_graph_registry_add(const char *desc_name, uint32_t entity_id, NgSyncMode sync) {
+  if (!desc_name || entity_id == 0) {
+    return false;
+  }
+  NgSceneRegistry *existing = mod_scene_graph_find_registry(desc_name);
+  if (existing) {
+    existing->entity_id = entity_id;
+    existing->sync = sync;
+    return true;
+  }
+  if (g_graph.registry_count >= NG_SCENE_INST_MAX) {
+    return false;
+  }
+  NgSceneRegistry *r = &g_graph.registry[g_graph.registry_count++];
+  memset(r, 0, sizeof(*r));
+  r->alive = true;
+  strncpy(r->desc_name, desc_name, sizeof(r->desc_name) - 1);
+  r->entity_id = entity_id;
+  r->sync = sync;
+  return true;
+}
+
+uint32_t mod_scene_graph_registry_id_for_desc(const char *desc_name) {
+  NgSceneRegistry *r = mod_scene_graph_find_registry(desc_name);
+  return r ? r->entity_id : 0;
+}
+
+bool mod_scene_graph_registry_ensure(const char *desc_name, NgSyncMode sync, uint32_t *out_id) {
+  NgSceneRegistry *r = mod_scene_graph_find_registry(desc_name);
+  if (r) {
+    if (out_id) {
+      *out_id = r->entity_id;
+    }
+    return true;
+  }
+  const uint32_t id = mod_scene_graph_alloc_id();
+  if (!mod_scene_graph_registry_add(desc_name, id, sync)) {
+    return false;
+  }
+  if (out_id) {
+    *out_id = id;
+  }
+  return true;
+}
+
+void mod_scene_graph_fill_session_spawns(NgSessionState *session) {
+  if (!session) {
+    return;
+  }
+  session->spawn_count = 0;
+  for (int i = 0; i < g_graph.registry_count && session->spawn_count < NG_SESSION_SPAWN_MAX; i++) {
+    NgSceneRegistry *r = &g_graph.registry[i];
+    if (!r->alive) {
+      continue;
+    }
+    NgSessionSpawn *sp = &session->spawns[session->spawn_count++];
+    sp->entity_id = r->entity_id;
+    strncpy(sp->desc_name, r->desc_name, sizeof(sp->desc_name) - 1);
+    sp->sync = r->sync;
+  }
+}
+
 int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, duk_context *ctx,
                           int func_stash_idx) {
   if (!desc_name) {
     return 0;
   }
-  NgSceneDesc *d = mod_scene_graph_find_entity_desc(desc_name);
+  NgSceneDesc *d = mod_scene_graph_entity_desc(desc_name);
   if (!d) {
     return 0;
   }
@@ -88,12 +172,13 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, duk_context
   memset(inst, 0, sizeof(*inst));
   inst->alive = true;
   inst->handle = g_graph.inst_count;
-  inst->id = entity_id ? entity_id : g_graph.next_local_id++;
+  inst->id = entity_id ? entity_id : mod_scene_graph_alloc_id();
   strncpy(inst->desc_name, desc_name, sizeof(inst->desc_name) - 1);
   strncpy(inst->model, d->model, sizeof(inst->model) - 1);
   inst->sync = d->sync;
   inst->scale = 1.0f;
   inst->script_inst_stash = -1;
+  mod_scene_graph_registry_add(desc_name, inst->id, d->sync);
 
   if (ctx && func_stash_idx >= 0) {
     char func_key[48];
@@ -145,10 +230,28 @@ NgSceneInst *mod_scene_graph_inst_by_id(uint32_t entity_id) {
   return NULL;
 }
 
+NgSceneInst *mod_scene_graph_inst_by_desc(const char *desc_name) {
+  if (!desc_name) {
+    return NULL;
+  }
+  for (int i = 0; i < g_graph.inst_count; i++) {
+    NgSceneInst *inst = &g_graph.insts[i];
+    if (inst->alive && strcmp(inst->desc_name, desc_name) == 0) {
+      return inst;
+    }
+  }
+  return NULL;
+}
+
 NgSyncMode mod_scene_graph_sync_for_entity(uint32_t entity_id) {
   NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
   if (inst) {
     return inst->sync;
+  }
+  for (int i = 0; i < g_graph.registry_count; i++) {
+    if (g_graph.registry[i].alive && g_graph.registry[i].entity_id == entity_id) {
+      return g_graph.registry[i].sync;
+    }
   }
   return NG_SYNC_SERVER;
 }
@@ -159,7 +262,6 @@ void mod_scene_graph_mark_dirty(NgSceneInst *inst, uint32_t comp) {
   }
 }
 
-// agent: composer-2.5 | 2026-07-26 | graph full state delta | 02bd0f
 bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
   if (!out) {
     return false;
@@ -246,19 +348,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
     n++;
   }
   return NULL;
-}
-
-bool mod_scene_graph_has_client_entities(void) {
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    if (g_graph.insts[i].alive && ng_sync_runs_on_client(g_graph.insts[i].sync)) {
-      return true;
-    }
-  }
-  for (int i = 0; i < g_graph.desc_count; i++) {
-    if (g_graph.descs[i].alive && strcmp(g_graph.descs[i].kind, "entity") == 0 &&
-        ng_sync_runs_on_client(g_graph.descs[i].sync)) {
-      return true;
-    }
-  }
-  return false;
 }
