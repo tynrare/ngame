@@ -1,13 +1,13 @@
 // agent: composer-2.5 | 2026-07-25 | headless server orchestrator | j3m51h
 #include "ng_app_server.h"
-#include "core/ng_bus.h"
-#include "core/ng_log.h"
-#include "core/ng_mod.h"
-#include "mod/mod_agent.h"
-#include "mod/mod_net.h"
-#include "mod/mod_scene.h"
-#include "mod/mod_script.h"
-#include "mod/mod_sim.h"
+#include "engine/ng_bus.h"
+#include "engine/ng_log.h"
+#include "engine/ng_mod.h"
+#include "server/agent.h"
+#include "net/mod_net.h"
+#include "scene/scene.h"
+#include "server/script.h"
+#include "server/sim.h"
 #include "net/ng_net.h"
 #include <signal.h>
 #include <stdlib.h>

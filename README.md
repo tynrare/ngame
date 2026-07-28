@@ -38,7 +38,9 @@ killall -9 ngame_server ng_test_net ngame 2>/dev/null || true
 ./build/ngame --connect 127.0.0.1:27015
 ```
 
-Tab → console → `scene cube` | `scene sphere`
+Tab → console → `scene <id>` (`cube`, `sphere`, `example`). Server runs `res/boot.js` on start.
+
+Docs: [architecture](docs/architecture.md) · [scenes](docs/scenes.md)
 
 ## Test
 

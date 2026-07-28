@@ -41,6 +41,7 @@ void ng_world_clear(NgWorld *w) {
   memset(w->alive, 0, sizeof(w->alive));
   memset(w->grid_head, -1, sizeof(w->grid_head));
   memset(w->grid_next, -1, sizeof(w->grid_next));
+  memset(w->public_id, 0, sizeof(w->public_id));
   w->live_count = 0;
 }
 
@@ -98,6 +99,28 @@ int ng_world_find_index(NgWorld *w, uint32_t id) {
   return idx;
 }
 
+void ng_world_set_public_id(NgWorld *w, uint32_t packed_id, uint32_t public_id) {
+  const int idx = ng_world_find_index(w, packed_id);
+  if (idx < 0) {
+    return;
+  }
+  w->public_id[idx] = public_id;
+}
+
+void ng_world_set_entity_state(NgWorld *w, uint32_t id, float x, float y, float z, float rot_y,
+                               float phase) {
+  const int idx = ng_world_find_index(w, id);
+  if (idx < 0) {
+    return;
+  }
+  w->pos_x[idx] = x;
+  w->pos_y[idx] = y;
+  w->pos_z[idx] = z;
+  w->rot_y[idx] = rot_y;
+  w->phase[idx] = phase;
+  ng_world_rebuild_grid(w);
+}
+
 void ng_world_rebuild_grid(NgWorld *w) {
   memset(w->grid_head, -1, sizeof(w->grid_head));
   memset(w->grid_next, -1, sizeof(w->grid_next));
@@ -115,13 +138,8 @@ void ng_world_grid_insert(NgWorld *w, int idx) {
   w->grid_head[cell] = idx;
 }
 
-void ng_world_apply_input(NgWorld *w, int buttons, float yaw_delta) {
-  w->input_buttons = buttons;
-  w->input_yaw_delta = yaw_delta;
-}
-
 static void ng_world_snap_entity(NgWorld *w, int idx, NgEntitySnap *e) {
-  e->id = ng_world_pack_id(w, idx);
+  e->id = w->public_id[idx] ? w->public_id[idx] : ng_world_pack_id(w, idx);
   e->type = w->type[idx];
   e->pos[0] = w->pos_x[idx];
   e->pos[1] = w->pos_y[idx];

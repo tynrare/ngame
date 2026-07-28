@@ -1,6 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | websocket server bridge | m6p84k
 #include "ng_ws_server.h"
-#include "core/ng_log.h"
+#include "engine/ng_log.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>

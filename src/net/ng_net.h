@@ -2,7 +2,7 @@
 #ifndef NG_NET_H
 #define NG_NET_H
 
-#include "core/ng_proto.h"
+#include "engine/ng_proto.h"
 #include <stdbool.h>
 #include <stdint.h>
 

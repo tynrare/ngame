@@ -1,11 +1,12 @@
 // agent: composer-2.5 | 2026-07-25 | headless embedded smoke test | 69db60
-#include "core/ng_bus.h"
-#include "core/ng_embed.h"
-#include "core/ng_log.h"
-#include "core/ng_mod.h"
-#include "mod/mod_net.h"
-#include "mod/mod_scene.h"
-#include "mod/mod_sim.h"
+// agent: composer-2.5 | 2026-07-28 | embedded cube scene load check | 2eb821
+#include "engine/ng_bus.h"
+#include "engine/ng_embed.h"
+#include "engine/ng_log.h"
+#include "engine/ng_mod.h"
+#include "net/mod_net.h"
+#include "scene/scene.h"
+#include "server/sim.h"
 #include <raylib.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,7 +36,31 @@ int main(void) {
     return 1;
   }
 
-  printf("EMBED_SNAPSHOT scene=%s\n", mod_scene_current_id());
+  const char *argv[] = {"scene", "cube"};
+  NgMsg cmd = {
+      .kind = NG_MSG_CMD,
+      .from = NG_BUS_CONSOLE,
+      .to = NG_BUS_SIM,
+      .argc = 2,
+      .argv = argv,
+  };
+  char reply[256];
+  if (!mod_sim_run_cmd(&cmd, reply, sizeof(reply))) {
+    fprintf(stderr, "embed_smoke: scene cube cmd failed\n");
+    ng_mod_shutdown_all();
+    ng_bus_shutdown();
+    CloseWindow();
+    return 1;
+  }
+  if (strcmp(mod_scene_current_id(), "cube") != 0) {
+    fprintf(stderr, "embed_smoke: expected cube got %s\n", mod_scene_current_id());
+    ng_mod_shutdown_all();
+    ng_bus_shutdown();
+    CloseWindow();
+    return 1;
+  }
+
+  printf("EMBED_SNAPSHOT scene=%s entities=%d\n", mod_scene_current_id(), mod_scene_entity_count());
 
   NgMsg shutdown = {
       .kind = NG_MSG_SHUTDOWN,
@@ -48,3 +73,5 @@ int main(void) {
   CloseWindow();
   return 0;
 }
+
+// agent: composer-2.5 | 2026-07-28 | embedded cube scene load check | 2eb821

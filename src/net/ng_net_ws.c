@@ -1,6 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | websocket emscripten transport | e8h06c
 #include "ng_net.h"
-#include "core/ng_log.h"
+#include "engine/ng_log.h"
 
 #include <stdlib.h>
 #include <string.h>

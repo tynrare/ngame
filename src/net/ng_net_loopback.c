@@ -1,7 +1,7 @@
 // agent: composer-2.5 | 2026-07-25 | in-process loopback net | 8dc143
 // agent: composer-2.5 | 2026-07-25 | in-process loopback net | 8dc143
 #include "ng_net.h"
-#include "core/ng_log.h"
+#include "engine/ng_log.h"
 #include <stdlib.h>
 #include <string.h>
 

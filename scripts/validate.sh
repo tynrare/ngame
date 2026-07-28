@@ -13,7 +13,7 @@ done
 sleep 0.3
 
 cd "$BUILD"
-cmake --build . --target ngame_server ng_test_net ng_cmd_latency ng_cmd_loopback_latency ng_embed_smoke ng_scene_js_smoke 2>&1 | tail -3
+cmake --build . --target ngame_server ng_test_net ng_two_client_smoke ng_cmd_bandwidth ng_cmd_latency ng_cmd_loopback_latency ng_embed_smoke ng_scene_js_smoke 2>&1 | tail -3
 
 start_server() {
   ./ngame_server > /tmp/ngame_validate.log 2>&1 &
@@ -46,7 +46,8 @@ OUT=$(printf '{"cmd":"world_snapshot"}\n' | timeout 10 nc -q1 127.0.0.1 27100 ||
 OUT2=$(printf '{"line":"scene sphere"}\n' | timeout 10 nc -q1 127.0.0.1 27100 || true)
 OUT="$OUT"$'\n'"$OUT2"
 echo "$OUT"
-echo "$OUT" | grep -q "scene=sphere"
+echo "$OUT" | grep -q "scene=boot"
+echo "$OUT" | grep -q "entities=1"
 echo "$OUT" | grep -q "scene loaded: sphere"
 
 echo "== mcp agent bridge =="
@@ -68,6 +69,14 @@ grep -q 'SESSION scene=cube' /tmp/ngame_net.out
 echo "== scene js smoke =="
 ./ng_scene_js_smoke
 
+echo "== two client session =="
+./ng_two_client_smoke 127.0.0.1 27015
+
+echo "== bandwidth sample =="
+BW_OUT=$(./ng_cmd_bandwidth 127.0.0.1 27015)
+echo "$BW_OUT"
+echo "$BW_OUT" | grep -q 'BW_SNAP_BYTES'
+
 echo "== cmd latency enet (local path) =="
 LAT_OUT=$(./ng_cmd_latency 127.0.0.1 27015)
 echo "$LAT_OUT"
@@ -85,7 +94,7 @@ grep -q 'scene loaded: cube' /tmp/ngame_ws.out
 echo "== embedded loopback (native) =="
 EMBED_OUT=$(./ng_embed_smoke)
 echo "$EMBED_OUT"
-echo "$EMBED_OUT" | grep -q 'EMBED_SNAPSHOT scene='
+echo "$EMBED_OUT" | grep -q 'EMBED_SNAPSHOT scene=cube'
 
 stop_server
 
@@ -100,3 +109,4 @@ else
 fi
 
 echo "ALL OK"
+# agent: composer-2.5 | 2026-07-28 | boot js startup validate | b8o9o0

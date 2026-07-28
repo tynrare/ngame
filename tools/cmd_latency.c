@@ -1,6 +1,6 @@
 // agent: composer-2.5 | 2026-07-26 | ENet cmd RTT latency test | a3b4c5
-#include "core/ng_action.h"
-#include "core/ng_proto.h"
+#include "engine/ng_action.h"
+#include "engine/ng_proto.h"
 #include "net/ng_net.h"
 #include <stdio.h>
 #include <stdlib.h>

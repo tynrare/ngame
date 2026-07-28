@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-07-27 | cube js spawn by name | d1e2f3
+// agent: composer-2.5 | 2026-07-28 | cube explicit describes restored | r1c2u3
 function Cube() {}
 
 Cube.prototype.init = function () {};
@@ -10,9 +10,22 @@ Cube.prototype.dispose = function () {};
 function Scene() {}
 
 Scene.prototype.init = function () {
-  global.describe("mesh", "cube_a_m", { width: 1, height: 1, depth: 1 });
-  global.describe("shader", "cube_a_s", { fragment: "cube.fs", vertex: "mesh.vs" });
-  global.describe("model", "cube_a_mo", { mesh: "cube_a", shader: "cube_a_s" });
+  global.describe("mesh", "cube_a_m", { width: 1, height: 1, depth: 1, shape: "cube" });
+  global.describe("shader", "cube_a_s", {
+    fragment: "shaders/cube.fs",
+    vertex: "shaders/mesh.vs",
+    tint: { r: 255, g: 140, b: 51 },
+  });
+  global.describe("model", "cube_a_mo", { mesh: "cube_a_m", shader: "cube_a_s" });
+  global.describe("scene", "view", {
+    bg: { r: 48, g: 24, b: 8 },
+    camera: {
+      mode: "fixed",
+      position: { x: 0, y: 2.5, z: 6 },
+      target: { x: 0, y: 0, z: 0 },
+      fovy: 45,
+    },
+  });
   global.describe("entity", "cube_a_e", {
     model: "cube_a_mo",
     func: Cube,
@@ -48,6 +61,9 @@ Scene.prototype.stop = function () {
 
 Scene.prototype.dispose = function () {
   global.dispose("mesh", "cube_a_m");
+  global.dispose("shader", "cube_a_s");
   global.dispose("model", "cube_a_mo");
   global.dispose("entity", "cube_a_e");
 };
+
+// agent: composer-2.5 | 2026-07-28 | cube explicit describes restored | r1c2u3

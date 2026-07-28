@@ -59,14 +59,13 @@ typedef struct NgWorld {
   float rot_y[NG_WORLD_ENTITY_MAX];
   float phase[NG_WORLD_ENTITY_MAX];
   uint32_t flags[NG_WORLD_ENTITY_MAX];
+  uint32_t public_id[NG_WORLD_ENTITY_MAX];
   int grid_cell[NG_WORLD_ENTITY_MAX];
   int grid_next[NG_WORLD_ENTITY_MAX];
   int grid_head[NG_WORLD_GRID_DIM * NG_WORLD_GRID_DIM];
   int live_count;
   uint32_t tick;
   char scene_id[32];
-  int input_buttons;
-  float input_yaw_delta;
 } NgWorld;
 
 void ng_world_init(NgWorld *w);
@@ -77,7 +76,9 @@ int ng_world_find_index(NgWorld *w, uint32_t id);
 void ng_world_rebuild_grid(NgWorld *w);
 void ng_world_grid_insert(NgWorld *w, int idx);
 void ng_world_set_scene(NgWorld *w, const char *scene_id);
-void ng_world_apply_input(NgWorld *w, int buttons, float yaw_delta);
+void ng_world_set_entity_state(NgWorld *w, uint32_t id, float x, float y, float z, float rot_y,
+                               float phase);
+void ng_world_set_public_id(NgWorld *w, uint32_t packed_id, uint32_t public_id);
 void ng_world_fill_snapshot(NgWorld *w, NgSnapshot *out);
 void ng_world_fill_snapshot_aoi(NgWorld *w, NgSnapshot *out, float cx, float cy,
                                 float radius, uint32_t tick_mod);

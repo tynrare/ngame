@@ -21,10 +21,11 @@ TOOLS = [
     },
     {
         "name": "scene",
-        "description": "Load a scene by id (sphere or cube).",
+        # agent: composer-2.5 | 2026-07-28 | scene id any string | 3f5e2a
+        "description": "Load a scene by id (e.g. sphere, cube, d-test).",
         "inputSchema": {
             "type": "object",
-            "properties": {"id": {"type": "string", "enum": ["sphere", "cube"]}},
+            "properties": {"id": {"type": "string"}},
             "required": ["id"],
         },
     },

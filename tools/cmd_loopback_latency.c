@@ -1,8 +1,8 @@
 // agent: composer-2.5 | 2026-07-26 | in-process loopback cmd RTT | b4c5d6
-#include "core/ng_bus.h"
-#include "core/ng_mod.h"
-#include "mod/mod_net.h"
-#include "mod/mod_sim.h"
+#include "engine/ng_bus.h"
+#include "engine/ng_mod.h"
+#include "net/mod_net.h"
+#include "server/sim.h"
 #include <raylib.h>
 #include <stdio.h>
 #include <string.h>

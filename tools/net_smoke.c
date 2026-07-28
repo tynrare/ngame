@@ -1,9 +1,9 @@
 // agent: composer-2.5 | 2026-07-25 | ENet smoke test client | n7q95l
 // agent: composer-2.5 | 2026-07-25 | smoke ACTION_RESULT decode | b1c2d3
-#include "core/ng_action.h"
-#include "core/ng_proto.h"
-#include "core/ng_session.h"
-#include "core/ng_sync.h"
+#include "engine/ng_action.h"
+#include "engine/ng_proto.h"
+#include "engine/ng_session.h"
+#include "engine/ng_sync.h"
 #include "net/ng_net.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +57,11 @@ static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, si
              ng_sync_mode_name(session.scene_sync), session.spawn_count);
       if (strcmp(session.scene_id, "cube") == 0) {
         g_got_cube_session = true;
+        if (session.spawn_count >= 1 && session.spawns[0].sync != NG_SYNC_SHARED) {
+          fprintf(stderr, "expected cube spawn sync=shared got %s\n",
+                  ng_sync_mode_name(session.spawns[0].sync));
+          exit(1);
+        }
       }
     }
   } else if (h.type == NG_PKT_CMD_REPLY) {

@@ -1,6 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | ENet multi-peer transport | d7g95b
 #include "ng_net.h"
-#include "core/ng_log.h"
+#include "engine/ng_log.h"
 
 #define ENET_IMPLEMENTATION
 #include "vendor/enet.h"
