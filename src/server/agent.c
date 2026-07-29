@@ -7,6 +7,7 @@
 #include "server/sim.h"
 #include "scene/scene.h"
 #if !defined(NG_SERVER)
+#include "client/input.h"
 #include "client/render.h"
 #include "net/mod_net.h"
 #endif
@@ -169,6 +170,105 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
 #endif
     char out[1200];
     snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", render_line);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
+  // agent: composer-2.5 | 2026-07-29 | mcp wire input transform observe | e7b3c1
+  if (strcmp(cmdline, "entity_transforms") == 0) {
+    char entities[1500];
+#if !defined(NG_SERVER)
+    mod_scene_view_entities_text(entities, sizeof(entities));
+#else
+    snprintf(entities, sizeof(entities), "entities=0");
+#endif
+    char out[1800];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", entities);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
+  if (strncmp(cmdline, "wire_input", 10) == 0) {
+#if defined(NG_SERVER)
+    mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"wire_input client only\"}");
+    return;
+#else
+    int buttons = 0;
+    int frames = 30;
+    const char *p = cmdline + 10;
+    while (*p) {
+      while (*p == ' ' || *p == '\t') {
+        p++;
+      }
+      if (*p == '\0') {
+        break;
+      }
+      if (strncmp(p, "frames=", 7) == 0) {
+        frames = atoi(p + 7);
+        while (*p && *p != ' ' && *p != '\t') {
+          p++;
+        }
+        continue;
+      }
+      if (*p == 'A' || *p == 'a') {
+        buttons |= NG_INPUT_A;
+      } else if (*p == 'D' || *p == 'd') {
+        buttons |= NG_INPUT_D;
+      } else if (*p == 'W' || *p == 'w') {
+        buttons |= NG_INPUT_W;
+      } else if (*p == 'S' || *p == 's') {
+        buttons |= NG_INPUT_S;
+      }
+      while (*p && *p != ' ' && *p != '\t') {
+        p++;
+      }
+    }
+    mod_input_wire_buttons(buttons, frames);
+    char out[256];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"wired buttons=%d frames=%d\"}", buttons,
+             frames);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+#endif
+  }
+
+  if (strncmp(cmdline, "wire_mouse", 10) == 0) {
+#if defined(NG_SERVER)
+    mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"wire_mouse client only\"}");
+    return;
+#else
+    float mx = 0.0f;
+    float my = 0.0f;
+    int frames = 30;
+    int matched = sscanf(cmdline + 10, " %f %f frames=%d", &mx, &my, &frames);
+    if (matched < 2) {
+      matched = sscanf(cmdline + 10, " %f %f", &mx, &my);
+    }
+    if (matched < 2) {
+      mod_agent_send_json(ctx->client_fd,
+                          "{\"ok\":false,\"error\":\"usage: wire_mouse <x> <y> [frames=N]\"}");
+      return;
+    }
+    if (matched < 3) {
+      frames = 30;
+    }
+    mod_input_wire_mouse(mx, my, frames);
+    char out[256];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"wired mouse=%.1f,%.1f frames=%d\"}", mx, my,
+             frames);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+#endif
+  }
+
+  // agent: composer-2.5 | 2026-07-29 | mcp raycast observe helper | 1a8c2e
+  if (strncmp(cmdline, "raycast_plane_y", 15) == 0) {
+    float plane_y = 0.0f;
+    sscanf(cmdline + 15, " %f", &plane_y);
+    char text[256];
+    mod_scene_raycast_plane_y_text(plane_y, text, sizeof(text));
+    char out[512];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", text);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }
@@ -402,3 +502,5 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-07-29 | probe free mcp port range | 1c9a3b
 // agent: composer-2.5 | 2026-07-29 | view gateway mcp fields | 72977c
 // agent: composer-2.5 | 2026-07-28 | agent port render snapshot | b598b6
+// agent: composer-2.5 | 2026-07-29 | mcp wire input transform observe | e7b3c1
+// agent: composer-2.5 | 2026-07-29 | mcp raycast observe helper | 1a8c2e

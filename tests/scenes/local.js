@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-28 | local sync test fixture | e1d2c3
+// agent: composer-2.5 | 2026-07-29 | local spawn transform opts | 2e54c3
 function Scene() {}
 Scene.prototype.init = function () {
   sceneHelpers.primitive({
@@ -9,8 +10,9 @@ Scene.prototype.init = function () {
   });
 };
 Scene.prototype.start = function (session) {
-  this.ent = global.spawn("local_e");
-  global.set_position(this.ent, { x: 0, y: 0, z: 0 });
+  this.ent = global.spawn("local_e", {
+    position: { x: 0, y: 0, z: 0 }
+  });
 };
 Scene.prototype.step = function (dt) {};
 Scene.prototype.stop = function () {
@@ -24,3 +26,4 @@ Scene.prototype.dispose = function () {
 };
 
 // agent: composer-2.5 | 2026-07-28 | local sync test fixture | e1d2c3
+// agent: composer-2.5 | 2026-07-29 | local spawn transform opts | 2e54c3

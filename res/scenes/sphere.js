@@ -36,9 +36,11 @@ Scene.prototype.init = function () {
 };
 
 Scene.prototype.start = function (session) {
-  this.sphere = global.spawn("sphere_a_e");
-  global.set_position(this.sphere, { x: 0, y: 0, z: 0 });
-  global.set_scale(this.sphere, 1);
+  // agent: composer-2.5 | 2026-07-29 | sphere spawn transform opts | c5c0c5
+  this.sphere = global.spawn("sphere_a_e", {
+    position: { x: 0, y: 0, z: 0 },
+    scale: 1
+  });
 };
 
 Scene.prototype.step = function (dt) {};
@@ -58,3 +60,4 @@ Scene.prototype.dispose = function () {
 };
 
 // agent: composer-2.5 | 2026-07-28 | sphere explicit describes restored | r1s2p3
+// agent: composer-2.5 | 2026-07-29 | sphere spawn transform opts | c5c0c5

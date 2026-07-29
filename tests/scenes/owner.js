@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-28 | owner sync test fixture | f0e1d2
+// agent: composer-2.5 | 2026-07-29 | owner spawn transform opts | 3c46d4
 function Scene() {}
 Scene.prototype.init = function () {
   sceneHelpers.primitive({
@@ -9,8 +10,9 @@ Scene.prototype.init = function () {
   });
 };
 Scene.prototype.start = function (session) {
-  this.ent = global.spawn("owner_e");
-  global.set_position(this.ent, { x: 0, y: 0, z: 0 });
+  this.ent = global.spawn("owner_e", {
+    position: { x: 0, y: 0, z: 0 }
+  });
 };
 Scene.prototype.step = function (dt) {};
 Scene.prototype.stop = function () {
@@ -24,3 +26,4 @@ Scene.prototype.dispose = function () {
 };
 
 // agent: composer-2.5 | 2026-07-28 | owner sync test fixture | f0e1d2
+// agent: composer-2.5 | 2026-07-29 | owner spawn transform opts | 3c46d4

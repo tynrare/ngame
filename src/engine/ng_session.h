@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-27 | session spawn table only | a8b9c0
+// agent: composer-2.5 | 2026-07-29 | session spawn key transform | 9339a6
 #ifndef NG_SESSION_H
 #define NG_SESSION_H
 
@@ -6,12 +7,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define NG_SESSION_SPAWN_MAX 8
+#define NG_SESSION_SPAWN_MAX 32
 
 typedef struct NgSessionSpawn {
   uint32_t entity_id;
   char desc_name[32];
+  char key[32];
   NgSyncMode sync;
+  float pos[3];
+  float rot[3];
+  float scale;
 } NgSessionSpawn;
 
 typedef struct NgSessionState {
@@ -35,3 +40,4 @@ typedef struct NgStateUpdate {
 } NgStateUpdate;
 
 #endif
+// agent: composer-2.5 | 2026-07-29 | session spawn key transform | 9339a6

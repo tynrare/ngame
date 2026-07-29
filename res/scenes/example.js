@@ -15,8 +15,10 @@ Scene.prototype.init = function () {
 };
 
 Scene.prototype.start = function (session) {
-  this.cube = global.spawn("example_e");
-  global.set_position(this.cube, { x: 0, y: 0, z: 0 });
+  // agent: composer-2.5 | 2026-07-29 | example spawn transform opts | 0d63bf
+  this.cube = global.spawn("example_e", {
+    position: { x: 0, y: 0, z: 0 }
+  });
 };
 
 Scene.prototype.step = function (dt) {
@@ -38,3 +40,4 @@ Scene.prototype.dispose = function () {
 };
 
 // agent: composer-2.5 | 2026-07-28 | example scene using helpers | e1x2a3
+// agent: composer-2.5 | 2026-07-29 | example spawn transform opts | 0d63bf

@@ -9,7 +9,8 @@
 struct NgActionResult;
 
 #define NG_PROTO_MAGIC   0x4E474D45u /* NGME */
-#define NG_PROTO_VERSION 4
+// agent: composer-2.5 | 2026-07-29 | proto v6 session spawn fields | d65177
+#define NG_PROTO_VERSION 6
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -95,3 +96,4 @@ bool ng_proto_encode_register_ack(NgProtoBuf *b, uint16_t seq, const NgRegisterA
 bool ng_proto_decode_register_ack(NgProtoBuf *b, NgRegisterAck *ack);
 
 #endif
+// agent: composer-2.5 | 2026-07-29 | proto v6 session spawn fields | d65177

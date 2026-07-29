@@ -815,8 +815,10 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     } else if (sync != NG_SYNC_SHARED) {
       return;
     }
+    // agent: composer-2.5 | 2026-07-29 | host assigns shared state seq | 5f8b3d
+    update.seq = ++ctx->seq;
     mod_scene_apply_remote(&update);
-    if (!ng_proto_encode_state_update(&ctx->tx_buf, ++ctx->seq, &update)) {
+    if (!ng_proto_encode_state_update(&ctx->tx_buf, update.seq, &update)) {
       return;
     }
     NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
@@ -832,6 +834,7 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (!ng_proto_decode_state_batch(buf, updates, 16, &count)) {
       return;
     }
+    int kept = 0;
     for (int i = 0; i < count; i++) {
       updates[i].tick = h.tick;
       const NgSyncMode sync = mod_scene_graph_sync_for_entity(updates[i].entity_id);
@@ -843,9 +846,14 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
       } else if (sync != NG_SYNC_SHARED) {
         continue;
       }
+      updates[i].seq = ++ctx->seq;
       mod_scene_apply_remote(&updates[i]);
+      updates[kept++] = updates[i];
     }
-    if (!ng_proto_encode_state_batch(&ctx->tx_buf, ++ctx->seq, h.tick, updates, count)) {
+    if (kept == 0) {
+      return;
+    }
+    if (!ng_proto_encode_state_batch(&ctx->tx_buf, ++ctx->seq, h.tick, updates, kept)) {
       return;
     }
     NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
@@ -1502,6 +1510,17 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
       ng_net_flush(ctx->net);
     }
 #elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+    // agent: composer-2.5 | 2026-07-29 | flush shared transforms upstream | 9d2e71
+#if defined(NG_HAS_EMBEDDED)
+    // Gateway with upstream must not route shared updates through the local
+    // host graph (local boot scene entity ids can collide / wrong sync).
+    if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
+      ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE,
+                  false);
+      ng_net_flush(ctx->net_upstream);
+      continue;
+    }
+#endif
     NgNet *link = mod_net_client_link(ctx);
     if (ng_net_connected(link)) {
       ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
@@ -1553,3 +1572,5 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-29 | no stale snapshot scene revert | 8aba32
 // agent: composer-2.5 | 2026-07-29 | drain upstream view sync | 2705b6
 // agent: composer-2.5 | 2026-07-29 | root mirror tracks sessions | 5809c3
+// agent: composer-2.5 | 2026-07-29 | flush shared transforms upstream | 9d2e71
+// agent: composer-2.5 | 2026-07-29 | host assigns shared state seq | 5f8b3d

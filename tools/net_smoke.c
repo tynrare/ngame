@@ -5,6 +5,7 @@
 #include "engine/ng_session.h"
 #include "engine/ng_sync.h"
 #include "net/ng_net.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,9 +58,28 @@ static void smoke_on_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, si
              ng_sync_mode_name(session.scene_sync), session.spawn_count);
       if (strcmp(session.scene_id, "cube") == 0) {
         g_got_cube_session = true;
-        if (session.spawn_count >= 1 && session.spawns[0].sync != NG_SYNC_SHARED) {
+        // agent: composer-2.5 | 2026-07-29 | session spawn pose smoke | a2aadb
+        if (session.spawn_count < 2) {
+          fprintf(stderr, "expected cube spawn_count>=2 got %d\n", session.spawn_count);
+          exit(1);
+        }
+        if (session.spawns[0].sync != NG_SYNC_SHARED) {
           fprintf(stderr, "expected cube spawn sync=shared got %s\n",
                   ng_sync_mode_name(session.spawns[0].sync));
+          exit(1);
+        }
+        int found_side = 0;
+        for (int i = 0; i < session.spawn_count; i++) {
+          if (strcmp(session.spawns[i].key, "side") == 0) {
+            found_side = 1;
+            if (fabsf(session.spawns[i].pos[0] - 2.0f) > 0.01f) {
+              fprintf(stderr, "expected side cube x=2 got %f\n", session.spawns[i].pos[0]);
+              exit(1);
+            }
+          }
+        }
+        if (!found_side) {
+          fprintf(stderr, "expected cube spawn key=side\n");
           exit(1);
         }
       }
@@ -139,3 +159,4 @@ int main(int argc, char **argv) {
   ng_net_shutdown();
   return 0;
 }
+// agent: composer-2.5 | 2026-07-29 | session spawn pose smoke | a2aadb

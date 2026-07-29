@@ -219,6 +219,7 @@ static void mod_render_draw_overlay(const char *label, int y) {
 
 static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type, float x, float y,
                                         float z, const float rot[3], float scale, float phase) {
+  (void)type;
   if (!a->ready || a->shader.handle.id == 0) {
     return;
   }
@@ -230,18 +231,14 @@ static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type,
     SetShaderValue(a->shader.handle, a->shader.loc_tint, tint, SHADER_UNIFORM_VEC3);
   }
 
+  // agent: composer-2.5 | 2026-07-29 | draw entities via model transform | 1415d8
+  // Use described Model + transform (DrawModel). Local scale/rotate, then world translate.
   const float s = scale > 0.0f ? scale : 1.0f;
-  if (type == NG_ENTITY_CUBE) {
-    Matrix mat = MatrixIdentity();
-    mat = MatrixMultiply(mat, MatrixTranslate(x, y, z));
-    // agent: composer-2.5 | 2026-07-28 | draw graph rot as radians | b05800
-    mat = MatrixMultiply(mat, MatrixRotateXYZ((Vector3){rot[0], rot[1], rot[2]}));
-    mat = MatrixMultiply(mat, MatrixScale(s, s, s));
-    DrawMesh(a->model.meshes[0], a->model.materials[0], mat);
-  } else {
-    const Vector3 pos = {x, y, z};
-    DrawModel(a->model, pos, s, WHITE);
-  }
+  Model model = a->model;
+  model.transform = MatrixMultiply(
+      MatrixMultiply(MatrixScale(s, s, s), MatrixRotateXYZ((Vector3){rot[0], rot[1], rot[2]})),
+      MatrixTranslate(x, y, z));
+  DrawModel(model, (Vector3){0.0f, 0.0f, 0.0f}, 1.0f, WHITE);
 }
 
 static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *inst) {
@@ -521,3 +518,4 @@ void mod_render_visibility_text(char *out, size_t cap) {
 // agent: composer-2.5 | 2026-07-29 | snapshot before empty graph | 57ca7b
 // agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
+// agent: composer-2.5 | 2026-07-29 | draw entities via model transform | 1415d8

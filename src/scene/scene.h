@@ -8,8 +8,11 @@
 #include "world/ng_world.h"
 #include <stdbool.h>
 
+// agent: codex-5.3 | 2026-07-29 | add scene W S keycodes | c2be81
 #define NG_SCENE_KEY_A 1
 #define NG_SCENE_KEY_D 2
+#define NG_SCENE_KEY_W 3
+#define NG_SCENE_KEY_S 4
 
 const NgModOps *mod_scene_ops(void);
 void *mod_scene_ctx(void);
@@ -37,6 +40,14 @@ void mod_scene_mirror_server(NgWorld *w);
 void mod_scene_apply_snapshot(const NgSnapshot *snap);
 void mod_scene_view_apply_snapshot(const NgSnapshot *snap);
 void mod_scene_view_status_text(char *out, size_t cap);
+// agent: composer-2.5 | 2026-07-29 | view entity transform observe | 4d8e21
+void mod_scene_view_entities_text(char *out, size_t cap);
+// agent: composer-2.5 | 2026-07-29 | shared raycast plane helper | 7c1d4a
+bool mod_scene_raycast_plane_y(float plane_y, float *out_x, float *out_y, float *out_z);
+void mod_scene_raycast_plane_y_text(float plane_y, char *out, size_t cap);
 bool mod_scene_is_native(void);
 
 #endif
+// agent: codex-5.3 | 2026-07-29 | add scene W S keycodes | c2be81
+// agent: composer-2.5 | 2026-07-29 | view entity transform observe | 4d8e21
+// agent: composer-2.5 | 2026-07-29 | shared raycast plane helper | 7c1d4a

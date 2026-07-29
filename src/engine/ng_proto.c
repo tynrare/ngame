@@ -501,9 +501,11 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
       session->spawn_count > NG_SESSION_SPAWN_MAX) {
     return false;
   }
+  // agent: composer-2.5 | 2026-07-29 | proto v6 session encode decode | a782bd
   for (int i = 0; i < session->spawn_count; i++) {
     const NgSessionSpawn *sp = &session->spawns[i];
     const size_t name_len = strnlen(sp->desc_name, sizeof(sp->desc_name) - 1);
+    const size_t key_len = strnlen(sp->key, sizeof(sp->key) - 1);
     if (!ng_proto_write_u32(b, sp->entity_id) || !ng_proto_write_u8(b, (uint8_t)name_len)) {
       return false;
     }
@@ -512,7 +514,18 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
         return false;
       }
     }
-    if (!ng_proto_write_u8(b, (uint8_t)sp->sync)) {
+    if (!ng_proto_write_u8(b, (uint8_t)key_len)) {
+      return false;
+    }
+    for (size_t j = 0; j < key_len; j++) {
+      if (!ng_proto_write_u8(b, (uint8_t)sp->key[j])) {
+        return false;
+      }
+    }
+    if (!ng_proto_write_u8(b, (uint8_t)sp->sync) || !ng_proto_write_f32(b, sp->pos[0]) ||
+        !ng_proto_write_f32(b, sp->pos[1]) || !ng_proto_write_f32(b, sp->pos[2]) ||
+        !ng_proto_write_f32(b, sp->rot[0]) || !ng_proto_write_f32(b, sp->rot[1]) ||
+        !ng_proto_write_f32(b, sp->rot[2]) || !ng_proto_write_f32(b, sp->scale)) {
       return false;
     }
   }
@@ -549,10 +562,12 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
   if (!ng_proto_read_u8(b, &spawn_count) || spawn_count > NG_SESSION_SPAWN_MAX) {
     return false;
   }
+  // agent: composer-2.5 | 2026-07-29 | proto v6 session encode decode | a782bd
   session->spawn_count = spawn_count;
   for (int i = 0; i < spawn_count; i++) {
     NgSessionSpawn *sp = &session->spawns[i];
     uint8_t name_len = 0;
+    uint8_t key_len = 0;
     if (!ng_proto_read_u32(b, &sp->entity_id) || !ng_proto_read_u8(b, &name_len) ||
         name_len >= sizeof(sp->desc_name)) {
       return false;
@@ -565,8 +580,22 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
       sp->desc_name[j] = (char)c;
     }
     sp->desc_name[name_len] = '\0';
+    if (!ng_proto_read_u8(b, &key_len) || key_len >= sizeof(sp->key)) {
+      return false;
+    }
+    for (int j = 0; j < key_len; j++) {
+      uint8_t c;
+      if (!ng_proto_read_u8(b, &c)) {
+        return false;
+      }
+      sp->key[j] = (char)c;
+    }
+    sp->key[key_len] = '\0';
     uint8_t sp_sync = 0;
-    if (!ng_proto_read_u8(b, &sp_sync)) {
+    if (!ng_proto_read_u8(b, &sp_sync) || !ng_proto_read_f32(b, &sp->pos[0]) ||
+        !ng_proto_read_f32(b, &sp->pos[1]) || !ng_proto_read_f32(b, &sp->pos[2]) ||
+        !ng_proto_read_f32(b, &sp->rot[0]) || !ng_proto_read_f32(b, &sp->rot[1]) ||
+        !ng_proto_read_f32(b, &sp->rot[2]) || !ng_proto_read_f32(b, &sp->scale)) {
       return false;
     }
     sp->sync = (NgSyncMode)sp_sync;
@@ -587,18 +616,19 @@ static int16_t ng_proto_quant_cm(float v) {
 
 static float ng_proto_dequant_cm(int16_t v) { return (float)v / 100.0f; }
 
-static int16_t ng_proto_quant_mdeg(float deg) {
-  float q = roundf(deg * 1000.0f);
-  if (q > 32767.0f) {
-    q = 32767.0f;
+// agent: composer-2.5 | 2026-07-29 | full-circle angle wire quant | a7e2c4
+static uint16_t ng_proto_quant_angle(float rad) {
+  const float tau = 6.28318530718f;
+  float w = fmodf(rad, tau);
+  if (w < 0.0f) {
+    w += tau;
   }
-  if (q < -32768.0f) {
-    q = -32768.0f;
-  }
-  return (int16_t)q;
+  return (uint16_t)(w / tau * 65535.0f + 0.5f);
 }
 
-static float ng_proto_dequant_mdeg(int16_t v) { return (float)v / 1000.0f; }
+static float ng_proto_dequant_angle(uint16_t v) {
+  return (float)v / 65535.0f * 6.28318530718f;
+}
 
 static bool ng_proto_write_i16(NgProtoBuf *b, int16_t v) {
   return ng_proto_write_u16(b, (uint16_t)v);
@@ -621,10 +651,9 @@ static bool ng_proto_write_state_body(NgProtoBuf *b, const NgStateUpdate *update
            ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[1])) &&
            ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[2])))) &&
          (!(update->comp_mask & NG_COMP_ROT) ||
-          // agent: composer-2.5 | 2026-07-28 | wire rad deg rot convert | ba07f0
-          (ng_proto_write_i16(b, ng_proto_quant_mdeg(update->rot[0] * (180.0f / 3.14159265f))) &&
-           ng_proto_write_i16(b, ng_proto_quant_mdeg(update->rot[1] * (180.0f / 3.14159265f))) &&
-           ng_proto_write_i16(b, ng_proto_quant_mdeg(update->rot[2] * (180.0f / 3.14159265f))))) &&
+          (ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[0])) &&
+           ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[1])) &&
+           ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[2])))) &&
          (!(update->comp_mask & NG_COMP_SCALE) ||
           ng_proto_write_i16(b, ng_proto_quant_cm(update->scale)));
 }
@@ -646,13 +675,13 @@ static bool ng_proto_read_state_body(NgProtoBuf *b, NgStateUpdate *update) {
     update->pos[2] = ng_proto_dequant_cm(q2);
   }
   if (mask & NG_COMP_ROT) {
-    int16_t q0 = 0, q1 = 0, q2 = 0;
-    if (!ng_proto_read_i16(b, &q0) || !ng_proto_read_i16(b, &q1) || !ng_proto_read_i16(b, &q2)) {
+    uint16_t q0 = 0, q1 = 0, q2 = 0;
+    if (!ng_proto_read_u16(b, &q0) || !ng_proto_read_u16(b, &q1) || !ng_proto_read_u16(b, &q2)) {
       return false;
     }
-    update->rot[0] = ng_proto_dequant_mdeg(q0) * (3.14159265f / 180.0f);
-    update->rot[1] = ng_proto_dequant_mdeg(q1) * (3.14159265f / 180.0f);
-    update->rot[2] = ng_proto_dequant_mdeg(q2) * (3.14159265f / 180.0f);
+    update->rot[0] = ng_proto_dequant_angle(q0);
+    update->rot[1] = ng_proto_dequant_angle(q1);
+    update->rot[2] = ng_proto_dequant_angle(q2);
   }
   if (mask & NG_COMP_SCALE) {
     int16_t qs = 0;
@@ -831,5 +860,7 @@ bool ng_proto_decode_register_ack(NgProtoBuf *b, NgRegisterAck *ack) {
          ng_proto_read_u16(b, &ack->agent_port) && ng_proto_read_u16(b, &ack->root_game_port);
 }
 
+// agent: composer-2.5 | 2026-07-29 | proto v6 session encode decode | a782bd
 // agent: composer-2.5 | 2026-07-28 | state ack encode decode | b7c8d9
 // agent: composer-2.5 | 2026-07-28 | wire rad deg rot convert | ba07f0
+// agent: composer-2.5 | 2026-07-29 | full-circle angle wire quant | a7e2c4

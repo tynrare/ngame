@@ -35,6 +35,48 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "entity_transforms",
+        "description": "Observe view-graph entity id/desc/pos/rot/scale.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "wire_input",
+        "description": "Inject A/D/W/S input for N frames (client/gateway only).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "keys": {
+                    "type": "string",
+                    "description": "Keys to hold, e.g. 'A', 'AD', 'W S'.",
+                },
+                "frames": {"type": "integer", "description": "Hold duration in frames."},
+            },
+            "required": ["keys"],
+        },
+    },
+    {
+        "name": "wire_mouse",
+        "description": "Inject mouse screen position for N frames (drives raycast_plane_y).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "frames": {"type": "integer"},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "raycast_plane_y",
+        "description": "Observe current mouse ray hit on a Y plane.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"y": {"type": "number"}},
+            "required": [],
+        },
+    },
+    {
         "name": "scene",
         "description": "Load a scene by id (e.g. sphere, cube, d-test).",
         "inputSchema": {
@@ -82,10 +124,25 @@ def agent_request(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_tool(name: str, arguments: dict[str, Any]) -> str:
+    # agent: composer-2.5 | 2026-07-29 | mcp wire input transform tools | 2f9c8a
     if name == "world_snapshot":
         resp = agent_request({"cmd": "world_snapshot"})
     elif name == "render_snapshot":
         resp = agent_request({"cmd": "render_snapshot"})
+    elif name == "entity_transforms":
+        resp = agent_request({"cmd": "entity_transforms"})
+    elif name == "wire_input":
+        keys = str(arguments.get("keys", "")).strip()
+        frames = int(arguments.get("frames", 30) or 30)
+        resp = agent_request({"line": f"wire_input {keys} frames={frames}"})
+    elif name == "wire_mouse":
+        x = float(arguments.get("x", 0))
+        y = float(arguments.get("y", 0))
+        frames = int(arguments.get("frames", 30) or 30)
+        resp = agent_request({"line": f"wire_mouse {x} {y} frames={frames}"})
+    elif name == "raycast_plane_y":
+        y = float(arguments.get("y", 0) or 0)
+        resp = agent_request({"line": f"raycast_plane_y {y}"})
     elif name == "scene":
         scene_id = arguments.get("id", "")
         resp = agent_request({"line": f"scene {scene_id}"})
@@ -197,3 +254,4 @@ if __name__ == "__main__":
     main()
 
 # agent: composer-2.5 | 2026-07-28 | mcp dual port render tool | 13f975
+# agent: composer-2.5 | 2026-07-29 | mcp wire input transform tools | 2f9c8a
