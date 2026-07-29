@@ -1,26 +1,18 @@
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
+// agent: composer-2.5 | 2026-07-29 | assets use active runtime | ce9266
 #include "assets.h"
+#include "scene/runtime.h"
 #include <stdio.h>
 #include <string.h>
 
-typedef struct ModSceneAssetsCtx {
-  NgSceneMeshDesc meshes[NG_SCENE_ASSET_MAX];
-  int mesh_count;
-  NgSceneShaderDesc shaders[NG_SCENE_ASSET_MAX];
-  int shader_count;
-  NgSceneModelDesc models[NG_SCENE_ASSET_MAX];
-  int model_count;
-  NgSceneViewMeta view;
-} ModSceneAssetsCtx;
-
-static ModSceneAssetsCtx g_assets;
+#define GASSETS() (*mod_scene_runtime_assets())
 
 static NgSceneMeshDesc *mod_scene_assets_find_mesh(const char *name) {
   if (!name) {
     return NULL;
   }
-  for (int i = 0; i < g_assets.mesh_count; i++) {
-    NgSceneMeshDesc *m = &g_assets.meshes[i];
+  for (int i = 0; i < GASSETS().mesh_count; i++) {
+    NgSceneMeshDesc *m = &GASSETS().meshes[i];
     if (m->alive && strcmp(m->name, name) == 0) {
       return m;
     }
@@ -32,8 +24,8 @@ static NgSceneShaderDesc *mod_scene_assets_find_shader(const char *name) {
   if (!name) {
     return NULL;
   }
-  for (int i = 0; i < g_assets.shader_count; i++) {
-    NgSceneShaderDesc *s = &g_assets.shaders[i];
+  for (int i = 0; i < GASSETS().shader_count; i++) {
+    NgSceneShaderDesc *s = &GASSETS().shaders[i];
     if (s->alive && strcmp(s->name, name) == 0) {
       return s;
     }
@@ -45,8 +37,8 @@ static NgSceneModelDesc *mod_scene_assets_find_model(const char *name) {
   if (!name) {
     return NULL;
   }
-  for (int i = 0; i < g_assets.model_count; i++) {
-    NgSceneModelDesc *m = &g_assets.models[i];
+  for (int i = 0; i < GASSETS().model_count; i++) {
+    NgSceneModelDesc *m = &GASSETS().models[i];
     if (m->alive && strcmp(m->name, name) == 0) {
       return m;
     }
@@ -84,7 +76,8 @@ NgEntityType mod_scene_assets_entity_type_for_kind(NgSceneMeshKind kind) {
 }
 
 void mod_scene_assets_reset(void) {
-  memset(&g_assets, 0, sizeof(g_assets));
+  ModSceneAssetsCtx *a = mod_scene_runtime_assets();
+  memset(a, 0, sizeof(*a));
 }
 
 bool mod_scene_assets_describe_mesh(const char *name, const char *shape, float w, float h,
@@ -101,10 +94,10 @@ bool mod_scene_assets_describe_mesh(const char *name, const char *shape, float w
     existing->depth = d > 0.0f ? d : 1.0f;
     return true;
   }
-  if (g_assets.mesh_count >= NG_SCENE_ASSET_MAX) {
+  if (GASSETS().mesh_count >= NG_SCENE_ASSET_MAX) {
     return false;
   }
-  NgSceneMeshDesc *m = &g_assets.meshes[g_assets.mesh_count++];
+  NgSceneMeshDesc *m = &GASSETS().meshes[GASSETS().mesh_count++];
   memset(m, 0, sizeof(*m));
   m->alive = true;
   strncpy(m->name, name, sizeof(m->name) - 1);
@@ -133,10 +126,10 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
     existing->tint_b = tint_b;
     return true;
   }
-  if (g_assets.shader_count >= NG_SCENE_ASSET_MAX) {
+  if (GASSETS().shader_count >= NG_SCENE_ASSET_MAX) {
     return false;
   }
-  NgSceneShaderDesc *s = &g_assets.shaders[g_assets.shader_count++];
+  NgSceneShaderDesc *s = &GASSETS().shaders[GASSETS().shader_count++];
   memset(s, 0, sizeof(*s));
   s->alive = true;
   strncpy(s->name, name, sizeof(s->name) - 1);
@@ -170,10 +163,10 @@ bool mod_scene_assets_describe_model(const char *name, const char *mesh, const c
     existing->mesh_kind = md->kind;
     return true;
   }
-  if (g_assets.model_count >= NG_SCENE_ASSET_MAX) {
+  if (GASSETS().model_count >= NG_SCENE_ASSET_MAX) {
     return false;
   }
-  NgSceneModelDesc *m = &g_assets.models[g_assets.model_count++];
+  NgSceneModelDesc *m = &GASSETS().models[GASSETS().model_count++];
   memset(m, 0, sizeof(*m));
   m->alive = true;
   strncpy(m->name, name, sizeof(m->name) - 1);
@@ -189,13 +182,13 @@ bool mod_scene_assets_describe_view(const NgSceneViewMeta *view) {
   if (!view) {
     return false;
   }
-  g_assets.view = *view;
-  g_assets.view.valid = true;
+  GASSETS().view = *view;
+  GASSETS().view.valid = true;
   return true;
 }
 
 const NgSceneViewMeta *mod_scene_assets_view(void) {
-  return g_assets.view.valid ? &g_assets.view : NULL;
+  return GASSETS().view.valid ? &GASSETS().view : NULL;
 }
 
 bool mod_scene_assets_dispose(const char *kind, const char *name) {
@@ -261,8 +254,8 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
   if (!out) {
     return false;
   }
-  for (int i = 0; i < g_assets.model_count; i++) {
-    NgSceneModelDesc *model = &g_assets.models[i];
+  for (int i = 0; i < GASSETS().model_count; i++) {
+    NgSceneModelDesc *model = &GASSETS().models[i];
     if (!model->alive || model->mesh_kind != kind) {
       continue;
     }

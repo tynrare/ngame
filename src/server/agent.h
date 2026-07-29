@@ -9,5 +9,9 @@
 const NgModOps *mod_agent_ops(void);
 void *mod_agent_ctx(void);
 void mod_agent_poll(void);
+void mod_agent_configure(uint16_t port);
+// agent: composer-2.5 | 2026-07-29 | expose agent listening port | 1b2c3d
+uint16_t mod_agent_listening_port(void);
 
+// agent: composer-2.5 | 2026-07-29 | expose agent listening port | 1b2c3d
 #endif

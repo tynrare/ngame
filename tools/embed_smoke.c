@@ -1,12 +1,12 @@
 // agent: composer-2.5 | 2026-07-25 | headless embedded smoke test | 69db60
-// agent: composer-2.5 | 2026-07-28 | embedded cube scene load check | 2eb821
+// agent: composer-2.5 | 2026-07-28 | gateway loopback smoke test | 2eb821
 #include "engine/ng_bus.h"
-#include "engine/ng_embed.h"
 #include "engine/ng_log.h"
 #include "engine/ng_mod.h"
 #include "net/mod_net.h"
 #include "scene/scene.h"
 #include "server/sim.h"
+#include "server/script.h"
 #include <raylib.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,9 +17,10 @@ int main(void) {
   SetTargetFPS(0);
 
   ng_bus_init();
-  mod_net_set_embedded(true);
+  mod_net_set_gateway(true);
   ng_mod_register(mod_net_ops(), mod_net_ctx());
   ng_mod_register(mod_scene_ops(), mod_scene_ctx());
+  ng_mod_register(mod_script_ops(), mod_script_ctx());
   ng_mod_register(mod_sim_ops(), mod_sim_ctx());
 
   if (!ng_mod_init_all()) {
@@ -28,7 +29,11 @@ int main(void) {
     return 1;
   }
 
-  if (!ng_embed_ready()) {
+  for (int i = 0; i < 8; i++) {
+    mod_net_gateway_host_poll();
+  }
+
+  if (!mod_scene_is_loaded()) {
     fprintf(stderr, "embed_smoke: scene not ready\n");
     ng_mod_shutdown_all();
     ng_bus_shutdown();
@@ -74,4 +79,4 @@ int main(void) {
   return 0;
 }
 
-// agent: composer-2.5 | 2026-07-28 | embedded cube scene load check | 2eb821
+// agent: composer-2.5 | 2026-07-28 | gateway loopback smoke test | 2eb821

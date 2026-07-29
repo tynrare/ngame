@@ -1,32 +1,16 @@
 // agent: composer-2.5 | 2026-07-27 | spawn registry and routing | e2f3a4
+// agent: composer-2.5 | 2026-07-29 | graph uses active runtime | 48c6e0
 #include "graph.h"
+#include "scene/runtime.h"
 #include "world/ng_world.h"
 #include "vendor/duktape.h"
 #include <string.h>
 
-typedef struct NgSceneRegistry {
-  char desc_name[32];
-  uint32_t entity_id;
-  NgSyncMode sync;
-  bool alive;
-} NgSceneRegistry;
-
-typedef struct ModSceneGraphCtx {
-  NgSceneDesc descs[NG_SCENE_DESC_MAX];
-  int desc_count;
-  NgSceneInst insts[NG_SCENE_INST_MAX];
-  int inst_count;
-  NgSceneRegistry registry[NG_SCENE_INST_MAX];
-  int registry_count;
-  uint32_t next_local_id;
-  uint16_t next_seq;
-} ModSceneGraphCtx;
-
-static ModSceneGraphCtx g_graph;
+#define GGRAPH() (*mod_scene_runtime_graph())
 
 static NgSceneDesc *mod_scene_graph_find_desc(const char *kind, const char *name) {
-  for (int i = 0; i < g_graph.desc_count; i++) {
-    NgSceneDesc *d = &g_graph.descs[i];
+  for (int i = 0; i < GGRAPH().desc_count; i++) {
+    NgSceneDesc *d = &GGRAPH().descs[i];
     if (d->alive && strcmp(d->kind, kind) == 0 && strcmp(d->name, name) == 0) {
       return d;
     }
@@ -35,8 +19,9 @@ static NgSceneDesc *mod_scene_graph_find_desc(const char *kind, const char *name
 }
 
 void mod_scene_graph_reset(void) {
-  memset(&g_graph, 0, sizeof(g_graph));
-  g_graph.next_local_id = 1u;
+  ModSceneGraphCtx *g = mod_scene_runtime_graph();
+  memset(g, 0, sizeof(*g));
+  g->next_local_id = 1u;
 }
 
 bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode sync,
@@ -53,10 +38,10 @@ bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode syn
     }
     return true;
   }
-  if (g_graph.desc_count >= NG_SCENE_DESC_MAX) {
+  if (GGRAPH().desc_count >= NG_SCENE_DESC_MAX) {
     return false;
   }
-  NgSceneDesc *d = &g_graph.descs[g_graph.desc_count++];
+  NgSceneDesc *d = &GGRAPH().descs[GGRAPH().desc_count++];
   memset(d, 0, sizeof(*d));
   d->alive = true;
   strncpy(d->kind, kind, sizeof(d->kind) - 1);
@@ -82,11 +67,11 @@ bool mod_scene_graph_dispose_desc(const char *kind, const char *name) {
   return true;
 }
 
-uint32_t mod_scene_graph_alloc_id(void) { return g_graph.next_local_id++; }
+uint32_t mod_scene_graph_alloc_id(void) { return GGRAPH().next_local_id++; }
 
 static NgSceneRegistry *mod_scene_graph_find_registry(const char *desc_name) {
-  for (int i = 0; i < g_graph.registry_count; i++) {
-    NgSceneRegistry *r = &g_graph.registry[i];
+  for (int i = 0; i < GGRAPH().registry_count; i++) {
+    NgSceneRegistry *r = &GGRAPH().registry[i];
     if (r->alive && strcmp(r->desc_name, desc_name) == 0) {
       return r;
     }
@@ -104,10 +89,10 @@ bool mod_scene_graph_registry_add(const char *desc_name, uint32_t entity_id, NgS
     existing->sync = sync;
     return true;
   }
-  if (g_graph.registry_count >= NG_SCENE_INST_MAX) {
+  if (GGRAPH().registry_count >= NG_SCENE_INST_MAX) {
     return false;
   }
-  NgSceneRegistry *r = &g_graph.registry[g_graph.registry_count++];
+  NgSceneRegistry *r = &GGRAPH().registry[GGRAPH().registry_count++];
   memset(r, 0, sizeof(*r));
   r->alive = true;
   strncpy(r->desc_name, desc_name, sizeof(r->desc_name) - 1);
@@ -144,8 +129,8 @@ void mod_scene_graph_fill_session_spawns(NgSessionState *session) {
     return;
   }
   session->spawn_count = 0;
-  for (int i = 0; i < g_graph.registry_count && session->spawn_count < NG_SESSION_SPAWN_MAX; i++) {
-    NgSceneRegistry *r = &g_graph.registry[i];
+  for (int i = 0; i < GGRAPH().registry_count && session->spawn_count < NG_SESSION_SPAWN_MAX; i++) {
+    NgSceneRegistry *r = &GGRAPH().registry[i];
     if (!r->alive) {
       continue;
     }
@@ -165,13 +150,13 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, duk_context
   if (!d) {
     return 0;
   }
-  if (g_graph.inst_count >= NG_SCENE_INST_MAX) {
+  if (GGRAPH().inst_count >= NG_SCENE_INST_MAX) {
     return 0;
   }
-  NgSceneInst *inst = &g_graph.insts[g_graph.inst_count++];
+  NgSceneInst *inst = &GGRAPH().insts[GGRAPH().inst_count++];
   memset(inst, 0, sizeof(*inst));
   inst->alive = true;
-  inst->handle = g_graph.inst_count;
+  inst->handle = GGRAPH().inst_count;
   inst->id = entity_id ? entity_id : mod_scene_graph_alloc_id();
   strncpy(inst->desc_name, desc_name, sizeof(inst->desc_name) - 1);
   strncpy(inst->model, d->model, sizeof(inst->model) - 1);
@@ -213,18 +198,18 @@ NgSceneInst *mod_scene_graph_inst_by_handle(int handle) {
   if (handle <= 0) {
     return NULL;
   }
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    if (g_graph.insts[i].alive && g_graph.insts[i].handle == handle) {
-      return &g_graph.insts[i];
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    if (GGRAPH().insts[i].alive && GGRAPH().insts[i].handle == handle) {
+      return &GGRAPH().insts[i];
     }
   }
   return NULL;
 }
 
 NgSceneInst *mod_scene_graph_inst_by_id(uint32_t entity_id) {
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    if (g_graph.insts[i].alive && g_graph.insts[i].id == entity_id) {
-      return &g_graph.insts[i];
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    if (GGRAPH().insts[i].alive && GGRAPH().insts[i].id == entity_id) {
+      return &GGRAPH().insts[i];
     }
   }
   return NULL;
@@ -234,8 +219,8 @@ NgSceneInst *mod_scene_graph_inst_by_desc(const char *desc_name) {
   if (!desc_name) {
     return NULL;
   }
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    NgSceneInst *inst = &g_graph.insts[i];
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    NgSceneInst *inst = &GGRAPH().insts[i];
     if (inst->alive && strcmp(inst->desc_name, desc_name) == 0) {
       return inst;
     }
@@ -248,9 +233,9 @@ NgSyncMode mod_scene_graph_sync_for_entity(uint32_t entity_id) {
   if (inst) {
     return inst->sync;
   }
-  for (int i = 0; i < g_graph.registry_count; i++) {
-    if (g_graph.registry[i].alive && g_graph.registry[i].entity_id == entity_id) {
-      return g_graph.registry[i].sync;
+  for (int i = 0; i < GGRAPH().registry_count; i++) {
+    if (GGRAPH().registry[i].alive && GGRAPH().registry[i].entity_id == entity_id) {
+      return GGRAPH().registry[i].sync;
     }
   }
   return NG_SYNC_SERVER;
@@ -266,8 +251,8 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
   if (!out) {
     return false;
   }
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    NgSceneInst *inst = &g_graph.insts[i];
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    NgSceneInst *inst = &GGRAPH().insts[i];
     if (!inst->alive || inst->comp_dirty == 0) {
       continue;
     }
@@ -281,7 +266,7 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
       continue;
     }
     out->entity_id = inst->id;
-    out->seq = ++g_graph.next_seq;
+    out->seq = ++GGRAPH().next_seq;
     inst->last_sent_seq = out->seq;
     out->comp_mask = (uint8_t)wire_mask;
     out->tick = 0;
@@ -340,8 +325,8 @@ void mod_scene_graph_apply_update(const NgStateUpdate *update) {
 
 int mod_scene_graph_inst_count(void) {
   int n = 0;
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    if (g_graph.insts[i].alive) {
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    if (GGRAPH().insts[i].alive) {
       n++;
     }
   }
@@ -350,12 +335,12 @@ int mod_scene_graph_inst_count(void) {
 
 const NgSceneInst *mod_scene_graph_inst_at(int index) {
   int n = 0;
-  for (int i = 0; i < g_graph.inst_count; i++) {
-    if (!g_graph.insts[i].alive) {
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    if (!GGRAPH().insts[i].alive) {
       continue;
     }
     if (n == index) {
-      return &g_graph.insts[i];
+      return &GGRAPH().insts[i];
     }
     n++;
   }

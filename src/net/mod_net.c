@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-25 | mod_net embedded dual net | d02295
+// agent: composer-2.5 | 2026-07-28 | gateway loopback upstream API | 34cffe
 #include "mod_net.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -9,6 +10,7 @@
 #include "client/render.h"
 #endif
 #include "scene/scene.h"
+#include "scene/runtime.h"
 #include "scene/graph.h"
 #include "net/ng_net.h"
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
@@ -21,10 +23,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(NG_HAS_EMBEDDED)
-#include "engine/ng_embed.h"
-#endif
 
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
 #include <raylib.h>
@@ -40,16 +38,37 @@ typedef struct NetPeerState {
   bool pending_connect_snap;
   bool pending_connect_session;
   uint8_t peer_id;
+  uint8_t role;
+  uint16_t assigned_agent_port;
+  char name[32];
+  bool registered;
 } NetPeerState;
+
+typedef struct NgRootMirror {
+  char scene_id[32];
+  uint32_t tick;
+  int entity_count;
+  bool valid;
+} NgRootMirror;
+
+static NgRootMirror g_root_mirror;
+static uint16_t g_next_dependent_agent_port = 27101;
 #endif
 
 typedef struct ModNetCtx {
   NgNet *net;
 #if defined(NG_HAS_EMBEDDED)
   NgNet *net_client;
+  NgNet *net_upstream;
   NgNetLoopbackPair *loopback;
-  bool embedded;
-  bool local_loopback;
+  bool gateway;
+  char upstream_host[64];
+  uint16_t upstream_port;
+  bool upstream_pending_reply;
+  char upstream_reply[1024];
+  uint16_t assigned_agent_port;
+  bool register_pending;
+  bool console_cmd_pending;
 #endif
 #if defined(NG_SERVER)
   NgWsServer *ws;
@@ -95,7 +114,32 @@ static void mod_net_rx_load(ModNetCtx *ctx, const uint8_t *data, size_t len) {
 // agent: composer-2.5 | 2026-07-25 | defer bus from net poll | c210df
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 // agent: composer-2.5 | 2026-07-27 | session from js registry | b5c6d7
+static void mod_net_update_root_mirror(const NgSnapshot *snap) {
+  if (!snap) {
+    return;
+  }
+  strncpy(g_root_mirror.scene_id, snap->scene_id, sizeof(g_root_mirror.scene_id) - 1);
+  g_root_mirror.scene_id[sizeof(g_root_mirror.scene_id) - 1] = '\0';
+  g_root_mirror.tick = snap->tick;
+  g_root_mirror.entity_count = snap->entity_count;
+  g_root_mirror.valid = true;
+}
+
+// agent: composer-2.5 | 2026-07-29 | root mirror tracks sessions | 5809c3
+static void mod_net_update_root_mirror_session(const NgSessionState *session) {
+  if (!session || session->scene_id[0] == '\0') {
+    return;
+  }
+  strncpy(g_root_mirror.scene_id, session->scene_id, sizeof(g_root_mirror.scene_id) - 1);
+  g_root_mirror.scene_id[sizeof(g_root_mirror.scene_id) - 1] = '\0';
+  g_root_mirror.tick = session->tick;
+  g_root_mirror.valid = true;
+}
+
+static uint16_t mod_net_alloc_agent_port(void) { return g_next_dependent_agent_port++; }
+
 static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_t your_id) {
+  mod_scene_runtime_use_server();
   NgWorld *w = mod_sim_world();
   memset(session, 0, sizeof(*session));
   const char *scene_id = mod_scene_current_id();
@@ -178,6 +222,12 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
 static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, size_t len,
                                        uint8_t channel, void *vctx);
 #endif
+#if defined(NG_HAS_EMBEDDED)
+static void mod_net_handle_upstream_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data,
+                                           size_t len, uint8_t channel, void *vctx);
+static void mod_net_forward_upstream(ModNetCtx *ctx, const uint8_t *data, size_t len,
+                                     uint8_t channel, bool reliable);
+#endif
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
 
 static void mod_net_flush_client_pending(ModNetCtx *ctx) {
@@ -205,11 +255,6 @@ static void mod_net_flush_client_pending(ModNetCtx *ctx) {
 
 // agent: composer-2.5 | 2026-07-25 | same frame cmd poll recv | 51fe4b
 static void mod_net_client_recv(ModNetCtx *ctx) {
-#if defined(NG_HAS_EMBEDDED)
-  if (ctx->embedded) {
-    return;
-  }
-#endif
   NgNet *link = mod_net_client_link(ctx);
   if (!link) {
     return;
@@ -224,9 +269,12 @@ static void mod_net_client_wait_cmd(ModNetCtx *ctx) {
     return;
   }
 #if defined(NG_HAS_EMBEDDED)
-  if (ctx->local_loopback && ctx->net) {
+  if (ctx->gateway && ctx->net) {
     for (int i = 0; i < 64 && ctx->cmd_inflight; i++) {
       ng_net_poll(ctx->net, mod_net_handle_host_packet, ctx);
+      if (ctx->net_upstream) {
+        ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
+      }
       mod_net_client_recv(ctx);
     }
     return;
@@ -281,6 +329,8 @@ static void mod_net_exec_host_cmd(ModNetCtx *ctx, NgNet *net, NgNetPeer *peer,
         ctx->snapshot_buf = result.state;
       } else if (strncmp(line, "scene ", 6) == 0) {
         mod_net_fill_snapshot_buf(ctx);
+        result.have_state = true;
+        result.state = ctx->snapshot_buf;
       }
       mod_net_send_action_result(ctx, net, peer, &result);
       if (strncmp(line, "scene ", 6) == 0) {
@@ -302,13 +352,38 @@ static void mod_net_exec_host_cmd(ModNetCtx *ctx, NgNet *net, NgNetPeer *peer,
 #endif
 
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
-// agent: composer-2.5 | 2026-07-25 | client inline action apply | f6a7b8
+// agent: composer-2.5 | 2026-07-29 | sync view from snapshot | 4e8a2b
+static void mod_net_sync_view_scene(const NgSnapshot *snap) {
+  if (!snap || snap->scene_id[0] == '\0') {
+    return;
+  }
+  const char *view_id = mod_scene_view_current_id();
+  const bool view_loaded = mod_scene_view_is_loaded();
+  if (!view_loaded || !view_id || view_id[0] == '\0') {
+    NgSessionState bootstrap = {0};
+    strncpy(bootstrap.scene_id, snap->scene_id, sizeof(bootstrap.scene_id) - 1);
+    bootstrap.tick = snap->tick;
+    mod_scene_view_on_session(&bootstrap);
+    mod_scene_view_apply_snapshot(snap);
+    return;
+  }
+  if (strcmp(view_id, snap->scene_id) != 0) {
+    return;
+  }
+  mod_scene_view_apply_snapshot(snap);
+}
+
 static void mod_net_client_apply_action(ModNetCtx *ctx, const NgActionResult *result) {
   if (!ctx || !result) {
     return;
   }
   mod_render_apply_action(result);
-  if (result->reply[0] != '\0') {
+#ifndef NG_SERVER
+  if (result->have_state) {
+    mod_net_sync_view_scene(&result->state);
+  }
+#endif
+  if (result->reply[0] != '\0' && !ctx->console_cmd_pending && !ctx->upstream_pending_reply) {
     NgMsg reply = {
         .kind = NG_MSG_REPLY,
         .from = NG_BUS_NET,
@@ -324,7 +399,9 @@ static void mod_net_client_apply_action(ModNetCtx *ctx, const NgActionResult *re
   }
   ctx->last_action_tick = result->server_tick;
   ctx->pending_snapshot = false;
-  ctx->cmd_inflight = false;
+  if (!ctx->upstream_pending_reply) {
+    ctx->cmd_inflight = false;
+  }
 }
 #endif
 
@@ -343,6 +420,17 @@ static void mod_net_send_connect_snapshot(NgNet *net, NgNetPeer *peer, void *vct
   ModNetCtx *ctx = (ModNetCtx *)vctx;
   NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
   if (!ps) {
+    return;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  if (mod_net_skip_local_boot()) {
+    ps->pending_connect_session = false;
+    ps->pending_connect_snap = false;
+    return;
+  }
+#endif
+  mod_scene_runtime_use_server();
+  if (!mod_scene_is_loaded()) {
     return;
   }
   if (ps->pending_connect_session) {
@@ -379,21 +467,43 @@ void mod_net_configure(const char *host, uint16_t port) {
 }
 
 #if defined(NG_HAS_EMBEDDED)
-static bool g_net_embedded = false;
-static bool g_net_local_loopback = false;
+static bool g_net_gateway = false;
+static char g_upstream_host[64];
+static uint16_t g_upstream_port = 0;
 
-void mod_net_set_embedded(bool embedded) { g_net_embedded = embedded; }
+void mod_net_set_gateway(bool gateway) { g_net_gateway = gateway; }
 
-void mod_net_set_local_loopback(bool local) { g_net_local_loopback = local; }
+bool mod_net_is_gateway(void) { return g_net_ctx.gateway || g_net_gateway; }
 
-bool mod_net_is_embedded(void) { return g_net_ctx.embedded || g_net_embedded; }
+void mod_net_configure_upstream(const char *host, uint16_t port) {
+  if (host) {
+    strncpy(g_upstream_host, host, sizeof(g_upstream_host) - 1);
+    g_upstream_host[sizeof(g_upstream_host) - 1] = '\0';
+  }
+  g_upstream_port = port;
+}
 
-bool mod_net_is_local_loopback(void) { return g_net_ctx.local_loopback || g_net_local_loopback; }
+// agent: composer-2.5 | 2026-07-29 | upstream endpoint accessor | 8b77aa
+void mod_net_upstream_endpoint(char *host, size_t host_cap, uint16_t *port) {
+  if (host && host_cap > 0) {
+    strncpy(host, g_upstream_host, host_cap - 1);
+    host[host_cap - 1] = '\0';
+  }
+  if (port) {
+    *port = g_upstream_port;
+  }
+}
+
+bool mod_net_upstream_connected(void) {
+  return g_net_ctx.net_upstream != NULL && ng_net_connected(g_net_ctx.net_upstream);
+}
+
+bool mod_net_is_authoritative(void) { return mod_net_is_gateway() && !mod_net_upstream_connected(); }
 #endif
 
 static NgNet *mod_net_client_link(ModNetCtx *ctx) {
 #if defined(NG_HAS_EMBEDDED)
-  if (ctx->local_loopback || ctx->embedded) {
+  if (ctx->gateway) {
     return ctx->net_client ? ctx->net_client : ctx->net;
   }
 #endif
@@ -402,11 +512,9 @@ static NgNet *mod_net_client_link(ModNetCtx *ctx) {
 
 bool mod_net_is_connected(void) {
 #if defined(NG_HAS_EMBEDDED)
-  if (mod_net_is_embedded()) {
-    return ng_embed_ready();
-  }
-  if (mod_net_is_local_loopback()) {
-    return g_net_ctx.loopback != NULL && g_net_ctx.net_client != NULL;
+  if (mod_net_is_gateway()) {
+    return g_net_ctx.loopback != NULL && g_net_ctx.net_client != NULL &&
+           ng_net_connected(g_net_ctx.net_client);
   }
 #endif
   NgNet *link = mod_net_client_link(&g_net_ctx);
@@ -416,8 +524,8 @@ bool mod_net_is_connected(void) {
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 bool mod_net_has_clients(void) {
 #if defined(NG_HAS_EMBEDDED)
-  if (g_net_ctx.embedded) {
-    return g_net_ctx.net != NULL && ng_net_connected(g_net_ctx.net);
+  if (g_net_ctx.gateway && g_net_ctx.net && ng_net_connected(g_net_ctx.net)) {
+    return true;
   }
 #endif
   if (g_net_ctx.net && ng_net_connected(g_net_ctx.net)) {
@@ -451,9 +559,82 @@ double mod_net_connect_elapsed(void) {
 }
 #endif
 
-#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
-static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data,
-                                       size_t len, uint8_t channel, void *vctx) {
+#if defined(NG_HAS_EMBEDDED)
+static void mod_net_forward_upstream(ModNetCtx *ctx, const uint8_t *data, size_t len,
+                                     uint8_t channel, bool reliable) {
+  if (!ctx || !ctx->net_upstream || !ng_net_connected(ctx->net_upstream) || !data || len == 0) {
+    return;
+  }
+  ng_net_send(ctx->net_upstream, data, len, channel, reliable);
+  ng_net_flush(ctx->net_upstream);
+}
+
+static bool mod_net_begin_upstream_cmd(ModNetCtx *ctx, const char *line, bool for_console) {
+  if (!ctx || !line || !ctx->net_upstream || !ng_net_connected(ctx->net_upstream)) {
+    return false;
+  }
+  if (ctx->cmd_inflight) {
+    return false;
+  }
+  if (!ng_proto_encode_cmd(&ctx->tx_buf, ++ctx->seq, line)) {
+    return false;
+  }
+  ctx->cmd_inflight = true;
+  ctx->upstream_pending_reply = true;
+  ctx->console_cmd_pending = for_console;
+  ctx->upstream_reply[0] = '\0';
+  ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+  ng_net_flush(ctx->net_upstream);
+  return true;
+}
+
+static void mod_net_finish_upstream_cmd(ModNetCtx *ctx, const char *text) {
+  if (!ctx || !ctx->upstream_pending_reply) {
+    return;
+  }
+  if (text && text[0] != '\0') {
+    strncpy(ctx->upstream_reply, text, sizeof(ctx->upstream_reply) - 1);
+    ctx->upstream_reply[sizeof(ctx->upstream_reply) - 1] = '\0';
+  }
+  ctx->cmd_inflight = false;
+  ctx->upstream_pending_reply = false;
+  if (ctx->console_cmd_pending) {
+    NgMsg reply = {
+        .kind = NG_MSG_REPLY,
+        .from = NG_BUS_NET,
+        .to = NG_BUS_CONSOLE,
+        .text = ctx->upstream_reply[0] != '\0' ? ctx->upstream_reply : "upstream ok",
+    };
+    ng_bus_publish(&reply);
+    ctx->console_cmd_pending = false;
+  }
+}
+
+static bool mod_net_upstream_reply_from_packet(NgProtoBuf *buf, NgProtoHeader *h, char *text,
+                                               size_t text_cap) {
+  if (!buf || !h || !text || text_cap == 0) {
+    return false;
+  }
+  buf->pos = sizeof(NgProtoHeader);
+  if (h->type == NG_PKT_CMD_REPLY) {
+    return ng_proto_decode_text(buf, text, text_cap);
+  }
+  if (h->type == NG_PKT_ACTION_RESULT) {
+    NgActionResult result = {0};
+    if (!ng_proto_decode_action_result(buf, &result)) {
+      return false;
+    }
+    if (result.reply[0] != '\0') {
+      strncpy(text, result.reply, text_cap - 1);
+      text[text_cap - 1] = '\0';
+      return true;
+    }
+  }
+  return false;
+}
+
+static void mod_net_handle_upstream_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data,
+                                           size_t len, uint8_t channel, void *vctx) {
   ModNetCtx *ctx = (ModNetCtx *)vctx;
   (void)net;
   (void)peer;
@@ -473,6 +654,135 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
   }
 
   switch (h.type) {
+  case NG_PKT_REGISTER_ACK: {
+    NgRegisterAck ack = {0};
+    if (!ng_proto_decode_register_ack(buf, &ack)) {
+      return;
+    }
+    ctx->assigned_agent_port = ack.agent_port;
+    ctx->register_pending = false;
+    NG_LOG_INFO("upstream register ack peer=%u agent=%u", ack.peer_id, ack.agent_port);
+    break;
+  }
+  case NG_PKT_SESSION:
+  case NG_PKT_SNAPSHOT:
+  case NG_PKT_STATE_UPDATE:
+  case NG_PKT_STATE_BATCH:
+  case NG_PKT_ACTION_RESULT:
+  case NG_PKT_CMD_REPLY:
+    if (h.type == NG_PKT_SNAPSHOT) {
+      NgSnapshot snap = {0};
+      bool delta = false;
+      NgProtoBuf snap_buf = *buf;
+      if (ng_proto_decode_snapshot(&snap_buf, &snap, &delta)) {
+        mod_net_update_root_mirror(&snap);
+      }
+    }
+    mod_net_handle_client_packet(ctx->net_client, NULL, data, len, channel, ctx);
+    if (h.type == NG_PKT_CMD_REPLY || h.type == NG_PKT_ACTION_RESULT) {
+      char reply_text[1024];
+      reply_text[0] = '\0';
+      mod_net_upstream_reply_from_packet(buf, &h, reply_text, sizeof(reply_text));
+      mod_net_finish_upstream_cmd(ctx, reply_text);
+    }
+    break;
+  default:
+    break;
+  }
+}
+
+bool mod_net_gateway_upstream_cmd(const char *line, char *reply, size_t reply_cap) {
+  ModNetCtx *ctx = &g_net_ctx;
+  if (!mod_net_begin_upstream_cmd(ctx, line, false)) {
+    return false;
+  }
+  const double deadline = GetTime() + 2.0;
+  while (ctx->cmd_inflight && GetTime() < deadline) {
+    ng_net_poll_wait(ctx->net_upstream, mod_net_handle_upstream_packet, ctx, 1);
+    mod_net_client_recv(ctx);
+  }
+  if (ctx->cmd_inflight) {
+    mod_net_finish_upstream_cmd(ctx, "upstream cmd timeout");
+  }
+  for (int i = 0; i < 32; i++) {
+    ng_net_poll_wait(ctx->net_upstream, mod_net_handle_upstream_packet, ctx, 1);
+    mod_net_client_recv(ctx);
+  }
+  if (reply && reply_cap > 0) {
+    if (ctx->upstream_reply[0] != '\0') {
+      strncpy(reply, ctx->upstream_reply, reply_cap - 1);
+      reply[reply_cap - 1] = '\0';
+    } else {
+      reply[0] = '\0';
+    }
+  }
+  return true;
+}
+
+void mod_net_gateway_status_text(char *out, size_t cap) {
+  if (!out || cap == 0) {
+    return;
+  }
+  ModNetCtx *ctx = &g_net_ctx;
+  snprintf(out, cap, "gateway upstream=%d agent=%u ready=%d",
+           mod_net_upstream_connected() ? 1 : 0, ctx->assigned_agent_port,
+           mod_render_has_snapshot() ? 1 : 0);
+}
+#endif
+
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data,
+                                       size_t len, uint8_t channel, void *vctx) {
+  ModNetCtx *ctx = (ModNetCtx *)vctx;
+  (void)net;
+  (void)peer;
+  (void)channel;
+  if (!data || len < sizeof(NgProtoHeader)) {
+    return;
+  }
+
+  mod_scene_runtime_use_server();
+
+  NgProtoBuf *buf = &ctx->rx_buf;
+  mod_net_rx_load(ctx, data, len);
+  buf->pos = sizeof(NgProtoHeader);
+
+  NgProtoHeader h;
+  buf->pos = 0;
+  if (!ng_proto_read_header(buf, &h) || h.magic != NG_PROTO_MAGIC) {
+    return;
+  }
+
+  switch (h.type) {
+  case NG_PKT_REGISTER: {
+#if defined(NG_SERVER)
+    NgRegisterReq req = {0};
+    if (!ng_proto_decode_register(buf, &req)) {
+      return;
+    }
+    NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+    if (!ps) {
+      return;
+    }
+    ps->role = NG_PEER_DEPENDENT;
+    ps->registered = true;
+    strncpy(ps->name, req.name, sizeof(ps->name) - 1);
+    ps->name[sizeof(ps->name) - 1] = '\0';
+    ps->assigned_agent_port = mod_net_alloc_agent_port();
+    NgRegisterAck ack = {
+        .peer_id = ps->peer_id,
+        .role = NG_PEER_DEPENDENT,
+        .agent_port = ps->assigned_agent_port,
+        .root_game_port = ctx->port,
+    };
+    if (!ng_proto_encode_register_ack(&ctx->tx_buf, ++ctx->seq, &ack)) {
+      return;
+    }
+    ng_net_send_to(net, peer, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+    NG_LOG_INFO("dependent registered name=%s agent=%u", ps->name, ps->assigned_agent_port);
+#endif
+    break;
+  }
   case NG_PKT_INPUT: {
     (void)ctx;
     break;
@@ -482,6 +792,12 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (!ng_proto_decode_cmd(buf, line, sizeof(line))) {
       return;
     }
+#if defined(NG_HAS_EMBEDDED)
+    if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
+      mod_net_forward_upstream(ctx, data, len, channel, true);
+      return;
+    }
+#endif
     mod_net_exec_host_cmd(ctx, net, peer, line, h.seq);
     break;
   }
@@ -505,6 +821,9 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     }
     NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
     ng_net_foreach_peer(net, mod_net_relay_state_update, &relay);
+#if defined(NG_HAS_EMBEDDED)
+    mod_net_forward_upstream(ctx, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+#endif
     break;
   }
   case NG_PKT_STATE_BATCH: {
@@ -531,6 +850,9 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     }
     NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
     ng_net_foreach_peer(net, mod_net_relay_state_update, &relay);
+#if defined(NG_HAS_EMBEDDED)
+    mod_net_forward_upstream(ctx, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+#endif
     break;
   }
   case NG_PKT_STATE_ACK: {
@@ -555,11 +877,6 @@ static void mod_net_send_state_ack(ModNetCtx *ctx, const NgStateUpdate *update) 
   if (!ctx || !update || update->seq == 0) {
     return;
   }
-#if defined(NG_HAS_EMBEDDED)
-  if (mod_net_is_embedded()) {
-    return;
-  }
-#endif
   NgNet *link = mod_net_client_link(ctx);
   if (!ng_net_connected(link)) {
     return;
@@ -579,6 +896,8 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
   if (!data || len < sizeof(NgProtoHeader)) {
     return;
   }
+
+  mod_scene_runtime_use_view();
 
   NgProtoBuf *buf = &ctx->rx_buf;
   mod_net_rx_load(ctx, data, len);
@@ -608,16 +927,8 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     ctx->have_baseline = true;
     ctx->last_snap_tick = ctx->snapshot_buf.tick;
 #ifndef NG_SERVER
-    // agent: composer-2.5 | 2026-07-28 | bootstrap scene from snapshot client | 8a3951
-    if (!mod_scene_is_loaded() ||
-        strcmp(mod_scene_current_id(), ctx->snapshot_buf.scene_id) != 0) {
-      NgSessionState bootstrap = {0};
-      strncpy(bootstrap.scene_id, ctx->snapshot_buf.scene_id, sizeof(bootstrap.scene_id) - 1);
-      bootstrap.tick = ctx->snapshot_buf.tick;
-      mod_scene_on_session(&bootstrap);
-    }
+    mod_net_sync_view_scene(&ctx->snapshot_buf);
 #endif
-    mod_scene_apply_snapshot(&ctx->snapshot_buf);
     ctx->pending_snapshot = true;
     break;
   }
@@ -637,7 +948,9 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     ctx->pending_reply = true;
     strncpy(ctx->pending_reply_text, text, sizeof(ctx->pending_reply_text) - 1);
     ctx->pending_reply_text[sizeof(ctx->pending_reply_text) - 1] = '\0';
-    ctx->cmd_inflight = false;
+    if (!ctx->upstream_pending_reply) {
+      ctx->cmd_inflight = false;
+    }
     break;
   }
   case NG_PKT_SESSION: {
@@ -646,7 +959,8 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       return;
     }
     session.tick = h.tick;
-    mod_scene_on_session(&session);
+    mod_net_update_root_mirror_session(&session);
+    mod_scene_view_on_session(&session);
     break;
   }
   case NG_PKT_STATE_UPDATE: {
@@ -654,7 +968,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     if (!ng_proto_decode_state_update(buf, &update)) {
       return;
     }
-    mod_scene_apply_remote(&update);
+    mod_scene_view_apply_remote(&update);
     mod_net_send_state_ack(ctx, &update);
     break;
   }
@@ -666,7 +980,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     }
     for (int i = 0; i < count; i++) {
       updates[i].tick = h.tick;
-      mod_scene_apply_remote(&updates[i]);
+      mod_scene_view_apply_remote(&updates[i]);
       mod_net_send_state_ack(ctx, &updates[i]);
     }
     break;
@@ -690,6 +1004,7 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
   if (connected) {
     NetPeerState *ps = (NetPeerState *)calloc(1, sizeof(NetPeerState));
     ps->peer_id = ++ctx->next_peer_id;
+    ps->role = NG_PEER_THIN;
     if (ctx->controller_id == 0) {
       ctx->controller_id = ps->peer_id;
     }
@@ -829,26 +1144,45 @@ static bool mod_net_on_msg(const NgMsg *msg, void *vctx) {
 
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
   if (msg->kind == NG_MSG_CMD && msg->line) {
-    if (ctx->embedded) {
-      NgBusDest dest = NG_BUS_SCRIPT;
-      if (strncmp(msg->line, "scene ", 6) == 0) {
-        dest = NG_BUS_SIM;
+#if defined(NG_HAS_EMBEDDED)
+    if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
+      if (ctx->cmd_inflight) {
+        NgMsg busy = {
+            .kind = NG_MSG_REPLY,
+            .from = NG_BUS_NET,
+            .to = NG_BUS_CONSOLE,
+            .text = "cmd busy (wait for prior reply)",
+        };
+        ng_bus_publish(&busy);
+        return true;
       }
-      NgMsg fwd = {
-          .kind = NG_MSG_CMD,
+      if (mod_net_begin_upstream_cmd(ctx, msg->line, true)) {
+        return true;
+      }
+      NgMsg fail = {
+          .kind = NG_MSG_REPLY,
           .from = NG_BUS_NET,
-          .to = dest,
-          .line = msg->line,
+          .to = NG_BUS_CONSOLE,
+          .text = "upstream cmd failed",
       };
-      ng_bus_publish(&fwd);
+      ng_bus_publish(&fail);
       return true;
     }
-#if defined(NG_HAS_EMBEDDED)
-    // agent: composer-2.5 | 2026-07-26 | inline loopback cmd exec | 2b36e4
-    if (ctx->local_loopback && ctx->net) {
+    if (ctx->gateway && ctx->net) {
       ctx->cmd_inflight = true;
       mod_net_exec_host_cmd(ctx, ctx->net, NULL, msg->line, ++ctx->seq);
+      ng_net_poll(ctx->net, mod_net_handle_host_packet, ctx);
       mod_net_client_recv(ctx);
+      if (ctx->pending_reply) {
+        NgMsg reply = {
+            .kind = NG_MSG_REPLY,
+            .from = NG_BUS_NET,
+            .to = NG_BUS_CONSOLE,
+            .text = ctx->pending_reply_text,
+        };
+        ng_bus_publish(&reply);
+        ctx->pending_reply = false;
+      }
       return true;
     }
 #endif
@@ -862,27 +1196,95 @@ static bool mod_net_on_msg(const NgMsg *msg, void *vctx) {
     return true;
   }
   if (msg->kind == NG_MSG_TICK) {
-#if defined(NG_HAS_EMBEDDED)
-    if (ctx->embedded) {
-      return true;
-    }
-#endif
     return true;
   }
 #endif
   return false;
 }
 
+#if defined(NG_HAS_EMBEDDED)
+void mod_net_gateway_resync(void) {
+  ModNetCtx *ctx = &g_net_ctx;
+  if (!ctx->gateway || !ctx->net || mod_net_skip_local_boot()) {
+    return;
+  }
+  mod_scene_runtime_use_server();
+  if (!mod_scene_is_loaded()) {
+    return;
+  }
+  mod_net_fill_snapshot_buf(ctx);
+  mod_net_broadcast_session(ctx, ctx->net);
+  ng_net_foreach_peer(ctx->net, mod_net_send_snapshot_peer, ctx);
+  ng_net_flush(ctx->net);
+  mod_net_client_recv(ctx);
+}
+
+static bool mod_net_gateway_register(ModNetCtx *ctx) {
+  if (!ctx || !ctx->net_upstream) {
+    return false;
+  }
+  const double deadline = GetTime() + 5.0;
+  while (!ng_net_connected(ctx->net_upstream) && GetTime() < deadline) {
+    ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
+    usleep(1000);
+  }
+  if (!ng_net_connected(ctx->net_upstream)) {
+    NG_LOG_WARN("upstream not connected for register");
+    return false;
+  }
+
+  NgRegisterReq req = {0};
+  snprintf(req.name, sizeof(req.name), "gateway-%d", (int)getpid());
+  req.proto_ver = NG_PROTO_VERSION;
+  if (!ng_proto_encode_register(&ctx->tx_buf, ++ctx->seq, &req)) {
+    return false;
+  }
+  ctx->register_pending = true;
+  ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+  ng_net_flush(ctx->net_upstream);
+
+  while (ctx->register_pending && GetTime() < deadline) {
+    ng_net_poll_wait(ctx->net_upstream, mod_net_handle_upstream_packet, ctx, 1);
+  }
+  if (ctx->assigned_agent_port == 0) {
+    NG_LOG_WARN("upstream register ack timeout");
+    return false;
+  }
+  return true;
+}
+
+void mod_net_gateway_sync_view(void) {
+  // agent: composer-2.5 | 2026-07-29 | drain upstream view sync | 2705b6
+  ModNetCtx *ctx = &g_net_ctx;
+  if (!ctx->gateway || !ctx->net_upstream || !ng_net_connected(ctx->net_upstream)) {
+    return;
+  }
+  const double deadline = GetTime() + 5.0;
+  while (GetTime() < deadline) {
+    ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
+    mod_net_client_recv(ctx);
+    if (ctx->have_baseline && mod_scene_view_is_loaded()) {
+      return;
+    }
+    usleep(1000);
+  }
+}
+#endif
+
 static bool mod_net_init(void *vctx) {
   ModNetCtx *ctx = (ModNetCtx *)vctx;
   char host_save[64];
   const uint16_t port_save = ctx->port;
 #if defined(NG_HAS_EMBEDDED)
-  const bool embedded_save = g_net_embedded;
-  const bool local_save = g_net_local_loopback;
+  const bool gateway_save = g_net_gateway;
+  char upstream_host_save[64];
+  const uint16_t upstream_port_save = g_upstream_port;
+  strncpy(upstream_host_save, g_upstream_host, sizeof(upstream_host_save) - 1);
+  upstream_host_save[sizeof(upstream_host_save) - 1] = '\0';
 #else
-  const bool embedded_save = false;
-  const bool local_save = false;
+  const bool gateway_save = false;
+  char upstream_host_save[64] = {0};
+  const uint16_t upstream_port_save = 0;
 #endif
   if (ctx->host[0] != '\0') {
     strncpy(host_save, ctx->host, sizeof(host_save) - 1);
@@ -894,8 +1296,9 @@ static bool mod_net_init(void *vctx) {
   strncpy(ctx->host, host_save, sizeof(ctx->host) - 1);
   ctx->port = port_save ? port_save : NG_NET_DEFAULT_PORT;
 #if defined(NG_HAS_EMBEDDED)
-  ctx->embedded = embedded_save;
-  ctx->local_loopback = local_save;
+  ctx->gateway = gateway_save;
+  strncpy(ctx->upstream_host, upstream_host_save, sizeof(ctx->upstream_host) - 1);
+  ctx->upstream_port = upstream_port_save;
 #endif
 
 #ifdef NG_SERVER
@@ -910,10 +1313,7 @@ static bool mod_net_init(void *vctx) {
   ng_net_set_peer_fn(ctx->net, mod_net_on_peer, ctx);
   return true;
 #elif defined(NG_HAS_EMBEDDED)
-  if (ctx->embedded) {
-    return true;
-  }
-  if (ctx->local_loopback) {
+  if (ctx->gateway) {
     ctx->loopback = ng_net_loopback_create();
     if (!ctx->loopback) {
       return false;
@@ -922,6 +1322,15 @@ static bool mod_net_init(void *vctx) {
     ctx->net_client = ng_net_loopback_client(ctx->loopback);
     ng_net_set_peer_fn(ctx->net, mod_net_on_peer, ctx);
     ng_net_loopback_connect(ctx->loopback);
+    if (ctx->upstream_host[0] != '\0' && ctx->upstream_port != 0) {
+      ctx->net_upstream =
+          ng_net_create(NG_NET_ROLE_CLIENT, ctx->upstream_host, ctx->upstream_port);
+      if (!ctx->net_upstream) {
+        NG_LOG_WARN("upstream connect failed %s:%u", ctx->upstream_host, ctx->upstream_port);
+      } else if (!mod_net_gateway_register(ctx)) {
+        NG_LOG_WARN("upstream register failed %s:%u", ctx->upstream_host, ctx->upstream_port);
+      }
+    }
     if (!g_connect_t0_set) {
       g_connect_t0 = GetTime();
       g_connect_t0_set = true;
@@ -957,6 +1366,10 @@ static void mod_net_shutdown(void *vctx) {
   ctx->ws = NULL;
 #endif
 #if defined(NG_HAS_EMBEDDED)
+  if (ctx->net_upstream) {
+    ng_net_destroy(ctx->net_upstream);
+    ctx->net_upstream = NULL;
+  }
   if (ctx->loopback) {
     ng_net_loopback_destroy(ctx->loopback);
     ctx->loopback = NULL;
@@ -973,12 +1386,7 @@ static bool mod_net_tick(const NgMsg *msg, void *vctx) {
   (void)msg;
   ModNetCtx *ctx = (ModNetCtx *)vctx;
 #if defined(NG_HAS_EMBEDDED)
-  if (ctx->embedded) {
-    return true;
-  }
-  if (ctx->local_loopback) {
-    ng_net_poll(ctx->net, mod_net_handle_host_packet, ctx);
-    ng_net_foreach_peer(ctx->net, mod_net_send_connect_snapshot, ctx);
+  if (ctx->gateway) {
     mod_net_client_recv(ctx);
     return true;
   }
@@ -1016,15 +1424,26 @@ void mod_net_server_poll(void) {
 }
 #endif
 
+#if defined(NG_HAS_EMBEDDED)
+void mod_net_gateway_host_poll(void) {
+  ModNetCtx *ctx = &g_net_ctx;
+  if (!ctx->gateway || !ctx->net) {
+    return;
+  }
+  ng_net_poll(ctx->net, mod_net_handle_host_packet, ctx);
+  ng_net_foreach_peer(ctx->net, mod_net_send_connect_snapshot, ctx);
+  ng_net_flush(ctx->net);
+  if (ctx->net_upstream) {
+    ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
+    ng_net_flush(ctx->net_upstream);
+    mod_net_client_recv(ctx);
+  }
+}
+#endif
+
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
 void mod_net_poll_recv(void) {
-  ModNetCtx *ctx = &g_net_ctx;
-#if defined(NG_HAS_EMBEDDED)
-  if (ctx->local_loopback && ctx->net) {
-    ng_net_poll(ctx->net, mod_net_handle_host_packet, ctx);
-  }
-#endif
-  mod_net_client_recv(ctx);
+  mod_net_client_recv(&g_net_ctx);
 }
 #endif
 
@@ -1054,11 +1473,6 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
   if (!mod_scene_is_loaded()) {
     return;
   }
-#if defined(NG_HAS_EMBEDDED)
-  if (mod_net_is_embedded()) {
-    return;
-  }
-#endif
   NgStateUpdate batch[16];
   for (;;) {
     int count = 0;
@@ -1098,6 +1512,26 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
 
 void mod_net_flush_scene_updates(void) { mod_net_flush_state_update(&g_net_ctx); }
 
+#if defined(NG_HAS_EMBEDDED)
+uint16_t mod_net_assigned_agent_port(void) { return g_net_ctx.assigned_agent_port; }
+
+bool mod_net_skip_local_boot(void) {
+  return mod_net_is_gateway() && g_net_ctx.upstream_host[0] != '\0';
+}
+
+void mod_net_root_mirror_text(char *out, size_t cap) {
+  if (!out || cap == 0) {
+    return;
+  }
+  if (!g_root_mirror.valid) {
+    snprintf(out, cap, "root n/a");
+    return;
+  }
+  snprintf(out, cap, "root scene=%s entities=%d tick=%u", g_root_mirror.scene_id,
+           g_root_mirror.entity_count, g_root_mirror.tick);
+}
+#endif
+
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 void mod_net_broadcast_scene_session(void) {
   ModNetCtx *ctx = &g_net_ctx;
@@ -1111,5 +1545,11 @@ const NgModOps *mod_net_ops(void) { return &g_net_ops; }
 
 void *mod_net_ctx(void) { return &g_net_ctx; }
 
-// agent: composer-2.5 | 2026-07-28 | session before snapshot on connect | d364f3
-// agent: composer-2.5 | 2026-07-28 | bootstrap scene from snapshot client | 8a3951
+// agent: composer-2.5 | 2026-07-29 | wire view only handlers | 3afab8
+// agent: composer-2.5 | 2026-07-29 | gateway resync skip loopback | 38cd44
+// agent: composer-2.5 | 2026-07-29 | async upstream console cmd | c9d0e1
+// agent: composer-2.5 | 2026-07-29 | sync view from snapshot | 381657
+// agent: composer-2.5 | 2026-07-29 | upstream endpoint accessor | 8b77aa
+// agent: composer-2.5 | 2026-07-29 | no stale snapshot scene revert | 8aba32
+// agent: composer-2.5 | 2026-07-29 | drain upstream view sync | 2705b6
+// agent: composer-2.5 | 2026-07-29 | root mirror tracks sessions | 5809c3

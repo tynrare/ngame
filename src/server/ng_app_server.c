@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-25 | headless server orchestrator | j3m51h
+// agent: composer-2.5 | 2026-07-28 | use shared server runtime | 776fad
 #include "ng_app_server.h"
 #include "engine/ng_bus.h"
 #include "engine/ng_log.h"
@@ -6,6 +7,7 @@
 #include "server/agent.h"
 #include "net/mod_net.h"
 #include "scene/scene.h"
+#include "server/ng_server_runtime.h"
 #include "server/script.h"
 #include "server/sim.h"
 #include "net/ng_net.h"
@@ -14,14 +16,9 @@
 #include <string.h>
 #include <time.h>
 
-#define NG_SIM_HZ 60.0f
-#define NG_SIM_STEP (1.0f / NG_SIM_HZ)
-#define NG_SIM_MAX_STEPS 4
-
 static bool g_ready = false;
 static bool g_running = true;
 static double g_last_time = 0.0;
-static float g_accum = 0.0f;
 
 static double ng_server_now(void) {
   struct timespec ts;
@@ -60,6 +57,7 @@ void ng_app_server_init(int argc, char **argv) {
     return;
   }
 
+  ng_server_runtime_init();
   g_last_time = ng_server_now();
   g_ready = true;
   NG_LOG_INFO("server ready");
@@ -70,41 +68,13 @@ void ng_app_server_frame(void) {
     return;
   }
 
-  // agent: composer-2.5 | 2026-07-26 | poll net before sim tick | f0a1b2
-  for (int i = 0; i < 8; i++) {
-    mod_net_server_poll();
-  }
-  mod_agent_poll();
+  ng_server_runtime_poll_net();
+  ng_server_runtime_poll_agent();
 
   const double now = ng_server_now();
   const float dt = (float)(now - g_last_time);
   g_last_time = now;
-  if (dt < 0.0f) {
-    return;
-  }
-
-  NgMsg tick = {
-      .kind = NG_MSG_TICK,
-      .from = NG_BUS_ANY,
-      .to = NG_BUS_ANY,
-      .dt = dt,
-  };
-  ng_bus_publish(&tick);
-
-  // agent: composer-2.5 | 2026-07-25 | cap sim substeps per frame | fcb318
-  g_accum += dt;
-  int sim_steps = 0;
-  while (g_accum >= NG_SIM_STEP && sim_steps < NG_SIM_MAX_STEPS) {
-    NgMsg sim_tick = {
-        .kind = NG_MSG_TICK,
-        .from = NG_BUS_ANY,
-        .to = NG_BUS_SIM,
-        .dt = NG_SIM_STEP,
-    };
-    ng_bus_publish(&sim_tick);
-    g_accum -= NG_SIM_STEP;
-    sim_steps++;
-  }
+  ng_server_runtime_frame(dt);
 }
 
 void ng_app_server_shutdown(void) {
@@ -114,6 +84,7 @@ void ng_app_server_shutdown(void) {
       .to = NG_BUS_ANY,
   };
   ng_bus_publish(&msg);
+  ng_server_runtime_shutdown();
   ng_mod_shutdown_all();
   ng_bus_shutdown();
   ng_net_shutdown();
@@ -121,3 +92,5 @@ void ng_app_server_shutdown(void) {
 }
 
 bool ng_app_server_running(void) { return g_running; }
+
+// agent: composer-2.5 | 2026-07-28 | use shared server runtime | 776fad

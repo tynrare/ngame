@@ -1,8 +1,17 @@
 // agent: composer-2.5 | 2026-07-25 | console bus module | 6b2e9a
+// agent: composer-2.5 | 2026-07-29 | poll input after BeginDrawing | f8e1d0
 #include "console.h"
 #include "engine/ng_bus.h"
+// agent: composer-2.5 | 2026-07-29 | explicit launch mode include | b5d2c1
+#include "client/ng_app_client.h"
+#include "net/mod_net.h"
+#include "client/render.h"
+#include "scene/scene.h"
+#include "server/agent.h"
 #include <raylib.h>
 #include <string.h>
+// agent: composer-2.5 | 2026-07-29 | console include stdio | b2c613
+#include <stdio.h>
 
 #define MOD_CONSOLE_INPUT_MAX 256
 #define MOD_CONSOLE_OUTPUT_MAX 1024
@@ -68,6 +77,66 @@ static void mod_console_submit(ModConsoleCtx *ctx) {
   strncpy(ctx->last_cmd, ctx->input, MOD_CONSOLE_INPUT_MAX - 1);
   ctx->last_cmd[MOD_CONSOLE_INPUT_MAX - 1] = '\0';
 
+  // agent: composer-2.5 | 2026-07-29 | console ? status commands | 0b1c2d
+  if (strcmp(ctx->last_cmd, "?") == 0) {
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+    mod_console_set_output(ctx, "? | status | mcp | scene <id>");
+#else
+    mod_console_set_output(ctx, "? | status | scene <id>");
+#endif
+    ctx->input[0] = '\0';
+    ctx->input_len = 0;
+    ctx->submitted = false;
+    return;
+  }
+
+  // agent: composer-2.5 | 2026-07-29 | explicit launch mode in status | 19de42
+  if (strcmp(ctx->last_cmd, "status") == 0 || strcmp(ctx->last_cmd, "mcp") == 0) {
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+    char host_line[64] = {0};
+    uint16_t ep_port = 0;
+    char root_line[128] = {0};
+    char view_line[128] = {0};
+    char render_line[256] = {0};
+    char vis_line[128] = {0};
+    char up_host[64] = {0};
+    uint16_t up_port = 0;
+    char auth_line[32] = {0};
+    mod_net_endpoint(host_line, sizeof(host_line), &ep_port);
+    mod_net_root_mirror_text(root_line, sizeof(root_line));
+    mod_scene_view_status_text(view_line, sizeof(view_line));
+    mod_render_snapshot_text(render_line, sizeof(render_line));
+    mod_render_visibility_text(vis_line, sizeof(vis_line));
+    mod_net_upstream_endpoint(up_host, sizeof(up_host), &up_port);
+    snprintf(auth_line, sizeof(auth_line), "%s", mod_net_is_authoritative() ? "local" : "upstream");
+    const uint16_t listen_port = mod_agent_listening_port();
+    const double elapsed = mod_net_connect_elapsed();
+    const char *launch_mode = ng_app_client_mode_text();
+    char status[800] = {0};
+    snprintf(status, sizeof(status),
+             "status\n"
+             "launch=%s\n"
+             "gw=%s\n"
+             "client=%s:%u\n"
+             "upstream=%s:%u conn=%d\n"
+             "agent_listen=%u elapsed=%.1fs\n"
+             "%s\n"
+             "%s\n"
+             "%s\n"
+             "%s",
+             launch_mode, auth_line, host_line, ep_port, up_host[0] ? up_host : "-", up_port,
+             mod_net_upstream_connected() ? 1 : 0, listen_port, elapsed, root_line, view_line,
+             vis_line, render_line);
+    mod_console_set_output(ctx, status);
+#else
+    mod_console_set_output(ctx, "status n/a");
+#endif
+    ctx->input[0] = '\0';
+    ctx->input_len = 0;
+    ctx->submitted = false;
+    return;
+  }
+
   NgMsg msg = {
       .kind = NG_MSG_CMD,
       .from = NG_BUS_CONSOLE,
@@ -91,6 +160,7 @@ static void mod_console_draw(const ModConsoleCtx *ctx) {
 
   DrawRectangle(1, 1, w, panel_h, (Color){0, 0, 0, 100});
   DrawText(TextFormat("> %s", ctx->last_cmd), 5, 2, MOD_CONSOLE_LINE_H, WHITE);
+  // agent: composer-2.5 | 2026-07-29 | only show requested output | 91af2c
   DrawText(ctx->output, 10, MOD_CONSOLE_LINE_H + 2, MOD_CONSOLE_LINE_H, WHITE);
 
   const int row_y = 1 + MOD_CONSOLE_LINE_H * (MOD_CONSOLE_LINES - 1);
@@ -107,8 +177,6 @@ static bool mod_console_on_msg(const NgMsg *msg, void *vctx) {
 
   switch (msg->kind) {
   case NG_MSG_TICK:
-    mod_console_update_input(ctx);
-    mod_console_submit(ctx);
     return true;
   case NG_MSG_DRAW:
     mod_console_draw(ctx);
@@ -128,9 +196,8 @@ static bool mod_console_init(void *vctx) {
   memset(ctx, 0, sizeof(*ctx));
   ctx->open = false;
   ng_bus_set_gate(NG_BUS_RENDER, true);
-  mod_console_set_output(ctx,
-                         // agent: composer-2.5 | 2026-07-28 | generic scene console help | 0a3775
-                         "Tab: toggle console\nscene <id>  (sphere, cube, example, …)");
+  // agent: composer-2.5 | 2026-07-29 | console init clears output | 5e6f7a
+  mod_console_set_output(ctx, "");
   return true;
 }
 
@@ -150,4 +217,18 @@ const NgModOps *mod_console_ops(void) { return &g_console_ops; }
 
 void *mod_console_ctx(void) { return &g_console_ctx; }
 
+void mod_console_poll_input(void) {
+  ModConsoleCtx *ctx = &g_console_ctx;
+  mod_console_update_input(ctx);
+  mod_console_submit(ctx);
+}
+
+// agent: composer-2.5 | 2026-07-29 | console verbose status | 87ab0b
+// agent: composer-2.5 | 2026-07-29 | console ? status commands | 0b1c2d
+// agent: composer-2.5 | 2026-07-29 | explicit launch mode include | b5d2c1
+// agent: composer-2.5 | 2026-07-29 | explicit launch mode in status | 19de42
+// agent: composer-2.5 | 2026-07-29 | only show requested output | 91af2c
+// agent: composer-2.5 | 2026-07-29 | console init clears output | 5e6f7a
+// agent: composer-2.5 | 2026-07-29 | console include stdio | b2c613
 // agent: composer-2.5 | 2026-07-28 | generic scene console help | 0a3775
+// agent: composer-2.5 | 2026-07-29 | poll input after BeginDrawing | f8e1d0

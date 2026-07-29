@@ -1,6 +1,10 @@
 // agent: composer-2.5 | 2026-07-25 | spawn port wait devnull | 3548df
+// agent: composer-2.5 | 2026-07-28 | gateway agent upstream ports | 2cac03
+// agent: composer-2.5 | 2026-07-29 | default local sets upstream | c2d01b
 #include "ng_launch.h"
 #include "engine/ng_log.h"
+#include "net/mod_net.h"
+#include "server/agent.h"
 #include "net/ng_net.h"
 #include <errno.h>
 #include <stdio.h>
@@ -44,14 +48,19 @@ void ng_launch_print_usage(const char *prog) {
           "Usage: %s [mode] [options]\n"
           "\n"
           "Modes (native):\n"
-          "  --local [--port PORT]       spawn ngame_server + connect (default on native)\n"
-          "  --remote HOST:PORT          connect to existing server\n"
-          "  --embedded                  in-process server via loopback\n"
+          "  --local [--port PORT]       spawn ngame_server + gateway upstream\n"
+          "  --remote HOST:PORT          gateway upstream to existing server\n"
+          "  --solo                      local gateway only (no upstream root)\n"
           "\n"
           "Aliases:\n"
           "  --connect HOST:PORT         same as --remote\n"
+          "  --embedded                  same as --solo\n"
           "\n"
-          "Web default: --embedded\n",
+          "Options:\n"
+          "  --agent-port PORT           MCP port (solo default 27100; upstream uses root-assigned)\n"
+          "\n"
+          "Native default: --local (spawn ngame_server + gateway upstream)\n"
+          "Web default: --solo\n",
           name);
 }
 
@@ -61,36 +70,47 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
   }
   cfg->mode =
 #if defined(__EMSCRIPTEN__)
-      NG_LAUNCH_EMBEDDED;
+      NG_LAUNCH_LOCAL;
 #else
       NG_LAUNCH_LOCAL;
 #endif
   strncpy(cfg->host, NG_NET_HOST, sizeof(cfg->host) - 1);
   cfg->host[sizeof(cfg->host) - 1] = '\0';
   cfg->port = NG_NET_DEFAULT_PORT;
+  cfg->agent_port = NG_AGENT_DEFAULT_PORT;
+  cfg->use_upstream = false;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       ng_launch_print_usage(argv[0]);
       return false;
     }
-    // agent: composer-2.5 | 2026-07-25 | explicit launch mode flags | 2098c8
-    if (strcmp(argv[i], "--embedded") == 0) {
-      cfg->mode = NG_LAUNCH_EMBEDDED;
+    if (strcmp(argv[i], "--solo") == 0 || strcmp(argv[i], "--embedded") == 0) {
+      cfg->mode = NG_LAUNCH_SOLO;
     } else if (strcmp(argv[i], "--local") == 0) {
       cfg->mode = NG_LAUNCH_LOCAL;
+      cfg->use_upstream = true;
     } else if (strcmp(argv[i], "--remote") == 0) {
       cfg->mode = NG_LAUNCH_REMOTE;
+      cfg->use_upstream = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         ng_launch_parse_host_port(argv[++i], cfg);
       }
     } else if (strcmp(argv[i], "--connect") == 0 && i + 1 < argc) {
       cfg->mode = NG_LAUNCH_REMOTE;
+      cfg->use_upstream = true;
       ng_launch_parse_host_port(argv[++i], cfg);
     } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       cfg->port = (uint16_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--agent-port") == 0 && i + 1 < argc) {
+      cfg->agent_port = (uint16_t)atoi(argv[++i]);
     }
   }
+
+  if (cfg->mode == NG_LAUNCH_LOCAL || cfg->mode == NG_LAUNCH_REMOTE) {
+    cfg->use_upstream = true;
+  }
+
   return true;
 }
 
@@ -191,6 +211,11 @@ bool ng_launch_spawn_server(uint16_t port) {
     return ng_launch_port_open(port);
   }
 
+  // agent: composer-2.5 | 2026-07-29 | reuse running server | a3c7e4
+  if (ng_launch_port_open(port)) {
+    return true;
+  }
+
   ng_launch_kill_stale_server(port);
 
   char server_path[512];
@@ -246,3 +271,7 @@ void ng_launch_stop_server(void) {
 }
 
 bool ng_launch_server_spawned(void) { return g_server_pid > 0; }
+
+// agent: composer-2.5 | 2026-07-29 | reuse running server | a3c7e4
+// agent: composer-2.5 | 2026-07-29 | default local sets upstream | c2d01b
+// agent: composer-2.5 | 2026-07-29 | default local sets upstream | c2d01b

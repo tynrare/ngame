@@ -12,6 +12,8 @@ typedef struct NgModEntry {
 
 static NgModEntry g_mods[NG_MOD_MAX];
 static int g_mod_count = 0;
+// agent: composer-2.5 | 2026-07-29 | track last init failure | 0d3c9a
+static const char *g_last_init_failed = NULL;
 
 bool ng_mod_register(const NgModOps *ops, void *ctx) {
   if (!ops || g_mod_count >= NG_MOD_MAX) {
@@ -27,12 +29,17 @@ bool ng_mod_register(const NgModOps *ops, void *ctx) {
 bool ng_mod_init_all(void) {
   for (int i = 0; i < g_mod_count; i++) {
     if (g_mods[i].ops->init && !g_mods[i].ops->init(g_mods[i].ctx)) {
+      g_last_init_failed = g_mods[i].ops->name;
       NG_LOG_ERROR("mod init failed: %s", g_mods[i].ops->name);
       return false;
     }
   }
+  g_last_init_failed = NULL;
   return true;
 }
+
+// agent: composer-2.5 | 2026-07-29 | last init failure accessor | 1a2b3c
+const char *ng_mod_last_init_failed(void) { return g_last_init_failed; }
 
 void ng_mod_shutdown_all(void) {
   for (int i = g_mod_count - 1; i >= 0; i--) {
@@ -67,3 +74,6 @@ void ng_mod_publish_draw(void) {
   };
   ng_bus_publish(&console_draw);
 }
+
+// agent: composer-2.5 | 2026-07-29 | track last init failure | 0d3c9a
+// agent: composer-2.5 | 2026-07-29 | last init failure accessor | 1a2b3c

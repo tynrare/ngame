@@ -1,11 +1,10 @@
 // agent: composer-2.5 | 2026-07-27 | js scene sim host only | a4b5c6
+// agent: composer-2.5 | 2026-07-28 | sim gateway authority gate | 7cd0be
+// agent: composer-2.5 | 2026-07-29 | scene load helper for js route | 687e07
 #include "sim.h"
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 #include "engine/ng_action.h"
 #include "net/mod_net.h"
-#ifndef NG_SERVER
-#include "client/render.h"
-#endif
 #endif
 #include "engine/ng_bus.h"
 #include "engine/ng_log.h"
@@ -14,9 +13,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#if defined(NG_HAS_EMBEDDED)
-#include "engine/ng_embed.h"
-#endif
 
 typedef struct ModSimCtx {
   NgWorld world;
@@ -42,6 +38,29 @@ static bool mod_sim_load(ModSimCtx *ctx, const char *id) {
   return true;
 }
 
+// agent: composer-2.5 | 2026-07-29 | scene load helper for js route | 687e07
+bool mod_sim_load_scene(const char *id, char *reply, size_t reply_cap) {
+  ModSimCtx *ctx = &g_sim_ctx;
+  if (!id || id[0] == '\0') {
+    if (reply && reply_cap > 0) {
+      snprintf(reply, reply_cap, "scene load failed: missing id");
+    }
+    return false;
+  }
+  if (!mod_sim_load(ctx, id)) {
+    if (reply && reply_cap > 0) {
+      strncpy(reply, ctx->feedback, reply_cap - 1);
+      reply[reply_cap - 1] = '\0';
+    }
+    return false;
+  }
+  if (reply && reply_cap > 0) {
+    strncpy(reply, ctx->feedback, reply_cap - 1);
+    reply[reply_cap - 1] = '\0';
+  }
+  return true;
+}
+
 bool mod_sim_run_cmd(const NgMsg *msg, char *reply, size_t reply_cap) {
   ModSimCtx *ctx = &g_sim_ctx;
   if (!msg || !reply || reply_cap == 0) {
@@ -62,13 +81,7 @@ bool mod_sim_run_cmd(const NgMsg *msg, char *reply, size_t reply_cap) {
     snprintf(reply, reply_cap, "usage: scene <id>");
     return true;
   }
-  if (!mod_sim_load(ctx, msg->argv[1])) {
-    strncpy(reply, ctx->feedback, reply_cap - 1);
-    reply[reply_cap - 1] = '\0';
-    return true;
-  }
-  strncpy(reply, ctx->feedback, reply_cap - 1);
-  reply[reply_cap - 1] = '\0';
+  mod_sim_load_scene(msg->argv[1], reply, reply_cap);
   return true;
 }
 
@@ -77,26 +90,26 @@ static bool mod_sim_handle_cmd(ModSimCtx *ctx, const NgMsg *msg) {
     return false;
   }
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
+  if (mod_net_upstream_connected()) {
+    char reply[256];
+    if (msg->line && mod_net_gateway_upstream_cmd(msg->line, reply, sizeof(reply))) {
+      NgMsg out = {
+          .kind = NG_MSG_REPLY,
+          .from = NG_BUS_SIM,
+          .to = NG_BUS_AGENT,
+          .text = reply,
+      };
+      ng_bus_publish(&out);
+      return true;
+    }
+    return false;
+  }
+#endif
   NgActionResult result = {0};
   if (!ng_action_server_exec(&ctx->world, msg, 0, &result)) {
     return false;
   }
-#if defined(NG_HAS_EMBEDDED)
-  if (mod_net_is_embedded()) {
-#ifndef NG_SERVER
-    mod_render_apply_action(&result);
-#endif
-    NgMsg reply = {
-        .kind = NG_MSG_REPLY,
-        .from = NG_BUS_SIM,
-        .to = NG_BUS_CONSOLE,
-        .text = result.reply,
-    };
-    ng_bus_publish(&reply);
-    return true;
-  }
-#endif
-#if defined(NG_SERVER)
   NgMsg out = {
       .kind = NG_MSG_ACTION_RESULT,
       .from = NG_BUS_SIM,
@@ -104,7 +117,6 @@ static bool mod_sim_handle_cmd(ModSimCtx *ctx, const NgMsg *msg) {
       .action_result = &result,
   };
   ng_bus_publish(&out);
-#endif
   return true;
 #else
   (void)ctx;
@@ -125,8 +137,8 @@ static bool mod_sim_on_msg(const NgMsg *msg, void *vctx) {
     if (msg->to != NG_BUS_SIM) {
       return false;
     }
-#if defined(NG_HAS_EMBEDDED)
-    if (mod_net_is_embedded()) {
+#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
+    if (mod_net_upstream_connected()) {
       return false;
     }
 #endif
@@ -147,26 +159,15 @@ static bool mod_sim_init(void *vctx) {
   ModSimCtx *ctx = (ModSimCtx *)vctx;
   memset(ctx, 0, sizeof(*ctx));
   ng_world_init(&ctx->world);
-  // agent: composer-2.5 | 2026-07-28 | load boot js on server start | b6o7o8
+#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
+  if (mod_net_skip_local_boot()) {
+    return true;
+  }
+#endif
   if (!mod_scene_load_boot()) {
     return false;
   }
   ng_world_set_scene(&ctx->world, "boot");
-#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
-  if (mod_net_is_embedded()) {
-    NgSessionState session = {0};
-    strncpy(session.scene_id, mod_scene_current_id(), sizeof(session.scene_id) - 1);
-    mod_scene_fill_session(&session);
-    session.controller_id = 1;
-    session.your_id = 1;
-    mod_render_apply_session(&session);
-  }
-#endif
-#if defined(NG_HAS_EMBEDDED)
-  if (mod_net_is_embedded()) {
-    ng_embed_bind(&ctx->world);
-  }
-#endif
   return true;
 }
 
@@ -188,4 +189,4 @@ const NgModOps *mod_sim_ops(void) { return &g_sim_ops; }
 
 void *mod_sim_ctx(void) { return &g_sim_ctx; }
 
-// agent: composer-2.5 | 2026-07-28 | load boot js on server start | b6o7o8
+// agent: composer-2.5 | 2026-07-28 | sim gateway authority gate | 7cd0be

@@ -1,5 +1,7 @@
 // agent: composer-2.5 | 2026-07-27 | js scene lifecycle host | f3a4b5
+// agent: composer-2.5 | 2026-07-29 | host server view split | 1b39ad
 #include "scene.h"
+#include "scene/runtime.h"
 #include "engine/ng_fs.h"
 #include "engine/ng_log.h"
 #include "engine/ng_session.h"
@@ -23,20 +25,7 @@
 #include <string.h>
 
 #define NG_SCENE_STASH_KEY "ng_scene"
-
-typedef struct ModSceneCtx {
-  duk_context *ctx;
-  char scene_id[32];
-  bool is_controller;
-  bool is_server_host;
-  bool loaded;
-  bool inited;
-  bool started;
-  bool native;
-  int scene_inst_stash;
-} ModSceneCtx;
-
-static ModSceneCtx g_scene_ctx;
+#define NG_SCENE_ACTIVE() (mod_scene_runtime_scene())
 
 #if defined(NG_SERVER)
 void mod_render_apply_session(const NgSessionState *session) { (void)session; }
@@ -46,13 +35,13 @@ static bool mod_scene_is_server(void) {
 #ifdef NG_SERVER
   return true;
 #else
-  return g_scene_ctx.is_server_host;
+  return NG_SCENE_ACTIVE()->is_server_host;
 #endif
 }
 
 static ModSceneCtx *mod_scene_from_ctx(duk_context *ctx) {
   (void)ctx;
-  return &g_scene_ctx;
+  return mod_scene_runtime_scene();
 }
 
 static NgSceneInst *mod_scene_inst_from_handle(int handle) {
@@ -504,6 +493,25 @@ static duk_ret_t bind_set_scale(duk_context *ctx) {
   return 0;
 }
 
+// agent: composer-2.5 | 2026-07-29 | js change scene binding and drain | d70ea8
+static duk_ret_t bind_is_server(duk_context *ctx) {
+  duk_push_boolean(ctx, mod_scene_is_server() ? 1 : 0);
+  return 1;
+}
+
+static duk_ret_t bind_change_scene(duk_context *ctx) {
+  ModSceneCtx *scene = mod_scene_from_ctx(ctx);
+  const char *scene_id = duk_require_string(ctx, 0);
+  if (!scene || !scene_id || scene_id[0] == '\0' || !mod_scene_is_server()) {
+    duk_push_false(ctx);
+    return 1;
+  }
+  strncpy(scene->pending_scene_id, scene_id, sizeof(scene->pending_scene_id) - 1);
+  scene->pending_scene_id[sizeof(scene->pending_scene_id) - 1] = '\0';
+  duk_push_true(ctx);
+  return 1;
+}
+
 static void mod_scene_bind_global(duk_context *ctx) {
   duk_push_global_object(ctx);
 
@@ -524,6 +532,8 @@ static void mod_scene_bind_global(duk_context *ctx) {
   BIND("get_rotation_x", bind_get_rotation_x, 1);
   BIND("get_rotation", bind_get_rotation, 1);
   BIND("set_scale", bind_set_scale, 2);
+  BIND("is_server", bind_is_server, 0);
+  BIND("change_scene", bind_change_scene, 1);
 
 #undef BIND
 
@@ -661,8 +671,28 @@ static bool mod_scene_call_method(ModSceneCtx *ctx, const char *method, int narg
   return true;
 }
 
+static void mod_scene_drain_pending_change(ModSceneCtx *ctx) {
+  if (!ctx || !ctx->pending_scene_id[0] || !mod_scene_is_server()) {
+    return;
+  }
+  char next_scene[32];
+  strncpy(next_scene, ctx->pending_scene_id, sizeof(next_scene) - 1);
+  next_scene[sizeof(next_scene) - 1] = '\0';
+  ctx->pending_scene_id[0] = '\0';
+  if (strcmp(next_scene, ctx->scene_id) == 0) {
+    return;
+  }
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  char reply[256];
+  if (mod_sim_load_scene) {
+    mod_sim_load_scene(next_scene, reply, sizeof(reply));
+  }
+#endif
+}
+
 static void mod_scene_call_lifecycle(ModSceneCtx *ctx, const char *method) {
   mod_scene_call_method(ctx, method, 0);
+  mod_scene_drain_pending_change(ctx);
 }
 
 static void mod_scene_push_session_obj(ModSceneCtx *ctx, const NgSessionState *session) {
@@ -755,13 +785,26 @@ static void mod_scene_run_entity_steps(ModSceneCtx *ctx, float dt) {
       NG_LOG_ERROR("entity step: %s", duk_safe_to_string(ctx->ctx, -1));
     }
     duk_pop(ctx->ctx);
+    mod_scene_drain_pending_change(ctx);
     if (on_server && inst->sync == NG_SYNC_SERVER) {
       mod_scene_pull_entity_phase(ctx, (NgSceneInst *)inst);
     }
   }
 }
 
+static void mod_scene_set_active_for(ModSceneCtx *ctx) {
+  if (ctx == &g_scene_server.scene) {
+    mod_scene_runtime_use_server();
+  } else if (ctx == &g_scene_view.scene) {
+    mod_scene_runtime_use_view();
+  }
+}
+
 static void mod_scene_unload(ModSceneCtx *ctx) {
+  if (!ctx) {
+    return;
+  }
+  mod_scene_set_active_for(ctx);
   if (ctx->native) {
     mod_scene_native_unload();
   } else if (ctx->ctx && ctx->started) {
@@ -784,7 +827,7 @@ static void mod_scene_unload(ModSceneCtx *ctx) {
 }
 
 static bool mod_scene_begin(const char *scene_id, bool server_host, bool is_controller) {
-  ModSceneCtx *ctx = &g_scene_ctx;
+  ModSceneCtx *ctx = mod_scene_runtime_scene();
   mod_scene_unload(ctx);
   strncpy(ctx->scene_id, scene_id, sizeof(ctx->scene_id) - 1);
   ctx->is_server_host = server_host;
@@ -815,11 +858,12 @@ static bool mod_scene_begin(const char *scene_id, bool server_host, bool is_cont
 }
 
 bool mod_scene_load(const char *scene_id) {
+  mod_scene_runtime_use_server();
   if (!scene_id || scene_id[0] == '\0') {
-    mod_scene_unload(&g_scene_ctx);
+    mod_scene_unload(mod_scene_runtime_scene());
     return true;
   }
-  ModSceneCtx *ctx = &g_scene_ctx;
+  ModSceneCtx *ctx = mod_scene_runtime_scene();
   if (!mod_scene_begin(scene_id, true, true)) {
     return false;
   }
@@ -834,48 +878,66 @@ bool mod_scene_load(const char *scene_id) {
     mod_scene_unload(ctx);
     return false;
   }
+  mod_scene_drain_pending_change(ctx);
   ctx->started = true;
   return true;
 }
 
 bool mod_scene_load_boot(void) { return mod_scene_load("boot"); }
 
-bool mod_scene_is_loaded(void) { return g_scene_ctx.loaded; }
+bool mod_scene_is_loaded(void) {
+  mod_scene_runtime_use_server();
+  return NG_SCENE_ACTIVE()->loaded;
+}
 
-const char *mod_scene_current_id(void) { return g_scene_ctx.scene_id; }
+const char *mod_scene_current_id(void) {
+  mod_scene_runtime_use_server();
+  return NG_SCENE_ACTIVE()->scene_id;
+}
 
-int mod_scene_entity_count(void) { return mod_scene_graph_inst_count(); }
+int mod_scene_entity_count(void) {
+  mod_scene_runtime_use_server();
+  return mod_scene_graph_inst_count();
+}
 
 void mod_scene_fill_session(NgSessionState *session) {
   if (!session) {
     return;
   }
+  mod_scene_runtime_use_server();
   mod_scene_graph_fill_session_spawns(session);
 }
 
-bool mod_scene_is_controller(void) { return g_scene_ctx.is_controller; }
+bool mod_scene_is_controller(void) {
+  mod_scene_runtime_use_server();
+  return NG_SCENE_ACTIVE()->is_controller;
+}
 
 bool mod_scene_can_author(NgSyncMode sync) {
+  mod_scene_runtime_use_server();
   if (sync == NG_SYNC_SHARED) {
     return true;
   }
   if (sync == NG_SYNC_OWNER) {
-    return g_scene_ctx.is_controller;
+    return NG_SCENE_ACTIVE()->is_controller;
   }
   return false;
 }
 
-void mod_scene_on_session(const NgSessionState *session) {
-  ModSceneCtx *ctx = &g_scene_ctx;
+static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *session,
+                                     bool force_reload) {
+  // agent: composer-2.5 | 2026-07-29 | force reload on view session | 8b87bd
+  mod_scene_set_active_for(ctx);
   if (!session) {
     return;
   }
 
-  if (!ctx->loaded || strcmp(ctx->scene_id, session->scene_id) != 0) {
+  if (!ctx->loaded || strcmp(ctx->scene_id, session->scene_id) != 0 || force_reload) {
     if (!mod_scene_begin(session->scene_id, false,
                          session->your_id != 0 && session->your_id == session->controller_id)) {
       return;
     }
+    ctx->started = false;
   } else {
     ctx->is_controller =
         (session->your_id != 0 && session->your_id == session->controller_id);
@@ -898,6 +960,7 @@ void mod_scene_on_session(const NgSessionState *session) {
   if (!ctx->started) {
     mod_scene_push_session_obj(ctx, session);
     mod_scene_call_method(ctx, "start", 1);
+    mod_scene_drain_pending_change(ctx);
     ctx->started = true;
   }
 
@@ -906,15 +969,35 @@ void mod_scene_on_session(const NgSessionState *session) {
 #endif
 }
 
+void mod_scene_on_session(const NgSessionState *session) {
+  mod_scene_runtime_use_server();
+  mod_scene_on_session_ctx(mod_scene_runtime_scene(), session, false);
+}
+
+void mod_scene_view_on_session(const NgSessionState *session) {
+  mod_scene_runtime_use_view();
+  mod_scene_on_session_ctx(mod_scene_runtime_scene(), session, true);
+}
+
 void mod_scene_apply_remote(const NgStateUpdate *update) {
-  if (!update || !g_scene_ctx.loaded) {
+  mod_scene_runtime_use_server();
+  if (!update || !NG_SCENE_ACTIVE()->loaded) {
+    return;
+  }
+  mod_scene_graph_apply_update(update);
+}
+
+void mod_scene_view_apply_remote(const NgStateUpdate *update) {
+  mod_scene_runtime_use_view();
+  if (!update || !NG_SCENE_ACTIVE()->loaded) {
     return;
   }
   mod_scene_graph_apply_update(update);
 }
 
 bool mod_scene_take_flush(NgStateUpdate *out) {
-  if (!out || !g_scene_ctx.loaded) {
+  mod_scene_runtime_use_server();
+  if (!out || !NG_SCENE_ACTIVE()->loaded) {
     return false;
   }
   NgStateUpdate tmp;
@@ -932,26 +1015,19 @@ bool mod_scene_take_flush(NgStateUpdate *out) {
   return false;
 }
 
-static bool mod_scene_on_msg(const NgMsg *msg, void *vctx) {
-  ModSceneCtx *ctx = (ModSceneCtx *)vctx;
-  if (!ctx || !msg) {
-    return false;
-  }
-  if (msg->kind != NG_MSG_TICK || msg->to != NG_BUS_ANY) {
-    return false;
-  }
-  if (!ctx->loaded || !ctx->started) {
+static bool mod_scene_tick_ctx(ModSceneCtx *ctx, float dt) {
+  if (!ctx || !ctx->loaded || !ctx->started) {
     return true;
   }
+  mod_scene_set_active_for(ctx);
 
   if (ctx->native) {
-    mod_scene_native_step(msg->dt);
+    mod_scene_native_step(dt);
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
     if (mod_scene_is_server()) {
       mod_scene_mirror_server(mod_sim_world());
     }
 #endif
-    mod_net_flush_scene_updates();
     return true;
   }
 
@@ -960,28 +1036,46 @@ static bool mod_scene_on_msg(const NgMsg *msg, void *vctx) {
   }
 
   mod_input_begin_frame();
-  duk_push_number(ctx->ctx, msg->dt);
+  duk_push_number(ctx->ctx, dt);
   mod_scene_call_method(ctx, "step", 1);
-  mod_scene_run_entity_steps(ctx, msg->dt);
+  mod_scene_run_entity_steps(ctx, dt);
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   if (mod_scene_is_server()) {
     mod_scene_mirror_server(mod_sim_world());
   }
 #endif
+  return true;
+}
+
+static bool mod_scene_on_msg(const NgMsg *msg, void *vctx) {
+  (void)vctx;
+  if (!msg || msg->kind != NG_MSG_TICK || msg->to != NG_BUS_ANY) {
+    return false;
+  }
+  mod_scene_tick_ctx(&g_scene_server.scene, msg->dt);
+  mod_scene_tick_ctx(&g_scene_view.scene, msg->dt);
+  mod_scene_runtime_use_server();
   mod_net_flush_scene_updates();
   return true;
 }
 
 static bool mod_scene_init(void *vctx) {
   (void)vctx;
-  memset(&g_scene_ctx, 0, sizeof(g_scene_ctx));
+  mod_scene_runtime_use_server();
+  memset(&g_scene_server, 0, sizeof(g_scene_server));
   mod_scene_graph_reset();
+  mod_scene_runtime_use_view();
+  memset(&g_scene_view, 0, sizeof(g_scene_view));
+  mod_scene_graph_reset();
+  mod_scene_runtime_use_server();
   return true;
 }
 
 static void mod_scene_shutdown(void *vctx) {
   (void)vctx;
-  mod_scene_unload(&g_scene_ctx);
+  mod_scene_unload(&g_scene_view.scene);
+  mod_scene_unload(&g_scene_server.scene);
+  mod_scene_runtime_use_server();
 }
 
 static const NgModOps g_scene_ops = {
@@ -994,12 +1088,48 @@ static const NgModOps g_scene_ops = {
 
 const NgModOps *mod_scene_ops(void) { return &g_scene_ops; }
 
-void *mod_scene_ctx(void) { return &g_scene_ctx; }
+void *mod_scene_ctx(void) { return &g_scene_server.scene; }
 
-bool mod_scene_graph_active(void) { return mod_scene_graph_inst_count() > 0; }
+bool mod_scene_graph_active(void) {
+  mod_scene_runtime_use_server();
+  return mod_scene_graph_inst_count() > 0;
+}
+
+bool mod_scene_view_is_loaded(void) {
+  mod_scene_runtime_use_view();
+  return NG_SCENE_ACTIVE()->loaded;
+}
+
+const char *mod_scene_view_current_id(void) {
+  mod_scene_runtime_use_view();
+  return NG_SCENE_ACTIVE()->scene_id;
+}
+
+int mod_scene_view_entity_count(void) {
+  mod_scene_runtime_use_view();
+  return mod_scene_graph_inst_count();
+}
+
+void mod_scene_view_status_text(char *out, size_t cap) {
+  // agent: composer-2.5 | 2026-07-29 | view status text helper | d2e790
+  if (!out || cap == 0) {
+    return;
+  }
+  mod_scene_runtime_use_view();
+  const char *id = NG_SCENE_ACTIVE()->scene_id;
+  snprintf(out, cap, "view scene=%s loaded=%d graph=%d entities=%d", id && id[0] ? id : "",
+           NG_SCENE_ACTIVE()->loaded ? 1 : 0, mod_scene_graph_inst_count(),
+           mod_scene_graph_inst_count());
+}
+
+bool mod_scene_view_graph_active(void) {
+  mod_scene_runtime_use_view();
+  return mod_scene_graph_inst_count() > 0;
+}
 
 void mod_scene_mirror_server(NgWorld *w) {
-  if (!w || !g_scene_ctx.loaded) {
+  mod_scene_runtime_use_server();
+  if (!w || !NG_SCENE_ACTIVE()->loaded) {
     return;
   }
   const int n = mod_scene_graph_inst_count();
@@ -1032,7 +1162,27 @@ void mod_scene_mirror_server(NgWorld *w) {
 }
 
 void mod_scene_apply_snapshot(const NgSnapshot *snap) {
-  if (!snap || !g_scene_ctx.loaded) {
+  mod_scene_runtime_use_server();
+  if (!snap || !NG_SCENE_ACTIVE()->loaded) {
+    return;
+  }
+  for (int i = 0; i < snap->entity_count; i++) {
+    const NgEntitySnap *e = &snap->entities[i];
+    NgSceneInst *inst = mod_scene_graph_inst_by_id(e->id);
+    if (!inst || inst->sync != NG_SYNC_SERVER) {
+      continue;
+    }
+    inst->pos[0] = e->pos[0];
+    inst->pos[1] = e->pos[1];
+    inst->pos[2] = e->pos[2];
+    inst->rot[1] = e->rot_y;
+    inst->phase = e->phase;
+  }
+}
+
+void mod_scene_view_apply_snapshot(const NgSnapshot *snap) {
+  mod_scene_runtime_use_view();
+  if (!snap || !NG_SCENE_ACTIVE()->loaded) {
     return;
   }
   for (int i = 0; i < snap->entity_count; i++) {
@@ -1051,10 +1201,11 @@ void mod_scene_apply_snapshot(const NgSnapshot *snap) {
 
 // agent: composer-2.5 | 2026-07-27 | smoke cube registry sphere inst | c5f796
 static bool mod_scene_smoke_one(const char *scene_id, const char *spawn_desc, bool expect_inst) {
+  mod_scene_runtime_use_server();
   if (!mod_scene_begin(scene_id, true, true)) {
     return false;
   }
-  ModSceneCtx *ctx = &g_scene_ctx;
+  ModSceneCtx *ctx = mod_scene_runtime_scene();
   NgSessionState session = {0};
   strncpy(session.scene_id, scene_id, sizeof(session.scene_id) - 1);
   mod_scene_push_session_obj(ctx, &session);
@@ -1062,6 +1213,7 @@ static bool mod_scene_smoke_one(const char *scene_id, const char *spawn_desc, bo
     mod_scene_unload(ctx);
     return false;
   }
+  mod_scene_drain_pending_change(ctx);
   ctx->started = true;
   const bool ok =
       expect_inst ? (mod_scene_graph_inst_count() >= 1)
@@ -1070,7 +1222,10 @@ static bool mod_scene_smoke_one(const char *scene_id, const char *spawn_desc, bo
   return ok;
 }
 
-bool mod_scene_is_native(void) { return g_scene_ctx.native; }
+bool mod_scene_is_native(void) {
+  mod_scene_runtime_use_server();
+  return NG_SCENE_ACTIVE()->native;
+}
 
 bool mod_scene_smoke_test(void) {
   return mod_scene_smoke_one("cube", "cube_a_e", false) &&
@@ -1079,6 +1234,10 @@ bool mod_scene_smoke_test(void) {
          mod_scene_smoke_one("local", "local_e", false);
 }
 
+// agent: composer-2.5 | 2026-07-29 | view status text helper | d2e790
+// agent: composer-2.5 | 2026-07-29 | host server view split | 1b39ad
 // agent: composer-2.5 | 2026-07-28 | wire native scene fallback path | 096c5c
 // agent: composer-2.5 | 2026-07-28 | test helpers only for fixtures | t4h5e6
 // agent: composer-2.5 | 2026-07-28 | boot js outside scenes dir | b4o5o6
+// agent: composer-2.5 | 2026-07-29 | view reset after scene begin | ef3462
+// agent: composer-2.5 | 2026-07-29 | js change scene binding and drain | d70ea8

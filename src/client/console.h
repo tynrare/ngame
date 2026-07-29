@@ -6,5 +6,6 @@
 
 const NgModOps *mod_console_ops(void);
 void *mod_console_ctx(void);
+void mod_console_poll_input(void);
 
 #endif

@@ -1,13 +1,12 @@
 // agent: composer-2.5 | 2026-07-25 | client render module | g0j28e
+// agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
 #include "render.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
-#if defined(NG_HAS_EMBEDDED)
-#include "engine/ng_embed.h"
-#endif
 #include "client/input.h"
 #include "net/mod_net.h"
 #include "scene/scene.h"
+#include "scene/runtime.h"
 #include "scene/graph.h"
 #include "scene/assets.h"
 #include "scene/native.h"
@@ -122,6 +121,7 @@ static RenderAsset *mod_render_cache_put(ModRenderCtx *ctx, const char *key,
 }
 
 static RenderAsset *mod_render_asset_for_model(ModRenderCtx *ctx, const char *model_name) {
+  mod_scene_runtime_use_view();
   if (!model_name || model_name[0] == '\0') {
     return NULL;
   }
@@ -137,6 +137,7 @@ static RenderAsset *mod_render_asset_for_model(ModRenderCtx *ctx, const char *mo
 }
 
 static RenderAsset *mod_render_asset_for_mesh_kind(ModRenderCtx *ctx, NgSceneMeshKind kind) {
+  mod_scene_runtime_use_view();
   char key[16];
   snprintf(key, sizeof(key), "@%d", (int)kind);
   RenderAsset *cached = mod_render_cache_get(ctx, key);
@@ -151,11 +152,12 @@ static RenderAsset *mod_render_asset_for_mesh_kind(ModRenderCtx *ctx, NgSceneMes
 }
 
 static Color mod_render_bg_color(void) {
+  mod_scene_runtime_use_view();
   const NgSceneViewMeta *view = mod_scene_assets_view();
-  if (view) {
+  if (view && view->valid) {
     return (Color){view->bg_r, view->bg_g, view->bg_b, 255};
   }
-  return BLACK;
+  return (Color){12, 20, 48, 255};
 }
 
 static void mod_render_init_camera(ModRenderCtx *ctx) {
@@ -170,8 +172,9 @@ static void mod_render_init_camera(ModRenderCtx *ctx) {
 
 // agent: composer-2.5 | 2026-07-28 | render from js view registry | 9b1eee
 static void mod_render_update_camera(ModRenderCtx *ctx) {
+  mod_scene_runtime_use_view();
   const NgSceneViewMeta *view = mod_scene_assets_view();
-  if (!view) {
+  if (!view || !view->valid) {
     return;
   }
   ctx->camera.fovy = view->cam_fovy;
@@ -193,6 +196,18 @@ static void mod_render_update_camera(ModRenderCtx *ctx) {
 }
 
 static float mod_render_lerp(float a, float b, float t) { return a + (b - a) * t; }
+
+// agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
+static const char *mod_render_authoritative_label(ModRenderCtx *ctx) {
+  mod_scene_runtime_use_view();
+  const char *view_id = mod_scene_view_current_id();
+  if (mod_scene_view_is_loaded() && view_id && view_id[0] != '\0') {
+    strncpy(ctx->scene_label, view_id, sizeof(ctx->scene_label) - 1);
+    ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
+    return ctx->scene_label;
+  }
+  return ctx->scene_label[0] != '\0' ? ctx->scene_label : "?";
+}
 
 static void mod_render_draw_overlay(const char *label, int y) {
   DrawText(TextFormat("scene: %s", label ? label : "?"), 10, y, 20, RAYWHITE);
@@ -244,6 +259,7 @@ static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *ins
 }
 
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
+  mod_scene_runtime_use_view();
   const int n = mod_scene_graph_inst_count();
   BeginMode3D(ctx->camera);
   for (int i = 0; i < n; i++) {
@@ -255,16 +271,16 @@ static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
   EndMode3D();
 }
 
-static void mod_render_draw_embedded(ModRenderCtx *ctx) {
-  if (mod_scene_is_loaded()) {
-    ClearBackground(mod_render_bg_color());
-    mod_render_update_camera(ctx);
-    mod_render_draw_scene_graph(ctx);
-    mod_render_draw_overlay(mod_scene_current_id(), 10);
-    return;
-  }
+static void mod_render_draw_waiting(ModRenderCtx *ctx) {
   ClearBackground(BLACK);
-  DrawText("embedded: waiting for scene...", 20, 20, 18, GRAY);
+  char line[160];
+  if (!mod_net_is_connected()) {
+    snprintf(line, sizeof(line), "gateway: waiting for local server...");
+  } else {
+    snprintf(line, sizeof(line), "gateway: waiting for snapshot...");
+  }
+  (void)ctx;
+  DrawText(line, 20, 20, 18, GRAY);
 }
 
 static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
@@ -298,7 +314,34 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   ClearBackground(mod_render_bg_color());
   mod_render_update_camera(ctx);
 
-  if (mod_scene_graph_active() || mod_scene_is_loaded()) {
+  mod_scene_runtime_use_view();
+  if (mod_scene_view_graph_active()) {
+    mod_render_draw_scene_graph(ctx);
+  } else if (ctx->have_curr && ctx->curr.entity_count > 0) {
+    BeginMode3D(ctx->camera);
+    for (int i = 0; i < ctx->curr.entity_count; i++) {
+      const NgEntitySnap *e = &ctx->curr.entities[i];
+      const NgEntitySnap *p = e;
+      if (ctx->have_prev) {
+        for (int j = 0; j < ctx->prev.entity_count; j++) {
+          if (ctx->prev.entities[j].id == e->id) {
+            p = &ctx->prev.entities[j];
+            break;
+          }
+        }
+      }
+      const NgSceneMeshKind kind =
+          e->type == NG_ENTITY_SPHERE ? NG_SCENE_MESH_SPHERE : NG_SCENE_MESH_CUBE;
+      const RenderAsset *a = mod_render_asset_for_mesh_kind(ctx, kind);
+      if (a) {
+        mod_render_draw_entity(a, e, p, ctx->alpha);
+      }
+    }
+    EndMode3D();
+  } else if (mod_scene_view_is_loaded()) {
+    mod_render_draw_scene_graph(ctx);
+  } else if (mod_net_is_authoritative() && mod_scene_is_loaded()) {
+    mod_scene_runtime_use_server();
     mod_render_draw_scene_graph(ctx);
   } else if (ctx->have_curr) {
     BeginMode3D(ctx->camera);
@@ -323,7 +366,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
     EndMode3D();
   }
 
-  mod_render_draw_overlay(ctx->scene_label, 10);
+  mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
 }
 // agent: composer-2.5 | 2026-07-26 | session bootstrap render state | d8e9f0
 void mod_render_apply_session(const NgSessionState *session) {
@@ -349,8 +392,13 @@ void mod_render_apply_action(const NgActionResult *result) {
     ctx->have_prev = ctx->have_curr;
     ctx->have_curr = true;
     ctx->alpha = 0.0f;
-    strncpy(ctx->scene_label, result->state.scene_id, sizeof(ctx->scene_label) - 1);
-    ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
+    mod_scene_runtime_use_view();
+    const char *view_id = mod_scene_view_current_id();
+    if (!mod_scene_view_is_loaded() || !view_id || view_id[0] == '\0' ||
+        strcmp(view_id, result->state.scene_id) == 0) {
+      strncpy(ctx->scene_label, result->state.scene_id, sizeof(ctx->scene_label) - 1);
+      ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
+    }
   } else if (result->reply[0] != '\0') {
     /* reply-only action (e.g. agent snapshot query) */
   }
@@ -370,7 +418,13 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
       ctx->have_prev = ctx->have_curr;
       ctx->have_curr = true;
       ctx->alpha = 0.0f;
-      strncpy(ctx->scene_label, msg->snapshot->scene_id, sizeof(ctx->scene_label) - 1);
+      mod_scene_runtime_use_view();
+      const char *view_id = mod_scene_view_current_id();
+      if (!mod_scene_view_is_loaded() || !view_id || view_id[0] == '\0' ||
+          strcmp(view_id, msg->snapshot->scene_id) == 0) {
+        strncpy(ctx->scene_label, msg->snapshot->scene_id, sizeof(ctx->scene_label) - 1);
+        ctx->scene_label[sizeof(ctx->scene_label) - 1] = '\0';
+      }
     }
     return true;
   case NG_MSG_EVENT:
@@ -387,58 +441,11 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
     }
     return true;
   case NG_MSG_DRAW:
-#if defined(NG_HAS_EMBEDDED)
-    if (mod_net_is_embedded()) {
-      mod_render_draw_embedded(ctx);
-      return true;
-    }
-#endif
-    if (ctx->have_curr || ctx->have_session || mod_scene_is_loaded()) {
+    if (ctx->have_curr || ctx->have_session || mod_scene_view_is_loaded() ||
+        (mod_net_is_authoritative() && mod_scene_is_loaded())) {
       mod_render_draw_scene(ctx);
     } else {
-      // agent: composer-2.5 | 2026-07-25 | embedded waiting UI text | 9236ea
-      ClearBackground(BLACK);
-      char line[160];
-#if defined(NG_HAS_EMBEDDED)
-      if (mod_net_is_embedded()) {
-        const double elapsed = mod_net_connect_elapsed();
-        if (elapsed > 8.0) {
-          snprintf(line, sizeof(line), "embedded: no snapshot — restart client");
-        } else {
-          snprintf(line, sizeof(line), "embedded: waiting for snapshot...");
-        }
-      } else
-#endif
-      {
-        char host[64];
-        uint16_t port = 0;
-        mod_net_endpoint(host, sizeof(host), &port);
-        const double elapsed = mod_net_connect_elapsed();
-        if (!mod_net_is_connected()) {
-          if (elapsed > 8.0) {
-            snprintf(line, sizeof(line), "no server at %s:%u — run ./build/ngame_server", host,
-                     port);
-          } else {
-            snprintf(line, sizeof(line), "connecting to %s:%u...", host, port);
-          }
-        } else if (elapsed > 8.0) {
-          snprintf(line, sizeof(line), "no snapshot from %s:%u — restart ngame_server", host,
-                   port);
-        } else {
-          snprintf(line, sizeof(line), "waiting for snapshot from %s:%u...", host, port);
-        }
-      }
-      DrawText(line, 20, 20, 18, GRAY);
-#if defined(NG_HAS_EMBEDDED)
-      if (!mod_net_is_embedded())
-#endif
-      {
-        const double elapsed = mod_net_connect_elapsed();
-        if (elapsed > 8.0) {
-          DrawText("client keeps retrying; start server then leave this window open", 20, 44, 14,
-                   DARKGRAY);
-        }
-      }
+      mod_render_draw_waiting(ctx);
     }
     return true;
   default:
@@ -472,13 +479,45 @@ const NgModOps *mod_render_ops(void) { return &g_render_ops; }
 void *mod_render_ctx(void) { return &g_render_ctx; }
 
 bool mod_render_has_snapshot(void) {
-#if defined(NG_HAS_EMBEDDED)
-  if (mod_net_is_embedded()) {
-    return ng_embed_ready();
-  }
-#endif
-  return g_render_ctx.have_curr || g_render_ctx.have_session || mod_scene_is_loaded();
+  return g_render_ctx.have_curr || g_render_ctx.have_session || mod_scene_view_is_loaded() ||
+         (mod_net_is_authoritative() && mod_scene_is_loaded());
 }
 
-// agent: composer-2.5 | 2026-07-28 | render from js view registry | 9b1eee
-// agent: composer-2.5 | 2026-07-28 | draw when scene loaded locally | 3400fe
+void mod_render_snapshot_text(char *out, size_t cap) {
+  if (!out || cap == 0) {
+    return;
+  }
+  const ModRenderCtx *ctx = &g_render_ctx;
+  mod_scene_runtime_use_view();
+  const char *view_scene = mod_scene_view_current_id();
+  const int view_graph = mod_scene_graph_inst_count();
+  const int view_entities = mod_scene_view_entity_count();
+  const char *label =
+      (view_scene && view_scene[0] != '\0') ? view_scene
+                                            : (ctx->scene_label[0] != '\0' ? ctx->scene_label : "?");
+  snprintf(out, cap, "render scene=%s snapshot=%d graph=%d entities=%d", label,
+           ctx->have_curr ? ctx->curr.entity_count : 0, view_graph, view_entities);
+}
+
+void mod_render_visibility_text(char *out, size_t cap) {
+  if (!out || cap == 0) {
+    return;
+  }
+  mod_scene_runtime_use_view();
+  const NgSceneViewMeta *view = mod_scene_assets_view();
+  const ModRenderCtx *ctx = &g_render_ctx;
+  const int graph = mod_scene_graph_inst_count();
+  const int snap = ctx->have_curr ? ctx->curr.entity_count : 0;
+  const int visible = graph > 0 ? graph : snap;
+  if (view) {
+    snprintf(out, cap, "visible=%d bg=%02x%02x%02x loaded=%d", visible, view->bg_r, view->bg_g,
+             view->bg_b, mod_scene_view_is_loaded() ? 1 : 0);
+  } else {
+    snprintf(out, cap, "visible=%d bg=000000 loaded=%d", visible,
+             mod_scene_view_is_loaded() ? 1 : 0);
+  }
+}
+
+// agent: composer-2.5 | 2026-07-29 | snapshot before empty graph | 57ca7b
+// agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
+// agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c

@@ -11,5 +11,7 @@ struct NgActionResult;
 void mod_render_apply_action(const struct NgActionResult *result);
 struct NgSessionState;
 void mod_render_apply_session(const struct NgSessionState *session);
+void mod_render_snapshot_text(char *out, size_t cap);
+void mod_render_visibility_text(char *out, size_t cap);
 
 #endif

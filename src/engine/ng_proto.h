@@ -26,6 +26,25 @@ struct NgActionResult;
 #define NG_PKT_STATE_BATCH   9
 // agent: composer-2.5 | 2026-07-28 | state ack wire side channel | a6e25f
 #define NG_PKT_STATE_ACK    10
+#define NG_PKT_REGISTER     11
+#define NG_PKT_REGISTER_ACK 12
+
+typedef enum NgPeerRole {
+  NG_PEER_THIN = 0,
+  NG_PEER_DEPENDENT = 1,
+} NgPeerRole;
+
+typedef struct NgRegisterReq {
+  char name[32];
+  uint16_t proto_ver;
+} NgRegisterReq;
+
+typedef struct NgRegisterAck {
+  uint8_t peer_id;
+  uint8_t role;
+  uint16_t agent_port;
+  uint16_t root_game_port;
+} NgRegisterAck;
 
 #include "ng_session.h"
 
@@ -70,5 +89,9 @@ bool ng_proto_encode_state_batch(NgProtoBuf *b, uint16_t seq, uint32_t tick,
 bool ng_proto_decode_state_batch(NgProtoBuf *b, NgStateUpdate *updates, int max_count, int *out_count);
 bool ng_proto_encode_state_ack(NgProtoBuf *b, uint16_t seq, uint32_t entity_id, uint16_t ack_seq);
 bool ng_proto_decode_state_ack(NgProtoBuf *b, uint32_t *entity_id, uint16_t *ack_seq);
+bool ng_proto_encode_register(NgProtoBuf *b, uint16_t seq, const NgRegisterReq *req);
+bool ng_proto_decode_register(NgProtoBuf *b, NgRegisterReq *req);
+bool ng_proto_encode_register_ack(NgProtoBuf *b, uint16_t seq, const NgRegisterAck *ack);
+bool ng_proto_decode_register_ack(NgProtoBuf *b, NgRegisterAck *ack);
 
 #endif

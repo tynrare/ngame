@@ -43,7 +43,7 @@ int main(void) {
   SetTargetFPS(0);
 
   ng_bus_init();
-  mod_net_set_local_loopback(true);
+  mod_net_set_gateway(true);
   ng_mod_register(mod_net_ops(), mod_net_ctx());
   ng_mod_register(mod_sim_ops(), mod_sim_ctx());
 

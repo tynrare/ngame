@@ -23,12 +23,20 @@ void mod_scene_fill_session(NgSessionState *session);
 bool mod_scene_is_controller(void);
 bool mod_scene_can_author(NgSyncMode sync);
 void mod_scene_on_session(const NgSessionState *session);
+void mod_scene_view_on_session(const NgSessionState *session);
 void mod_scene_apply_remote(const NgStateUpdate *update);
+void mod_scene_view_apply_remote(const NgStateUpdate *update);
 bool mod_scene_take_flush(NgStateUpdate *out);
 bool mod_scene_graph_active(void);
+bool mod_scene_view_is_loaded(void);
+const char *mod_scene_view_current_id(void);
+int mod_scene_view_entity_count(void);
+bool mod_scene_view_graph_active(void);
 bool mod_scene_smoke_test(void);
 void mod_scene_mirror_server(NgWorld *w);
 void mod_scene_apply_snapshot(const NgSnapshot *snap);
+void mod_scene_view_apply_snapshot(const NgSnapshot *snap);
+void mod_scene_view_status_text(char *out, size_t cap);
 bool mod_scene_is_native(void);
 
 #endif

@@ -30,6 +30,7 @@ set(NG_CORE_SOURCES
 )
 
 set(NG_SCENE_SOURCES
+  src/scene/runtime.c
   src/scene/host.c
   src/scene/graph.c
   src/scene/assets.c
@@ -44,10 +45,9 @@ set(NG_VENDOR_SOURCES
   src/vendor/duktape.c
 )
 
-set(NG_EMBED_SOURCES
-  src/client/ng_app_embedded.c
-  src/engine/ng_embed.c
+set(NG_GATEWAY_SOURCES
   src/engine/ng_launch.c
+  src/server/ng_server_runtime.c
   src/server/script.c
   ${NG_SIM_SOURCES}
   ${NG_VENDOR_SOURCES}
@@ -68,6 +68,7 @@ set(NG_CLIENT_SOURCES
 set(NG_SERVER_SOURCES
   src/server/main_server.c
   src/server/ng_app_server.c
+  src/server/ng_server_runtime.c
   src/server/script.c
   src/net/mod_net.c
   ${NG_SCENE_SOURCES}
@@ -79,11 +80,11 @@ set(NG_SERVER_SOURCES
 )
 
 if(EMSCRIPTEN)
-  list(APPEND NG_CLIENT_SOURCES ${NG_EMBED_SOURCES} src/net/ng_net_loopback.c)
+  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_loopback.c)
   set(NG_NET_DEFS NG_HAS_EMBEDDED GRAPHICS_API_OPENGL_ES3)
   set(NG_RES_ROOT_DEF NG_RES_ROOT=\"/res/\")
 else()
-  list(APPEND NG_CLIENT_SOURCES ${NG_EMBED_SOURCES} src/net/ng_net_enet.c src/server/agent.c)
+  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_enet.c src/server/agent.c)
   list(APPEND NG_SERVER_SOURCES src/net/ng_net_enet.c)
   set(NG_NET_DEFS NG_HAS_EMBEDDED ENET_IPV4_ONLY)
   set(NG_ENET_DEFS ENET_IPV4_ONLY)
@@ -163,17 +164,17 @@ if(NOT EMSCRIPTEN)
   target_link_libraries(ng_scene_js_smoke PRIVATE m)
 
   add_executable(ng_cmd_loopback_latency tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
-                 src/engine/ng_embed.c src/client/input.c src/net/mod_net.c src/client/render.c
+                 src/client/input.c src/net/mod_net.c src/client/render.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
                  src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m)
 
-  add_executable(ng_embed_smoke tools/embed_smoke.c ${NG_CORE_SOURCES} src/engine/ng_embed.c
+  add_executable(ng_embed_smoke tools/embed_smoke.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c ${NG_SCENE_SOURCES}
-                 src/ng_shader.c src/ng_viewport.c
-                 src/net/ng_net_loopback.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
+                 src/ng_shader.c src/ng_viewport.c src/server/script.c
+                 src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_embed_smoke PRIVATE src src/vendor)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_embed_smoke PRIVATE raylib m)

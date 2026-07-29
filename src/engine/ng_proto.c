@@ -758,5 +758,78 @@ bool ng_proto_decode_state_ack(NgProtoBuf *b, uint32_t *entity_id, uint16_t *ack
   return ng_proto_read_u32(b, entity_id) && ng_proto_read_u16(b, ack_seq);
 }
 
+// agent: composer-2.5 | 2026-07-29 | register wire encode decode | a3f1c2
+bool ng_proto_encode_register(NgProtoBuf *b, uint16_t seq, const NgRegisterReq *req) {
+  if (!b || !req) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_REGISTER,
+      .seq = seq,
+      .tick = 0,
+  };
+  const size_t name_len = strnlen(req->name, sizeof(req->name) - 1);
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u8(b, (uint8_t)name_len)) {
+    return false;
+  }
+  for (size_t i = 0; i < name_len; i++) {
+    if (!ng_proto_write_u8(b, (uint8_t)req->name[i])) {
+      return false;
+    }
+  }
+  return ng_proto_write_u16(b, req->proto_ver);
+}
+
+bool ng_proto_decode_register(NgProtoBuf *b, NgRegisterReq *req) {
+  if (!b || !req) {
+    return false;
+  }
+  memset(req, 0, sizeof(*req));
+  uint8_t name_len = 0;
+  if (!ng_proto_read_u8(b, &name_len) || name_len >= sizeof(req->name)) {
+    return false;
+  }
+  for (uint8_t i = 0; i < name_len; i++) {
+    uint8_t c = 0;
+    if (!ng_proto_read_u8(b, &c)) {
+      return false;
+    }
+    req->name[i] = (char)c;
+  }
+  req->name[name_len] = '\0';
+  return ng_proto_read_u16(b, &req->proto_ver);
+}
+
+bool ng_proto_encode_register_ack(NgProtoBuf *b, uint16_t seq, const NgRegisterAck *ack) {
+  if (!b || !ack) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_REGISTER_ACK,
+      .seq = seq,
+      .tick = 0,
+  };
+  return ng_proto_write_header(b, &h) && ng_proto_write_u8(b, ack->peer_id) &&
+         ng_proto_write_u8(b, ack->role) && ng_proto_write_u16(b, ack->agent_port) &&
+         ng_proto_write_u16(b, ack->root_game_port);
+}
+
+bool ng_proto_decode_register_ack(NgProtoBuf *b, NgRegisterAck *ack) {
+  if (!b || !ack) {
+    return false;
+  }
+  memset(ack, 0, sizeof(*ack));
+  return ng_proto_read_u8(b, &ack->peer_id) && ng_proto_read_u8(b, &ack->role) &&
+         ng_proto_read_u16(b, &ack->agent_port) && ng_proto_read_u16(b, &ack->root_game_port);
+}
+
 // agent: composer-2.5 | 2026-07-28 | state ack encode decode | b7c8d9
 // agent: composer-2.5 | 2026-07-28 | wire rad deg rot convert | ba07f0

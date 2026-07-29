@@ -1,11 +1,15 @@
 // agent: composer-2.5 | 2026-07-25 | agent TCP JSON bridge | h1k39f
-// agent: composer-2.5 | 2026-07-25 | agent scene sync action exec | e8f9a0
+// agent: composer-2.5 | 2026-07-28 | agent port render snapshot | b598b6
 #include "agent.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
 #include "engine/ng_log.h"
 #include "server/sim.h"
 #include "scene/scene.h"
+#if !defined(NG_SERVER)
+#include "client/render.h"
+#include "net/mod_net.h"
+#endif
 #include "world/ng_world.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -18,6 +22,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+// agent: composer-2.5 | 2026-07-29 | mcp agent port probing | 8a1c2d
+#define NG_AGENT_PROBE_MIN 27101
+#define NG_AGENT_PROBE_MAX 27109
+
 typedef struct ModAgentCtx {
   int listen_fd;
   int client_fd;
@@ -29,6 +37,16 @@ typedef struct ModAgentCtx {
 } ModAgentCtx;
 
 static ModAgentCtx g_agent_ctx;
+static uint16_t g_agent_port = NG_AGENT_DEFAULT_PORT;
+
+void mod_agent_configure(uint16_t port) {
+  if (port != 0) {
+    g_agent_port = port;
+  }
+}
+
+// agent: composer-2.5 | 2026-07-29 | expose listening port | 1b2c3d
+uint16_t mod_agent_listening_port(void) { return g_agent_ctx.port; }
 
 static void mod_agent_set_nonblock(int fd) {
   const int flags = fcntl(fd, F_GETFL, 0);
@@ -114,15 +132,62 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
 
   if (strcmp(cmdline, "world_snapshot") == 0) {
     const NgWorld *w = mod_sim_world();
-    char out[1200];
+    char root_line[128];
+    char view_line[128];
+    char render_line[256];
+    char vis_line[128];
+    char gw_line[128];
+#if !defined(NG_SERVER)
+    mod_net_root_mirror_text(root_line, sizeof(root_line));
+    mod_scene_view_status_text(view_line, sizeof(view_line));
+    mod_render_snapshot_text(render_line, sizeof(render_line));
+    mod_render_visibility_text(vis_line, sizeof(vis_line));
+    mod_net_gateway_status_text(gw_line, sizeof(gw_line));
+#else
+    snprintf(root_line, sizeof(root_line), "root n/a");
+    snprintf(view_line, sizeof(view_line), "view n/a");
+    snprintf(render_line, sizeof(render_line), "render=n/a");
+    snprintf(vis_line, sizeof(vis_line), "visible=n/a");
+    snprintf(gw_line, sizeof(gw_line), "gateway n/a");
+#endif
+    char out[1800];
     snprintf(out, sizeof(out),
-             "{\"ok\":true,\"text\":\"scene=%s entities=%d tick=%u\"}",
-             mod_scene_current_id(), mod_scene_entity_count(), w ? w->tick : 0);
+             "{\"ok\":true,\"text\":\"%s | local scene=%s entities=%d tick=%u | %s | %s | %s | "
+             "%s\"}",
+             root_line, mod_scene_current_id(), mod_scene_entity_count(), w ? w->tick : 0,
+             view_line, render_line, vis_line, gw_line);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
+  if (strcmp(cmdline, "render_snapshot") == 0) {
+    char render_line[256];
+#if !defined(NG_SERVER)
+    mod_render_snapshot_text(render_line, sizeof(render_line));
+#else
+    snprintf(render_line, sizeof(render_line), "render=n/a");
+#endif
+    char out[1200];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", render_line);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }
 
   if (strncmp(cmdline, "scene ", 6) == 0) {
+#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
+    if (mod_net_upstream_connected()) {
+      char reply[256];
+      if (mod_net_gateway_upstream_cmd(cmdline, reply, sizeof(reply))) {
+        char out[1200];
+        snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}",
+                 reply[0] != '\0' ? reply : "upstream ok");
+        mod_agent_send_json(ctx->client_fd, out);
+        return;
+      }
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"upstream scene failed\"}");
+      return;
+    }
+#endif
     argv_buf[0] = "scene";
     argv_buf[1] = cmdline + 6;
     NgMsg msg = {
@@ -238,7 +303,17 @@ static bool mod_agent_on_msg(const NgMsg *msg, void *vctx) {
 static bool mod_agent_init(void *vctx) {
   ModAgentCtx *ctx = (ModAgentCtx *)vctx;
   memset(ctx, 0, sizeof(*ctx));
-  ctx->port = NG_AGENT_DEFAULT_PORT;
+#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
+  if (g_agent_port == NG_AGENT_DEFAULT_PORT) {
+    const uint16_t assigned = mod_net_assigned_agent_port();
+    if (assigned != 0) {
+      g_agent_port = assigned;
+    } else if (mod_net_skip_local_boot()) {
+      g_agent_port = NG_AGENT_LOCAL_PORT;
+    }
+  }
+#endif
+  ctx->port = g_agent_port;
   ctx->client_fd = -1;
 
   ctx->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -253,11 +328,38 @@ static bool mod_agent_init(void *vctx) {
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = htons(ctx->port);
-  if (bind(ctx->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    close(ctx->listen_fd);
-    ctx->listen_fd = -1;
-    return false;
+  // agent: composer-2.5 | 2026-07-29 | probe free mcp port range | 1c9a3b
+  uint16_t start = ctx->port;
+  uint16_t end = ctx->port;
+  if (start == NG_AGENT_DEFAULT_PORT) {
+    start = NG_AGENT_PROBE_MIN;
+    end = NG_AGENT_PROBE_MAX;
+  } else if (start >= NG_AGENT_PROBE_MIN && start <= NG_AGENT_PROBE_MAX) {
+    end = NG_AGENT_PROBE_MAX;
+  }
+
+  int last_errno = 0;
+  uint16_t chosen = 0;
+  for (uint16_t p = start; p <= end; p++) {
+    addr.sin_port = htons(p);
+    if (bind(ctx->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+      chosen = p;
+      break;
+    }
+    last_errno = errno;
+    if (p == end) {
+      close(ctx->listen_fd);
+      ctx->listen_fd = -1;
+      NG_LOG_WARN("agent bind failed %u..%u last=%u errno=%d", start, end, p,
+                  last_errno);
+      return false;
+    }
+    NG_LOG_WARN("agent bind busy try_next=%u errno=%d", (uint16_t)(p + 1),
+                 last_errno);
+  }
+
+  if (chosen != 0) {
+    ctx->port = chosen;
   }
   if (listen(ctx->listen_fd, 4) < 0) {
     close(ctx->listen_fd);
@@ -294,3 +396,9 @@ void *mod_agent_ctx(void) { return &g_agent_ctx; }
 
 // agent: composer-2.5 | 2026-07-26 | agent poll outside tick | d7e8f9
 void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
+
+// agent: composer-2.5 | 2026-07-29 | mcp agent port probing | 8a1c2d
+// agent: composer-2.5 | 2026-07-29 | expose listening port | 1b2c3d
+// agent: composer-2.5 | 2026-07-29 | probe free mcp port range | 1c9a3b
+// agent: composer-2.5 | 2026-07-29 | view gateway mcp fields | 72977c
+// agent: composer-2.5 | 2026-07-28 | agent port render snapshot | b598b6

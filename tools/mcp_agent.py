@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
 # agent: composer-2.5 | 2026-07-25 | MCP stdio agent bridge | d4e82a
-"""Minimal MCP stdio server forwarding tool calls to ngame_server agent TCP."""
+# agent: composer-2.5 | 2026-07-28 | mcp dual port render tool | 13f975
+"""Minimal MCP stdio server forwarding tool calls to ngame gateway or ngame_server agent TCP."""
 
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 from typing import Any
 
 AGENT_HOST = "127.0.0.1"
-AGENT_PORT = 27100
+AGENT_PORTS = tuple(
+    p
+    for p in (
+        int(os.environ.get("NG_AGENT_PORT", "0")),
+        *range(27101, 27110),
+        27100,
+    )
+    if p > 0
+)
 PROTOCOL_VERSION = "2024-11-05"
 
 TOOLS = [
     {
         "name": "world_snapshot",
-        "description": "Query authoritative scene, entity count, and sim tick.",
+        "description": "Query local server scene plus render-side state.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "render_snapshot",
+        "description": "Query render-side scene label, snapshot entities, and graph count.",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "scene",
-        # agent: composer-2.5 | 2026-07-28 | scene id any string | 3f5e2a
         "description": "Load a scene by id (e.g. sphere, cube, d-test).",
         "inputSchema": {
             "type": "object",
@@ -43,23 +57,35 @@ TOOLS = [
 
 def agent_request(payload: dict[str, Any]) -> dict[str, Any]:
     data = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
-    with socket.create_connection((AGENT_HOST, AGENT_PORT), timeout=10) as sock:
-        sock.sendall(data)
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-    line = buf.split(b"\n", 1)[0].decode().strip()
-    if not line:
-        return {"ok": False, "error": "empty agent response"}
-    return json.loads(line)
+    last_err: Exception | None = None
+    ports = [p for p in AGENT_PORTS if p > 0]
+    if not ports:
+        ports = list(range(27101, 27110)) + [27100]
+    for port in ports:
+        try:
+            with socket.create_connection((AGENT_HOST, port), timeout=10) as sock:
+                sock.sendall(data)
+                buf = b""
+                while b"\n" not in buf:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+            line = buf.split(b"\n", 1)[0].decode().strip()
+            if not line:
+                return {"ok": False, "error": "empty agent response"}
+            return json.loads(line)
+        except OSError as exc:
+            last_err = exc
+            continue
+    raise OSError(str(last_err) if last_err else "agent connect failed")
 
 
 def run_tool(name: str, arguments: dict[str, Any]) -> str:
     if name == "world_snapshot":
         resp = agent_request({"cmd": "world_snapshot"})
+    elif name == "render_snapshot":
+        resp = agent_request({"cmd": "render_snapshot"})
     elif name == "scene":
         scene_id = arguments.get("id", "")
         resp = agent_request({"line": f"scene {scene_id}"})
@@ -111,7 +137,7 @@ def handle(msg: dict[str, Any]) -> None:
                 "result": {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "ngame-agent", "version": "0.1.0"},
+                    "serverInfo": {"name": "ngame-agent", "version": "0.2.0"},
                 },
             }
         )
@@ -169,3 +195,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# agent: composer-2.5 | 2026-07-28 | mcp dual port render tool | 13f975

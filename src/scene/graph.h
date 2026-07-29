@@ -39,6 +39,24 @@ typedef struct NgSceneInst {
   int script_inst_stash;
 } NgSceneInst;
 
+typedef struct NgSceneRegistry {
+  char desc_name[32];
+  uint32_t entity_id;
+  NgSyncMode sync;
+  bool alive;
+} NgSceneRegistry;
+
+typedef struct ModSceneGraphCtx {
+  NgSceneDesc descs[NG_SCENE_DESC_MAX];
+  int desc_count;
+  NgSceneInst insts[NG_SCENE_INST_MAX];
+  int inst_count;
+  NgSceneRegistry registry[NG_SCENE_INST_MAX];
+  int registry_count;
+  uint32_t next_local_id;
+  uint16_t next_seq;
+} ModSceneGraphCtx;
+
 void mod_scene_graph_reset(void);
 bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode sync,
                               const char *model, int func_stash_idx);
