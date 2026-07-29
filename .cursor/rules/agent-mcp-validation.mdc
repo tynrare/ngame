@@ -1,0 +1,29 @@
+<!-- agent: composer-2.5 | 2026-07-29 | enforce mcp test structure | 5ac7d1 -->
+# Agent MCP Validation Rule
+
+When working in this repository, a clean agent must follow this order:
+
+0. Read `.cursor/skills/ngame-mcp/SKILL.md` when task touches MCP/gateway/scene status
+1. Read `docs/agent-runbook.md`
+2. Rebuild affected targets
+3. Validate MCP behavior for changed runtime paths
+4. Run `./scripts/validate.sh` unless explicitly waived by the user
+
+## MCP minimum checks
+
+- Use `world_snapshot` to confirm runtime state instead of inferring from logs alone
+- Verify gateway fields (`upstream`, `ready`) when changing network/gateway logic
+- Verify `view` + `render` fields when changing scene boot/switch/render flows
+
+## Status and console expectations
+
+- Keep status output readable (multiline when needed)
+- Avoid always-on noisy panel diagnostics; print detailed state on explicit command
+
+## Reporting expectations
+
+- Report exact commands run
+- Report what passed/failed
+- If partial verification, call out missing checks and why they were skipped
+
+<!-- agent: composer-2.5 | 2026-07-29 | enforce mcp test structure | 5ac7d1 -->

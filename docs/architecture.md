@@ -45,5 +45,7 @@ Remote `ngame_server` uses the same server module stack (`ng_server_runtime`).
 `boot.js` / `scenes/*.js` → `src/scene/` → local server → wire → `src/client/render`
 
 See [scenes.md](scenes.md).
+Agent execution checklist: [agent-runbook.md](agent-runbook.md).
 
+<!-- agent: composer-2.5 | 2026-07-29 | add agent runbook link | d1a8b4 -->
 <!-- agent: composer-2.5 | 2026-07-29 | dual runtime register ports | d7e8f9 -->

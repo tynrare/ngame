@@ -40,7 +40,9 @@ killall -9 ngame_server ng_test_net ngame 2>/dev/null || true
 
 Tab → console → `scene <id>` (`cube`, `sphere`, `example`). Server runs `res/boot.js` on start.
 
+<!-- agent: composer-2.5 | 2026-07-29 | add agent runbook refs | 3e2af1 -->
 Docs: [architecture](docs/architecture.md) · [scenes](docs/scenes.md)
+Agent workflow: [agent runbook](docs/agent-runbook.md)
 
 ## Test
 
@@ -48,6 +50,8 @@ Docs: [architecture](docs/architecture.md) · [scenes](docs/scenes.md)
 ./scripts/validate.sh
 ./build/ng_test_net 127.0.0.1 27015
 ```
+
+For agent-driven changes, use `docs/agent-runbook.md` as the verification checklist.
 
 ## Ports
 
@@ -62,3 +66,4 @@ Docs: [architecture](docs/architecture.md) · [scenes](docs/scenes.md)
 - Snapshots + input: UDP (ENet channel 0, unreliable)
 - CMD / REPLY / EVENT: reliable (channel 1)
 - Embedded: loopback queues, same `ng_proto` packets, no sockets
+<!-- agent: composer-2.5 | 2026-07-29 | add agent runbook refs | 3e2af1 -->
