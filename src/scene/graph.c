@@ -27,7 +27,7 @@ void mod_scene_graph_reset(void) {
 }
 
 bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode sync,
-                              const char *model, int func_stash_idx) {
+                              const char *model, const char *body, int func_stash_idx) {
   if (!kind || !name) {
     return false;
   }
@@ -37,6 +37,12 @@ bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode syn
     existing->func_stash_idx = func_stash_idx;
     if (model) {
       strncpy(existing->model, model, sizeof(existing->model) - 1);
+    }
+    // agent: composer-2.5 | 2026-07-29 | entity optional body field | a88872
+    if (body) {
+      strncpy(existing->body, body, sizeof(existing->body) - 1);
+    } else {
+      existing->body[0] = '\0';
     }
     return true;
   }
@@ -52,6 +58,9 @@ bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode syn
   d->func_stash_idx = func_stash_idx;
   if (model) {
     strncpy(d->model, model, sizeof(d->model) - 1);
+  }
+  if (body) {
+    strncpy(d->body, body, sizeof(d->body) - 1);
   }
   return true;
 }
@@ -213,6 +222,16 @@ void mod_scene_graph_fill_session_spawns(NgSessionState *session) {
       sp->scale = r->scale > 0.0f ? r->scale : 1.0f;
     }
   }
+  // agent: composer-2.5 | 2026-07-29 | stable spawn key order | 091bfd
+  for (int i = 0; i < session->spawn_count; i++) {
+    for (int j = i + 1; j < session->spawn_count; j++) {
+      if (strcmp(session->spawns[j].key, session->spawns[i].key) < 0) {
+        NgSessionSpawn tmp = session->spawns[i];
+        session->spawns[i] = session->spawns[j];
+        session->spawns[j] = tmp;
+      }
+    }
+  }
 }
 
 void mod_scene_graph_seed_pending(const NgSessionState *session) {
@@ -307,6 +326,9 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, const char 
     strncpy(inst->key, key, sizeof(inst->key) - 1);
   }
   strncpy(inst->model, d->model, sizeof(inst->model) - 1);
+  // agent: composer-2.5 | 2026-07-29 | entity optional body field | a88872
+  strncpy(inst->body, d->body, sizeof(inst->body) - 1);
+  inst->body_id_bits = 0;
   inst->sync = d->sync;
   if (pos) {
     inst->pos[0] = pos[0];
@@ -553,5 +575,6 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
   }
   return NULL;
 }
-// agent: composer-2.5 | 2026-07-29 | drop last_sent echo filter | e1c9a2
 // agent: composer-2.5 | 2026-07-29 | instance primary spawn registry | 9c2f5c
+// agent: composer-2.5 | 2026-07-29 | entity optional body field | a88872
+// agent: composer-2.5 | 2026-07-29 | stable spawn key order | 091bfd

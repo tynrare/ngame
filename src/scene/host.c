@@ -10,6 +10,9 @@
 #include "scene/graph.h"
 #include "scene/assets.h"
 #include "scene/native.h"
+#include "scene/physics.h"
+#include "scene/lockstep.h"
+#include "engine/ng_mod.h"
 #include "net/mod_net.h"
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 #include "server/sim.h"
@@ -39,6 +42,65 @@ static bool mod_scene_is_server(void) {
 #else
   return NG_SCENE_ACTIVE()->is_server_host;
 #endif
+}
+
+// agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+static NgFixedGate mod_scene_lockstep_fixed_gate(void) {
+  if (!mod_lockstep_active()) {
+    return NG_FIXED_GATE_GO;
+  }
+  const NgLockGate g = mod_lockstep_gate();
+  if (g == NG_LOCK_GATE_BUFFER) {
+    return NG_FIXED_GATE_BUFFER;
+  }
+  if (g == NG_LOCK_GATE_STALL) {
+    return NG_FIXED_GATE_STALL;
+  }
+  return NG_FIXED_GATE_GO;
+}
+
+static void mod_scene_lockstep_activate(uint32_t local_peer) {
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  // agent: composer-2.5 | 2026-07-30 | lockstep activate no wipe | bb830d
+  // agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823
+  /* Mid-session re-activate: keep rings. Scene load calls restart instead. */
+  if (mod_lockstep_active()) {
+    if (mod_lockstep_local_peer_id() == 0) {
+      mod_lockstep_set_local_peer(1u);
+    }
+    ng_mod_set_fixed_gate(mod_scene_lockstep_fixed_gate);
+    return;
+  }
+  mod_lockstep_set_active(true);
+#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
+  (void)local_peer;
+  mod_lockstep_clear_peers();
+  mod_lockstep_set_local_peer(1u);
+#else
+  mod_lockstep_clear_peers();
+  mod_lockstep_set_local_peer(local_peer ? local_peer : 1u);
+#endif
+  ng_mod_set_fixed_gate(mod_scene_lockstep_fixed_gate);
+}
+
+static void mod_scene_lockstep_restart(uint32_t local_peer) {
+  // agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823
+  /* Fresh lockstep clock on scene load — independent of ng_mod fixed tick. */
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+  mod_scene_lockstep_activate(local_peer);
+}
+
+static void mod_scene_lockstep_maybe_activate(uint32_t local_peer) {
+  if (mod_scene_physics_is_lockstep()) {
+    mod_scene_lockstep_activate(local_peer);
+  }
+}
+
+static void mod_scene_lockstep_maybe_restart(uint32_t local_peer) {
+  if (mod_scene_physics_is_lockstep()) {
+    mod_scene_lockstep_restart(local_peer);
+  }
 }
 
 static ModSceneCtx *mod_scene_from_ctx(duk_context *ctx) {
@@ -134,10 +196,28 @@ static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
     duk_pop(ctx);
   }
   duk_pop(ctx);
+  // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+  duk_get_prop_string(ctx, obj_idx, "sim");
+  if (duk_is_string(ctx, -1) && strcmp(duk_get_string(ctx, -1), "lockstep") == 0) {
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
+  }
+  duk_pop(ctx);
   return mod_scene_assets_describe_view(&view);
 }
 
-static bool mod_scene_spawn_creates_local(NgSyncMode sync, bool on_server, bool is_controller) {
+static bool mod_scene_lockstep_body(const char *body) {
+  return mod_scene_physics_is_lockstep() && body && body[0] != '\0';
+}
+
+static bool mod_scene_spawn_creates_local(NgSyncMode sync, bool on_server, bool is_controller,
+                                          bool lockstep_body) {
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  if (lockstep_body) {
+    (void)sync;
+    (void)on_server;
+    (void)is_controller;
+    return true;
+  }
   if (sync == NG_SYNC_SERVER) {
     return on_server;
   }
@@ -155,6 +235,7 @@ static duk_ret_t bind_describe(duk_context *ctx) {
   const char *name = duk_require_string(ctx, 1);
   NgSyncMode sync = NG_SYNC_SERVER;
   const char *model = NULL;
+  const char *body = NULL;
   int func_idx = -1;
 
   if (duk_is_object(ctx, 2)) {
@@ -232,10 +313,64 @@ static duk_ret_t bind_describe(duk_context *ctx) {
       }
       duk_pop(ctx);
       mod_scene_assets_describe_model(name, mesh, shader);
+    } else if (strcmp(kind, "shape") == 0) {
+      // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+      const char *stype = "box";
+      float hx = 0.5f, hy = 0.5f, hz = 0.5f, density = 1.0f, friction = 0.3f;
+      duk_get_prop_string(ctx, 2, "type");
+      if (duk_is_string(ctx, -1)) {
+        stype = duk_get_string(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "hx");
+      if (duk_is_number(ctx, -1)) {
+        hx = (float)duk_get_number(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "hy");
+      if (duk_is_number(ctx, -1)) {
+        hy = (float)duk_get_number(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "hz");
+      if (duk_is_number(ctx, -1)) {
+        hz = (float)duk_get_number(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "density");
+      if (duk_is_number(ctx, -1)) {
+        density = (float)duk_get_number(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "friction");
+      if (duk_is_number(ctx, -1)) {
+        friction = (float)duk_get_number(ctx, -1);
+      }
+      duk_pop(ctx);
+      mod_scene_physics_describe_shape(name, stype, hx, hy, hz, density, friction);
+    } else if (strcmp(kind, "body") == 0) {
+      const char *btype = "static";
+      const char *shape = NULL;
+      duk_get_prop_string(ctx, 2, "type");
+      if (duk_is_string(ctx, -1)) {
+        btype = duk_get_string(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "shape");
+      if (duk_is_string(ctx, -1)) {
+        shape = duk_get_string(ctx, -1);
+      }
+      duk_pop(ctx);
+      mod_scene_physics_describe_body(name, btype, shape);
     } else if (strcmp(kind, "entity") == 0) {
       duk_get_prop_string(ctx, 2, "model");
       if (duk_is_string(ctx, -1)) {
         model = duk_get_string(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "body");
+      if (duk_is_string(ctx, -1)) {
+        body = duk_get_string(ctx, -1);
       }
       duk_pop(ctx);
       duk_get_prop_string(ctx, 2, "func");
@@ -255,10 +390,11 @@ static duk_ret_t bind_describe(duk_context *ctx) {
       duk_push_int(ctx, 0);
       return 1;
     }
-    mod_scene_graph_describe(kind, name, sync, model, func_idx);
+    mod_scene_graph_describe(kind, name, sync, model, body, func_idx);
   } else if (strcmp(kind, "mesh") == 0 || strcmp(kind, "shader") == 0 ||
-             strcmp(kind, "model") == 0 || strcmp(kind, "scene") == 0) {
-    mod_scene_graph_describe(kind, name, sync, model, func_idx);
+             strcmp(kind, "model") == 0 || strcmp(kind, "scene") == 0 ||
+             strcmp(kind, "shape") == 0 || strcmp(kind, "body") == 0) {
+    mod_scene_graph_describe(kind, name, sync, model, body, func_idx);
   }
   duk_push_int(ctx, 1);
   return 1;
@@ -349,7 +485,12 @@ static void mod_scene_read_spawn_opts(duk_context *ctx, int idx, ModSceneSpawnOp
   duk_pop(ctx);
 }
 
-static bool mod_scene_spawn_should_materialize(NgSyncMode sync, bool on_server) {
+static bool mod_scene_spawn_should_materialize(NgSyncMode sync, bool on_server,
+                                               bool lockstep_body) {
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  if (lockstep_body) {
+    return true;
+  }
   if (sync == NG_SYNC_LOCAL) {
     return false;
   }
@@ -367,6 +508,11 @@ static int mod_scene_finish_spawn(duk_context *ctx, ModSceneCtx *scene, const ch
       mod_scene_graph_spawn(name, entity_id, key, pos, rot, scale, ctx, func_idx);
   NgSceneInst *inst = mod_scene_inst_from_handle(handle);
   if (inst) {
+    // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+    if (inst->body[0] != '\0') {
+      mod_scene_physics_attach(handle, inst->body, inst->sync, mod_scene_is_server(),
+                               scene->is_controller, inst->pos, inst->rot);
+    }
     mod_scene_call_entity_method(scene, inst, "init");
     mod_scene_call_entity_method(scene, inst, "start");
   }
@@ -402,6 +548,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
 
   const bool on_server = mod_scene_is_server();
   const NgSyncMode sync = desc->sync;
+  const bool lockstep_body = mod_scene_lockstep_body(desc->body);
   const int func_idx = mod_scene_stash_func(ctx, name);
   const float *pos = opts.have_pos ? opts.pos : NULL;
   const float *rot = opts.have_rot ? opts.rot : NULL;
@@ -417,8 +564,8 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
 
   const NgSessionSpawn *pending = mod_scene_graph_take_pending(name, key);
   if (pending) {
-    if (mod_scene_spawn_creates_local(sync, on_server, scene->is_controller) ||
-        mod_scene_spawn_should_materialize(sync, on_server)) {
+    if (mod_scene_spawn_creates_local(sync, on_server, scene->is_controller, lockstep_body) ||
+        mod_scene_spawn_should_materialize(sync, on_server, lockstep_body)) {
       const int handle = mod_scene_spawn_from_pending(ctx, scene, name, pending, func_idx);
       duk_push_int(ctx, handle);
       return 1;
@@ -431,14 +578,14 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     return 1;
   }
 
-  if (!mod_scene_spawn_creates_local(sync, on_server, scene->is_controller)) {
+  if (!mod_scene_spawn_creates_local(sync, on_server, scene->is_controller, lockstep_body)) {
     if (sync == NG_SYNC_LOCAL) {
       duk_push_int(ctx, 0);
       return 1;
     }
     const uint32_t entity_id = mod_scene_graph_alloc_id();
     mod_scene_graph_registry_add_instance(name, key, entity_id, sync, pos, rot, scale);
-    if (mod_scene_spawn_should_materialize(sync, on_server)) {
+    if (mod_scene_spawn_should_materialize(sync, on_server, lockstep_body)) {
       const int handle =
           mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
       duk_push_int(ctx, handle);
@@ -469,6 +616,8 @@ static duk_ret_t bind_despawn(duk_context *ctx) {
 #endif
   mod_scene_call_entity_method(scene, inst, "stop");
   mod_scene_call_entity_method(scene, inst, "dispose");
+  // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+  mod_scene_physics_detach(handle);
   mod_scene_graph_despawn(handle);
   return 0;
 }
@@ -477,6 +626,7 @@ static duk_ret_t bind_dispose(duk_context *ctx) {
   const char *kind = duk_require_string(ctx, 0);
   const char *name = duk_require_string(ctx, 1);
   mod_scene_assets_dispose(kind, name);
+  mod_scene_physics_dispose(kind, name);
   mod_scene_graph_dispose_desc(kind, name);
   return 0;
 }
@@ -922,6 +1072,10 @@ static bool mod_scene_call_method(ModSceneCtx *ctx, const char *method, int narg
   duk_get_prop_string(ctx->ctx, -1, method);
   if (!duk_is_function(ctx->ctx, -1)) {
     duk_pop_n(ctx->ctx, 2);
+    // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+    if (nargs > 0) {
+      duk_pop_n(ctx->ctx, nargs);
+    }
     return false;
   }
   if (nargs > 0) {
@@ -983,9 +1137,15 @@ static void mod_scene_materialize_pending_ud(const NgSessionSpawn *sp, void *ud)
   if (mod_scene_graph_inst_by_id(sp->entity_id)) {
     return;
   }
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  if (sp->key[0] != '\0' && mod_scene_graph_inst_by_key(sp->key)) {
+    return;
+  }
   const bool on_server = mod_scene_is_server();
-  if (!(mod_scene_spawn_creates_local(sp->sync, on_server, ctx->is_controller) ||
-        mod_scene_spawn_should_materialize(sp->sync, on_server))) {
+  NgSceneDesc *desc = mod_scene_graph_entity_desc(sp->desc_name);
+  const bool lockstep_body = mod_scene_lockstep_body(desc ? desc->body : NULL);
+  if (!(mod_scene_spawn_creates_local(sp->sync, on_server, ctx->is_controller, lockstep_body) ||
+        mod_scene_spawn_should_materialize(sp->sync, on_server, lockstep_body))) {
     mod_scene_graph_registry_add_instance(sp->desc_name, sp->key, sp->entity_id, sp->sync, sp->pos,
                                           sp->rot, sp->scale > 0.0f ? sp->scale : 1.0f);
     return;
@@ -1064,6 +1224,154 @@ static void mod_scene_run_entity_steps(ModSceneCtx *ctx, float dt) {
   }
 }
 
+static void mod_scene_set_active_for(ModSceneCtx *ctx);
+
+// agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+static void mod_scene_run_entity_fixed_steps(ModSceneCtx *ctx, float fixed_dt) {
+  if (!ctx->ctx) {
+    return;
+  }
+  const bool on_server = mod_scene_is_server();
+  const bool lockstep = mod_scene_physics_is_lockstep();
+  const int n = mod_scene_graph_inst_count();
+  for (int i = 0; i < n; i++) {
+    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+    if (!inst) {
+      continue;
+    }
+    if (!lockstep) {
+      if (on_server) {
+        if (inst->sync != NG_SYNC_SERVER) {
+          continue;
+        }
+      } else {
+        if (inst->sync == NG_SYNC_SERVER) {
+          continue;
+        }
+        if (inst->sync == NG_SYNC_OWNER && !ctx->is_controller) {
+          continue;
+        }
+      }
+    }
+    char key[48];
+    snprintf(key, sizeof(key), "inst_%d", inst->handle);
+    duk_push_global_stash(ctx->ctx);
+    duk_get_prop_string(ctx->ctx, -1, key);
+    if (!duk_is_object(ctx->ctx, -1)) {
+      duk_pop_n(ctx->ctx, 2);
+      continue;
+    }
+    duk_get_prop_string(ctx->ctx, -1, "fixed_step");
+    if (!duk_is_function(ctx->ctx, -1)) {
+      duk_pop_n(ctx->ctx, 3);
+      continue;
+    }
+    duk_insert(ctx->ctx, -2);
+    duk_push_number(ctx->ctx, fixed_dt);
+    if (duk_pcall_method(ctx->ctx, 1) != DUK_EXEC_SUCCESS) {
+      NG_LOG_ERROR("entity fixed_step: %s", duk_safe_to_string(ctx->ctx, -1));
+    }
+    duk_pop(ctx->ctx);
+    mod_scene_drain_pending_change(ctx);
+  }
+}
+
+static void mod_scene_fixed_step_ctx(ModSceneCtx *ctx, float fixed_dt) {
+  if (!ctx || !ctx->loaded || !ctx->started || ctx->native || !ctx->ctx) {
+    return;
+  }
+  mod_scene_set_active_for(ctx);
+  duk_push_number(ctx->ctx, fixed_dt);
+  mod_scene_call_method(ctx, "fixed_step", 1);
+  mod_scene_run_entity_fixed_steps(ctx, fixed_dt);
+  mod_scene_physics_fixed_step(fixed_dt, mod_scene_is_server(), ctx->is_controller);
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  if (mod_scene_is_server() && !mod_scene_physics_is_lockstep()) {
+    mod_scene_mirror_server(mod_sim_world());
+  }
+#endif
+}
+
+// agent: composer-2.5 | 2026-07-29 | server phys poses to view | c05110
+// agent: composer-2.5 | 2026-07-29 | server phys snapshot to view | d2d78d
+#if !defined(NG_SERVER)
+static void mod_scene_push_server_phys_to_view(void) {
+  typedef struct {
+    uint32_t id;
+    char key[32];
+    float pos[3];
+    float rot[3];
+  } NgPhysPose;
+  NgPhysPose poses[NG_SCENE_INST_MAX];
+  int n = 0;
+  mod_scene_runtime_use_server();
+  const int count = mod_scene_graph_inst_count();
+  for (int i = 0; i < count && n < NG_SCENE_INST_MAX; i++) {
+    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+    if (!inst || inst->sync != NG_SYNC_SERVER || inst->body_id_bits == 0) {
+      continue;
+    }
+    poses[n].id = inst->id;
+    strncpy(poses[n].key, inst->key, sizeof(poses[n].key) - 1);
+    poses[n].pos[0] = inst->pos[0];
+    poses[n].pos[1] = inst->pos[1];
+    poses[n].pos[2] = inst->pos[2];
+    poses[n].rot[0] = inst->rot[0];
+    poses[n].rot[1] = inst->rot[1];
+    poses[n].rot[2] = inst->rot[2];
+    n++;
+  }
+  if (n == 0) {
+    return;
+  }
+  mod_scene_runtime_use_view();
+  if (!NG_SCENE_ACTIVE()->loaded) {
+    return;
+  }
+  for (int i = 0; i < n; i++) {
+    NgSceneInst *v = mod_scene_graph_inst_by_id(poses[i].id);
+    if (!v && poses[i].key[0] != '\0') {
+      v = mod_scene_graph_inst_by_key(poses[i].key);
+    }
+    if (!v) {
+      continue;
+    }
+    v->pos[0] = poses[i].pos[0];
+    v->pos[1] = poses[i].pos[1];
+    v->pos[2] = poses[i].pos[2];
+    v->rot[0] = poses[i].rot[0];
+    v->rot[1] = poses[i].rot[1];
+    v->rot[2] = poses[i].rot[2];
+  }
+}
+#endif
+
+static void mod_scene_fixed_step(void *vctx, float fixed_dt, uint32_t tick) {
+  (void)vctx;
+  (void)tick;
+  mod_scene_fixed_step_ctx(&g_scene_server.scene, fixed_dt);
+#if !defined(NG_SERVER)
+  // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+  if (!mod_scene_physics_is_lockstep()) {
+    mod_scene_push_server_phys_to_view();
+  }
+#endif
+  mod_scene_fixed_step_ctx(&g_scene_view.scene, fixed_dt);
+  if (mod_lockstep_active()) {
+    // agent: composer-2.5 | 2026-07-30 | lockstep hash tick only | ca6913
+    // agent: composer-2.5 | 2026-07-30 | lockstep own sim clock | 5e56e9
+    uint32_t hash = 0;
+    const uint32_t next = mod_lockstep_sim_tick() + 1u;
+    mod_scene_runtime_use_server();
+    if (mod_scene_physics_is_lockstep() && next > 0 && (next % 60u) == 0u) {
+      hash = mod_scene_physics_checksum();
+    }
+    mod_lockstep_on_stepped(next, hash);
+  }
+  mod_scene_runtime_use_server();
+}
+
 static void mod_scene_set_active_for(ModSceneCtx *ctx) {
   if (ctx == &g_scene_server.scene) {
     mod_scene_runtime_use_server();
@@ -1089,6 +1397,18 @@ static void mod_scene_unload(ModSceneCtx *ctx) {
   }
   mod_scene_graph_reset();
   mod_scene_assets_reset();
+  // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+  {
+    const bool other_lock =
+        (ctx == &g_scene_server.scene)
+            ? (g_scene_view.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP)
+            : (g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP);
+    mod_scene_physics_reset();
+    if (!other_lock) {
+      mod_lockstep_reset();
+      ng_mod_set_fixed_gate(NULL);
+    }
+  }
   ctx->loaded = false;
   ctx->inited = false;
   ctx->started = false;
@@ -1106,6 +1426,8 @@ static bool mod_scene_begin(const char *scene_id, bool server_host, bool is_cont
   ctx->is_controller = is_controller;
   mod_scene_graph_reset();
   mod_scene_assets_reset();
+  // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+  mod_scene_physics_reset();
   ctx->ctx = duk_create_heap_default();
   if (!ctx->ctx) {
     return false;
@@ -1130,6 +1452,14 @@ static bool mod_scene_begin(const char *scene_id, bool server_host, bool is_cont
 }
 
 bool mod_scene_load(const char *scene_id) {
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+#if !defined(NG_SERVER)
+  /* Drop view graph before server reload so second scene load cannot leave duplicates. */
+  mod_scene_runtime_use_view();
+  if (mod_scene_runtime_scene()->loaded) {
+    mod_scene_unload(mod_scene_runtime_scene());
+  }
+#endif
   mod_scene_runtime_use_server();
   if (!scene_id || scene_id[0] == '\0') {
     mod_scene_unload(mod_scene_runtime_scene());
@@ -1145,6 +1475,7 @@ bool mod_scene_load(const char *scene_id) {
   }
   NgSessionState session = {0};
   strncpy(session.scene_id, scene_id, sizeof(session.scene_id) - 1);
+  session.lockstep = mod_scene_physics_is_lockstep() ? 1u : 0u;
   mod_scene_push_session_obj(ctx, &session);
   if (!mod_scene_call_method(ctx, "start", 1)) {
     mod_scene_unload(ctx);
@@ -1152,6 +1483,9 @@ bool mod_scene_load(const char *scene_id) {
   }
   mod_scene_drain_pending_change(ctx);
   ctx->started = true;
+  // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+  // agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823
+  mod_scene_lockstep_maybe_restart(0);
   return true;
 }
 
@@ -1177,6 +1511,8 @@ void mod_scene_fill_session(NgSessionState *session) {
     return;
   }
   mod_scene_runtime_use_server();
+  // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+  session->lockstep = mod_scene_physics_is_lockstep() ? 1u : 0u;
   mod_scene_graph_fill_session_spawns(session);
 }
 
@@ -1187,6 +1523,11 @@ bool mod_scene_is_controller(void) {
 
 bool mod_scene_can_author(NgSyncMode sync) {
   // agent: composer-2.5 | 2026-07-29 | author uses active runtime | b3f7a1
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  if (mod_scene_physics_is_lockstep()) {
+    (void)sync;
+    return false;
+  }
   if (sync == NG_SYNC_SHARED) {
     return true;
   }
@@ -1227,12 +1568,25 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
 
   // Seed pending matches for Scene.start spawn() call-order / keys.
   if (!ctx->started) {
+    // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+    if (session->lockstep) {
+      mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
+    }
+    if (mod_scene_physics_is_lockstep() && mod_lockstep_refuse_late_join()) {
+      NG_LOG_ERROR("lockstep: mid-sim join refused");
+      return;
+    }
     mod_scene_graph_seed_pending(session);
     mod_scene_push_session_obj(ctx, session);
     mod_scene_call_method(ctx, "start", 1);
     mod_scene_drain_pending_change(ctx);
     ctx->started = true;
     mod_scene_graph_foreach_unmatched_pending(mod_scene_materialize_pending_ud, ctx);
+    mod_scene_lockstep_maybe_activate(session->your_id);
+  } else if ((session->lockstep || mod_scene_physics_is_lockstep()) &&
+             !mod_lockstep_active()) {
+    // agent: composer-2.5 | 2026-07-30 | lockstep activate no wipe | bb830d
+    mod_scene_lockstep_maybe_activate(session->your_id);
   }
 
 #ifndef NG_SERVER
@@ -1255,12 +1609,19 @@ void mod_scene_apply_remote(const NgStateUpdate *update) {
   if (!update || !NG_SCENE_ACTIVE()->loaded) {
     return;
   }
+  // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+  if (mod_scene_physics_is_lockstep()) {
+    return;
+  }
   mod_scene_graph_apply_update(update);
 }
 
 void mod_scene_view_apply_remote(const NgStateUpdate *update) {
   mod_scene_runtime_use_view();
   if (!update || !NG_SCENE_ACTIVE()->loaded) {
+    return;
+  }
+  if (mod_scene_physics_is_lockstep()) {
     return;
   }
   mod_scene_graph_apply_update(update);
@@ -1271,9 +1632,14 @@ static bool mod_scene_take_flush_active(NgStateUpdate *out) {
   if (!out || !NG_SCENE_ACTIVE()->loaded) {
     return false;
   }
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  const bool lockstep = mod_scene_physics_is_lockstep();
   NgStateUpdate tmp;
   while (mod_scene_graph_take_dirty(&tmp)) {
     NgSceneInst *inst = mod_scene_graph_inst_by_id(tmp.entity_id);
+    if (lockstep && inst && mod_scene_lockstep_body(inst->body)) {
+      continue;
+    }
     if (inst && mod_scene_can_author(inst->sync)) {
       *out = tmp;
       return true;
@@ -1366,9 +1732,11 @@ static void mod_scene_shutdown(void *vctx) {
 static const NgModOps g_scene_ops = {
     .name = "scene",
     .dest = NG_BUS_SCENE,
+    .side = NG_MOD_SIDE_BOTH,
     .init = mod_scene_init,
     .shutdown = mod_scene_shutdown,
     .on_msg = mod_scene_on_msg,
+    .fixed_step = mod_scene_fixed_step,
 };
 
 const NgModOps *mod_scene_ops(void) { return &g_scene_ops; }
@@ -1440,6 +1808,10 @@ bool mod_scene_view_graph_active(void) {
 void mod_scene_mirror_server(NgWorld *w) {
   mod_scene_runtime_use_server();
   if (!w || !NG_SCENE_ACTIVE()->loaded) {
+    return;
+  }
+  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+  if (mod_scene_physics_is_lockstep()) {
     return;
   }
   const int n = mod_scene_graph_inst_count();
@@ -1557,11 +1929,110 @@ bool mod_scene_is_native(void) {
   return NG_SCENE_ACTIVE()->native;
 }
 
+// agent: composer-2.5 | 2026-07-29 | lockstep smoke hash test | 258f24
+static bool mod_scene_lockstep_hash_smoke(void) {
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+
+  mod_scene_runtime_use_server();
+  if (!mod_scene_begin("physics", true, true)) {
+    return false;
+  }
+  {
+    ModSceneCtx *ctx = mod_scene_runtime_scene();
+    NgSessionState session = {0};
+    strncpy(session.scene_id, "physics", sizeof(session.scene_id) - 1);
+    session.lockstep = 1;
+    mod_scene_push_session_obj(ctx, &session);
+    if (!mod_scene_call_method(ctx, "start", 1)) {
+      mod_scene_unload(ctx);
+      return false;
+    }
+    mod_scene_drain_pending_change(ctx);
+    ctx->started = true;
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
+  }
+
+  mod_scene_runtime_use_view();
+  if (!mod_scene_begin("physics", false, true)) {
+    mod_scene_runtime_use_server();
+    mod_scene_unload(mod_scene_runtime_scene());
+    return false;
+  }
+  {
+    ModSceneCtx *ctx = mod_scene_runtime_scene();
+    NgSessionState session = {0};
+    strncpy(session.scene_id, "physics", sizeof(session.scene_id) - 1);
+    session.lockstep = 1;
+    session.your_id = 1;
+    session.controller_id = 1;
+    mod_scene_graph_seed_pending(&session);
+    mod_scene_push_session_obj(ctx, &session);
+    if (!mod_scene_call_method(ctx, "start", 1)) {
+      mod_scene_unload(ctx);
+      mod_scene_runtime_use_server();
+      mod_scene_unload(mod_scene_runtime_scene());
+      return false;
+    }
+    mod_scene_drain_pending_change(ctx);
+    ctx->started = true;
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
+  }
+
+  mod_lockstep_reset();
+  mod_scene_lockstep_restart(0);
+
+  bool ok = true;
+  uint32_t sim_tick = 0;
+  for (int i = 0; i < NG_LOCK_PLAYOUT_TICKS + 180 && ok; i++) {
+    const NgLockGate g = mod_lockstep_gate();
+    if (g == NG_LOCK_GATE_BUFFER) {
+      continue;
+    }
+    if (g == NG_LOCK_GATE_STALL) {
+      ok = false;
+      break;
+    }
+    sim_tick++;
+    mod_scene_runtime_use_server();
+    mod_scene_physics_fixed_step(NG_MOD_FIXED_DT, true, true);
+    const uint32_t hs = mod_scene_physics_checksum();
+    mod_scene_runtime_use_view();
+    mod_scene_physics_fixed_step(NG_MOD_FIXED_DT, false, true);
+    const uint32_t hv = mod_scene_physics_checksum();
+    mod_lockstep_on_stepped(sim_tick, hs);
+    if (hs != hv) {
+      ok = false;
+      break;
+    }
+  }
+  if (ok && sim_tick < 120u) {
+    ok = false;
+  }
+  if (ok) {
+    mod_scene_runtime_use_view();
+    NgSceneInst *box = mod_scene_graph_inst_by_key("box");
+    if (!box || fabsf(box->pos[1] - 1.0f) > 0.15f) {
+      ok = false;
+    }
+  }
+
+  mod_scene_runtime_use_view();
+  mod_scene_unload(mod_scene_runtime_scene());
+  mod_scene_runtime_use_server();
+  mod_scene_unload(mod_scene_runtime_scene());
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+  return ok;
+}
+
 bool mod_scene_smoke_test(void) {
   return mod_scene_smoke_one("cube", "cube_a_e", false) &&
          mod_scene_smoke_one("sphere", "sphere_a_e", true) &&
+         mod_scene_smoke_one("physics", "box_e", true) &&
          mod_scene_smoke_one("owner", "owner_e", false) &&
-         mod_scene_smoke_one("local", NULL, false);
+         mod_scene_smoke_one("local", NULL, false) &&
+         mod_scene_lockstep_hash_smoke();
 }
 
 // agent: composer-2.5 | 2026-07-29 | spawn opts key ordinal match | 701175
@@ -1585,3 +2056,13 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-29 | expose JS mouse position | 8a4c2f
 // agent: composer-2.5 | 2026-07-29 | position dirty deadband | 2c6e8a
 // agent: composer-2.5 | 2026-07-29 | js get_position binding | 9b4d7e
+// agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+// agent: composer-2.5 | 2026-07-29 | server phys poses to view | c05110
+// agent: composer-2.5 | 2026-07-29 | server phys snapshot to view | d2d78d
+// agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+// agent: composer-2.5 | 2026-07-29 | lockstep smoke hash test | 258f24
+// agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
+// agent: composer-2.5 | 2026-07-30 | lockstep activate no wipe | bb830d
+// agent: composer-2.5 | 2026-07-30 | lockstep hash tick only | ca6913
+// agent: composer-2.5 | 2026-07-30 | lockstep own sim clock | 5e56e9
+// agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823

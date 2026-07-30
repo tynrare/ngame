@@ -177,12 +177,15 @@ static void mod_sim_shutdown(void *vctx) {
   mod_scene_load("");
 }
 
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 257ba6
 static const NgModOps g_sim_ops = {
     .name = "sim",
     .dest = NG_BUS_SIM,
+    .side = NG_MOD_SIDE_SERVER,
     .init = mod_sim_init,
     .shutdown = mod_sim_shutdown,
     .on_msg = mod_sim_on_msg,
+    .fixed_step = NULL,
 };
 
 const NgModOps *mod_sim_ops(void) { return &g_sim_ops; }
@@ -190,3 +193,5 @@ const NgModOps *mod_sim_ops(void) { return &g_sim_ops; }
 void *mod_sim_ctx(void) { return &g_sim_ctx; }
 
 // agent: composer-2.5 | 2026-07-28 | sim gateway authority gate | 7cd0be
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 257ba6
+// agent: composer-2.5 | 2026-07-29 | scene load helper for js route | 687e07

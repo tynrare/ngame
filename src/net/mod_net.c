@@ -12,6 +12,8 @@
 #include "scene/scene.h"
 #include "scene/runtime.h"
 #include "scene/graph.h"
+#include "scene/lockstep.h"
+#include "scene/physics.h"
 #include "net/ng_net.h"
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 #include "server/sim.h"
@@ -89,6 +91,8 @@ typedef struct ModNetCtx {
   char pending_reply_text[1024];
   uint32_t last_action_tick;
   bool cmd_inflight;
+  uint8_t lock_peer_id;
+  uint32_t lock_hash_sent_tick;
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   uint8_t controller_id;
   uint8_t next_peer_id;
@@ -873,6 +877,51 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     }
     break;
   }
+  // agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
+  case NG_PKT_LOCK_INPUT: {
+    NgLockInputPkt pkt = {0};
+    if (!ng_proto_decode_lock_input(buf, &pkt)) {
+      return;
+    }
+    for (uint8_t i = 0; i < pkt.count; i++) {
+      mod_lockstep_store_remote_input(pkt.peer_id, pkt.base_tick + i, pkt.bits[i]);
+    }
+    if (!ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &pkt)) {
+      return;
+    }
+    NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
+    ng_net_foreach_peer(net, mod_net_relay_state_update, &relay);
+#if defined(NG_HAS_EMBEDDED)
+    mod_net_forward_upstream(ctx, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+#endif
+    break;
+  }
+  case NG_PKT_LOCK_ACK: {
+    NgLockAckPkt pkt = {0};
+    if (!ng_proto_decode_lock_ack(buf, &pkt)) {
+      return;
+    }
+    mod_lockstep_store_ack(pkt.peer_id, pkt.ack_tick);
+    if (!ng_proto_encode_lock_ack(&ctx->tx_buf, ++ctx->seq, &pkt)) {
+      return;
+    }
+    NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
+    ng_net_foreach_peer(net, mod_net_relay_state_update, &relay);
+    break;
+  }
+  case NG_PKT_LOCK_HASH: {
+    NgLockHashPkt pkt = {0};
+    if (!ng_proto_decode_lock_hash(buf, &pkt)) {
+      return;
+    }
+    (void)pkt;
+    if (!ng_proto_encode_lock_hash(&ctx->tx_buf, ++ctx->seq, &pkt)) {
+      return;
+    }
+    NetRelayCtx relay = {.net_ctx = ctx, .from = peer};
+    ng_net_foreach_peer(net, mod_net_relay_state_update, &relay);
+    break;
+  }
   default:
     break;
   }
@@ -967,6 +1016,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       return;
     }
     session.tick = h.tick;
+    ctx->lock_peer_id = session.your_id;
     mod_net_update_root_mirror_session(&session);
     mod_scene_view_on_session(&session);
     break;
@@ -993,6 +1043,33 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     }
     break;
   }
+  // agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
+  case NG_PKT_LOCK_INPUT: {
+    NgLockInputPkt pkt = {0};
+    if (!ng_proto_decode_lock_input(buf, &pkt)) {
+      return;
+    }
+    for (uint8_t i = 0; i < pkt.count; i++) {
+      mod_lockstep_store_remote_input(pkt.peer_id, pkt.base_tick + i, pkt.bits[i]);
+    }
+    break;
+  }
+  case NG_PKT_LOCK_ACK: {
+    NgLockAckPkt pkt = {0};
+    if (!ng_proto_decode_lock_ack(buf, &pkt)) {
+      return;
+    }
+    mod_lockstep_store_ack(pkt.peer_id, pkt.ack_tick);
+    break;
+  }
+  case NG_PKT_LOCK_HASH: {
+    NgLockHashPkt pkt = {0};
+    if (!ng_proto_decode_lock_hash(buf, &pkt)) {
+      return;
+    }
+    (void)pkt;
+    break;
+  }
   default:
     break;
   }
@@ -1010,6 +1087,7 @@ static void mod_net_handle_packet(NgNet *net, NgNetPeer *peer, const uint8_t *da
 static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *vctx) {
   ModNetCtx *ctx = (ModNetCtx *)vctx;
   if (connected) {
+    // agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
     NetPeerState *ps = (NetPeerState *)calloc(1, sizeof(NetPeerState));
     ps->peer_id = ++ctx->next_peer_id;
     ps->role = NG_PEER_THIN;
@@ -1017,6 +1095,13 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
       ctx->controller_id = ps->peer_id;
     }
     ng_net_peer_set_data(peer, ps);
+    if (mod_lockstep_refuse_late_join()) {
+      NG_LOG_ERROR("lockstep: mid-sim join refused peer=%u", ps->peer_id);
+      return;
+    }
+    // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
+    /* Empty-input lockstep clocks run per process; do not add remotes as lock
+     * peers (that raises peer_count and STALLs the gate). */
     mod_net_fill_snapshot_buf(ctx);
     ps->pending_connect_snap = true;
     ps->pending_connect_session = true;
@@ -1462,12 +1547,15 @@ static bool mod_net_on_msg_wrap(const NgMsg *msg, void *vctx) {
   return mod_net_on_msg(msg, vctx);
 }
 
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 4f3d39
 static const NgModOps g_net_ops = {
     .name = "net",
     .dest = NG_BUS_NET,
+    .side = NG_MOD_SIDE_BOTH,
     .init = mod_net_init,
     .shutdown = mod_net_shutdown,
     .on_msg = mod_net_on_msg_wrap,
+    .fixed_step = NULL,
 };
 
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
@@ -1477,7 +1565,119 @@ static void mod_net_send_state_peer(NgNet *net, NgNetPeer *peer, void *vctx) {
 }
 #endif
 
+// agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
+static void mod_net_flush_lockstep(ModNetCtx *ctx) {
+  if (!ctx || !mod_lockstep_active()) {
+    return;
+  }
+#if defined(NG_HAS_EMBEDDED)
+  /* Solo gateway: one process owns the clock; loopback LOCK relay floods CPU. */
+  if (ctx->gateway && !(ctx->net_upstream && ng_net_connected(ctx->net_upstream))) {
+    return;
+  }
+#endif
+#if defined(NG_SERVER)
+  if (!ctx->net) {
+    return;
+  }
+#endif
+  NgLockInputPkt inp = {0};
+  uint32_t local_id = mod_lockstep_local_peer_id();
+  if (ctx->lock_peer_id != 0) {
+    local_id = ctx->lock_peer_id;
+    /* Adopt id without growing peer_count past the local clock peer. */
+    if (mod_lockstep_local_peer_id() != local_id) {
+      mod_lockstep_clear_peers();
+      mod_lockstep_set_local_peer(local_id);
+    }
+  }
+  inp.peer_id = (uint8_t)local_id;
+  const int n = mod_lockstep_fill_send_window(&inp.base_tick, inp.bits, NG_LOCK_INPUT_MAX);
+  if (n > 0) {
+    inp.count = (uint8_t)n;
+    if (ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &inp)) {
+#if defined(NG_SERVER)
+      if (ctx->net) {
+        ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+        ng_net_flush(ctx->net);
+      }
+#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+#if defined(NG_HAS_EMBEDDED)
+      if (ctx->gateway && ctx->net) {
+        ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+        ng_net_flush(ctx->net);
+      }
+      if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
+        ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE,
+                    false);
+        ng_net_flush(ctx->net_upstream);
+      } else
+#endif
+      {
+        NgNet *link = mod_net_client_link(ctx);
+        if (ng_net_connected(link)) {
+          ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+        }
+      }
+#endif
+    }
+  }
+  NgLockAckPkt ack = {
+      .peer_id = (uint8_t)mod_lockstep_local_peer_id(),
+      .ack_tick = mod_lockstep_highest_recv_contiguous(),
+  };
+  if (ng_proto_encode_lock_ack(&ctx->tx_buf, ++ctx->seq, &ack)) {
+#if defined(NG_SERVER)
+    if (ctx->net) {
+      ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+      ng_net_flush(ctx->net);
+    }
+#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+#if defined(NG_HAS_EMBEDDED)
+    if (ctx->gateway && ctx->net) {
+      ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+      ng_net_flush(ctx->net);
+    }
+#endif
+    {
+      NgNet *link = mod_net_client_link(ctx);
+      if (ng_net_connected(link)) {
+        ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+      }
+    }
+#endif
+  }
+  const uint32_t ht = mod_lockstep_last_hash_tick();
+  if (ht != 0 && ht != ctx->lock_hash_sent_tick) {
+    NgLockHashPkt hp = {
+        .peer_id = (uint8_t)mod_lockstep_local_peer_id(),
+        .tick = ht,
+        .hash = mod_lockstep_last_hash(),
+    };
+    if (ng_proto_encode_lock_hash(&ctx->tx_buf, ++ctx->seq, &hp)) {
+      ctx->lock_hash_sent_tick = ht;
+#if defined(NG_SERVER)
+      if (ctx->net) {
+        ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+        ng_net_flush(ctx->net);
+      }
+#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+      NgNet *link = mod_net_client_link(ctx);
+      if (ng_net_connected(link)) {
+        ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+      }
+#endif
+    }
+  }
+}
+
 static void mod_net_flush_state_update(ModNetCtx *ctx) {
+  // agent: composer-2.5 | 2026-07-30 | lockstep skip transform wire | 353d7b
+  /* Lockstep bodies are local-only — never emit STATE_UPDATE bandwidth. */
+  if (mod_lockstep_active()) {
+    mod_net_flush_lockstep(ctx);
+    return;
+  }
   if (!mod_scene_is_loaded()) {
     return;
   }
@@ -1511,7 +1711,13 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
     }
 #elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
     // agent: composer-2.5 | 2026-07-29 | flush shared transforms upstream | 9d2e71
+    // agent: composer-2.5 | 2026-07-29 | gateway host state broadcast | d5b8b5
 #if defined(NG_HAS_EMBEDDED)
+    // Solo/local gateway: server-authored (physics) updates must reach the loopback view.
+    if (ctx->gateway && ctx->net) {
+      ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+      ng_net_flush(ctx->net);
+    }
     // Gateway with upstream must not route shared updates through the local
     // host graph (local boot scene entity ids can collide / wrong sync).
     if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
@@ -1529,7 +1735,15 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
   }
 }
 
-void mod_net_flush_scene_updates(void) { mod_net_flush_state_update(&g_net_ctx); }
+void mod_net_flush_scene_updates(void) {
+  // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
+  /* flush_state_update already runs lockstep when active — do not double-flush. */
+  if (mod_lockstep_active()) {
+    mod_net_flush_lockstep(&g_net_ctx);
+    return;
+  }
+  mod_net_flush_state_update(&g_net_ctx);
+}
 
 #if defined(NG_HAS_EMBEDDED)
 uint16_t mod_net_assigned_agent_port(void) { return g_net_ctx.assigned_agent_port; }
@@ -1574,3 +1788,8 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-29 | root mirror tracks sessions | 5809c3
 // agent: composer-2.5 | 2026-07-29 | flush shared transforms upstream | 9d2e71
 // agent: composer-2.5 | 2026-07-29 | host assigns shared state seq | 5f8b3d
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 4f3d39
+// agent: composer-2.5 | 2026-07-29 | gateway host state broadcast | d5b8b5
+// agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
+// agent: composer-2.5 | 2026-07-30 | lockstep skip transform wire | 353d7b
+// agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa

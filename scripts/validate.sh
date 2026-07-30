@@ -141,11 +141,13 @@ echo "$BOOT_OUT" | grep -q "scene loaded: boot"
 
 SNAP_OUT=$(printf '{"cmd":"world_snapshot"}\n' | timeout 4 nc -q1 127.0.0.1 27101 2>/dev/null || true)
 echo "$SNAP_OUT"
-echo "$SNAP_OUT" | grep -q "root scene=boot"
-echo "$SNAP_OUT" | grep -q "view scene=boot"
-echo "$SNAP_OUT" | grep -q "view scene=boot loaded=1"
-echo "$SNAP_OUT" | grep -q "visible=0"
-echo "$SNAP_OUT" | grep -q "bg=080c14"
+# agent: composer-2.5 | 2026-07-29 | boot snap expects sphere route | 1ac81b
+# boot.js server start calls change_scene("sphere"); snap sees routed scene.
+echo "$SNAP_OUT" | grep -q "root scene=sphere"
+echo "$SNAP_OUT" | grep -q "view scene=sphere"
+echo "$SNAP_OUT" | grep -q "view scene=sphere loaded=1"
+echo "$SNAP_OUT" | grep -q "visible=1"
+echo "$SNAP_OUT" | grep -q "bg=0c1430"
 echo "$SNAP_OUT" | grep -q "gateway upstream=1"
 echo "$SNAP_OUT" | grep -q "ready=1"
 
@@ -184,3 +186,4 @@ echo "ALL OK"
 # agent: composer-2.5 | 2026-07-29 | gateway scene boot mcp smoke | b0c1d2
 # agent: composer-2.5 | 2026-07-29 | boot smoke entity expectations | 2c818e
 # agent: composer-2.5 | 2026-07-29 | boot routes startup validate | f998b8
+# agent: composer-2.5 | 2026-07-29 | boot snap expects sphere route | 1ac81b

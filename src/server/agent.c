@@ -6,6 +6,10 @@
 #include "engine/ng_log.h"
 #include "server/sim.h"
 #include "scene/scene.h"
+#include "scene/graph.h"
+#include "scene/runtime.h"
+#include "scene/physics.h"
+#include "scene/lockstep.h"
 #if !defined(NG_SERVER)
 #include "client/input.h"
 #include "client/render.h"
@@ -175,15 +179,54 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
   }
 
   // agent: composer-2.5 | 2026-07-29 | mcp wire input transform observe | e7b3c1
+  // agent: composer-2.5 | 2026-07-29 | mcp entity transforms server | 649b35
   if (strcmp(cmdline, "entity_transforms") == 0) {
     char entities[1500];
 #if !defined(NG_SERVER)
     mod_scene_view_entities_text(entities, sizeof(entities));
 #else
-    snprintf(entities, sizeof(entities), "entities=0");
+    {
+      // agent: composer-2.5 | 2026-07-29 | mcp entity transforms server | 649b35
+      size_t used = 0;
+      mod_scene_runtime_use_server();
+      const int n = mod_scene_graph_inst_count();
+      used += (size_t)snprintf(entities + used, sizeof(entities) - used, "entities=%d", n);
+      for (int i = 0; i < n && used + 1 < sizeof(entities); i++) {
+        const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+        if (!inst) {
+          continue;
+        }
+        used += (size_t)snprintf(
+            entities + used, sizeof(entities) - used,
+            " | id=%u desc=%s pos=%.3f,%.3f,%.3f rot=%.3f,%.3f,%.3f scale=%.3f", inst->id,
+            inst->desc_name, inst->pos[0], inst->pos[1], inst->pos[2], inst->rot[0],
+            inst->rot[1], inst->rot[2], inst->scale);
+      }
+    }
 #endif
     char out[1800];
     snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", entities);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
+  // agent: composer-2.5 | 2026-07-29 | lockstep agent hash cmd | a8a2fc
+  if (strcmp(cmdline, "lockstep_hash") == 0) {
+    // agent: composer-2.5 | 2026-07-30 | lockstep gate diag | e4c1f4
+    char out[320];
+    mod_scene_runtime_use_server();
+    const uint32_t hash = mod_scene_physics_checksum();
+    const uint32_t tick = mod_lockstep_sim_tick();
+    const uint32_t last_t = mod_lockstep_last_hash_tick();
+    const uint32_t last_h = mod_lockstep_last_hash();
+    uint32_t send = 0, peer = 0;
+    int peers = 0, started = 0;
+    mod_lockstep_debug(&send, &peers, &started, &peer);
+    snprintf(out, sizeof(out),
+             "{\"ok\":true,\"text\":\"lockstep active=%d tick=%u hash=0x%08x last_tick=%u "
+             "last_hash=0x%08x send=%u peers=%d started=%d peer=%u\"}",
+             mod_lockstep_active() ? 1 : 0, tick, hash, last_t, last_h, send, peers, started,
+             peer);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }
@@ -429,10 +472,11 @@ static bool mod_agent_init(void *vctx) {
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   // agent: composer-2.5 | 2026-07-29 | probe free mcp port range | 1c9a3b
+  // agent: composer-2.5 | 2026-07-29 | bind default mcp port first | d6e35f
   uint16_t start = ctx->port;
   uint16_t end = ctx->port;
   if (start == NG_AGENT_DEFAULT_PORT) {
-    start = NG_AGENT_PROBE_MIN;
+    start = NG_AGENT_DEFAULT_PORT;
     end = NG_AGENT_PROBE_MAX;
   } else if (start >= NG_AGENT_PROBE_MIN && start <= NG_AGENT_PROBE_MAX) {
     end = NG_AGENT_PROBE_MAX;
@@ -482,12 +526,15 @@ static void mod_agent_shutdown(void *vctx) {
   ctx->listen_fd = -1;
 }
 
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 7a4619
 static const NgModOps g_agent_ops = {
     .name = "agent",
     .dest = NG_BUS_AGENT,
+    .side = NG_MOD_SIDE_BOTH,
     .init = mod_agent_init,
     .shutdown = mod_agent_shutdown,
     .on_msg = mod_agent_on_msg,
+    .fixed_step = NULL,
 };
 
 const NgModOps *mod_agent_ops(void) { return &g_agent_ops; }
@@ -504,3 +551,8 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-07-28 | agent port render snapshot | b598b6
 // agent: composer-2.5 | 2026-07-29 | mcp wire input transform observe | e7b3c1
 // agent: composer-2.5 | 2026-07-29 | mcp raycast observe helper | 1a8c2e
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 7a4619
+// agent: composer-2.5 | 2026-07-29 | bind default mcp port first | d6e35f
+// agent: composer-2.5 | 2026-07-29 | mcp entity transforms server | 649b35
+// agent: composer-2.5 | 2026-07-29 | lockstep agent hash cmd | a8a2fc
+// agent: composer-2.5 | 2026-07-30 | lockstep gate diag | e4c1f4

@@ -495,8 +495,10 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
     memcpy(b->data + b->len, session->scene_id, scene_len);
     b->len += scene_len;
   }
+  // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
   if (!ng_proto_write_u8(b, session->controller_id) || !ng_proto_write_u8(b, session->your_id) ||
       !ng_proto_write_u8(b, (uint8_t)session->scene_sync) ||
+      !ng_proto_write_u8(b, session->lockstep ? 1u : 0u) ||
       !ng_proto_write_u8(b, (uint8_t)session->spawn_count) ||
       session->spawn_count > NG_SESSION_SPAWN_MAX) {
     return false;
@@ -550,11 +552,20 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
   }
   session->scene_id[scene_len] = '\0';
   uint8_t sync = 0;
+  uint8_t lockstep = 0;
   if (!ng_proto_read_u8(b, &session->controller_id) || !ng_proto_read_u8(b, &session->your_id) ||
       !ng_proto_read_u8(b, &sync)) {
     return false;
   }
   session->scene_sync = (NgSyncMode)sync;
+  if (b->pos >= b->len) {
+    return true;
+  }
+  // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
+  if (!ng_proto_read_u8(b, &lockstep)) {
+    return false;
+  }
+  session->lockstep = lockstep ? 1u : 0u;
   if (b->pos >= b->len) {
     return true;
   }
@@ -860,6 +871,101 @@ bool ng_proto_decode_register_ack(NgProtoBuf *b, NgRegisterAck *ack) {
          ng_proto_read_u16(b, &ack->agent_port) && ng_proto_read_u16(b, &ack->root_game_port);
 }
 
+// agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
+bool ng_proto_encode_lock_input(NgProtoBuf *b, uint16_t seq, const NgLockInputPkt *pkt) {
+  if (!b || !pkt || pkt->count > NG_LOCK_INPUT_MAX) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_UNRELIABLE,
+      .type = NG_PKT_LOCK_INPUT,
+      .seq = seq,
+      .tick = pkt->base_tick,
+  };
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u8(b, pkt->peer_id) ||
+      !ng_proto_write_u32(b, pkt->base_tick) || !ng_proto_write_u8(b, pkt->count)) {
+    return false;
+  }
+  for (uint8_t i = 0; i < pkt->count; i++) {
+    if (!ng_proto_write_u8(b, pkt->bits[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ng_proto_decode_lock_input(NgProtoBuf *b, NgLockInputPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  if (!ng_proto_read_u8(b, &pkt->peer_id) || !ng_proto_read_u32(b, &pkt->base_tick) ||
+      !ng_proto_read_u8(b, &pkt->count) || pkt->count > NG_LOCK_INPUT_MAX) {
+    return false;
+  }
+  for (uint8_t i = 0; i < pkt->count; i++) {
+    if (!ng_proto_read_u8(b, &pkt->bits[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ng_proto_encode_lock_ack(NgProtoBuf *b, uint16_t seq, const NgLockAckPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_UNRELIABLE,
+      .type = NG_PKT_LOCK_ACK,
+      .seq = seq,
+      .tick = pkt->ack_tick,
+  };
+  return ng_proto_write_header(b, &h) && ng_proto_write_u8(b, pkt->peer_id) &&
+         ng_proto_write_u32(b, pkt->ack_tick);
+}
+
+bool ng_proto_decode_lock_ack(NgProtoBuf *b, NgLockAckPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  return ng_proto_read_u8(b, &pkt->peer_id) && ng_proto_read_u32(b, &pkt->ack_tick);
+}
+
+bool ng_proto_encode_lock_hash(NgProtoBuf *b, uint16_t seq, const NgLockHashPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_UNRELIABLE,
+      .type = NG_PKT_LOCK_HASH,
+      .seq = seq,
+      .tick = pkt->tick,
+  };
+  return ng_proto_write_header(b, &h) && ng_proto_write_u8(b, pkt->peer_id) &&
+         ng_proto_write_u32(b, pkt->tick) && ng_proto_write_u32(b, pkt->hash);
+}
+
+bool ng_proto_decode_lock_hash(NgProtoBuf *b, NgLockHashPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  return ng_proto_read_u8(b, &pkt->peer_id) && ng_proto_read_u32(b, &pkt->tick) &&
+         ng_proto_read_u32(b, &pkt->hash);
+}
+
+// agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
 // agent: composer-2.5 | 2026-07-29 | proto v6 session encode decode | a782bd
 // agent: composer-2.5 | 2026-07-28 | state ack encode decode | b7c8d9
 // agent: composer-2.5 | 2026-07-28 | wire rad deg rot convert | ba07f0

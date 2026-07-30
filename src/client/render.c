@@ -463,12 +463,15 @@ static void mod_render_shutdown(void *vctx) {
   mod_render_clear_cache(ctx);
 }
 
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 220dba
 static const NgModOps g_render_ops = {
     .name = "render",
     .dest = NG_BUS_RENDER,
+    .side = NG_MOD_SIDE_CLIENT,
     .init = mod_render_init,
     .shutdown = mod_render_shutdown,
     .on_msg = mod_render_on_msg,
+    .fixed_step = NULL,
 };
 
 const NgModOps *mod_render_ops(void) { return &g_render_ops; }
@@ -519,3 +522,4 @@ void mod_render_visibility_text(char *out, size_t cap) {
 // agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
 // agent: composer-2.5 | 2026-07-29 | draw entities via model transform | 1415d8
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 220dba

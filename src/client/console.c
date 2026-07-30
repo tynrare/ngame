@@ -205,12 +205,15 @@ static void mod_console_shutdown(void *vctx) {
   (void)vctx;
 }
 
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 283fa4
 static const NgModOps g_console_ops = {
     .name = "console",
     .dest = NG_BUS_CONSOLE,
+    .side = NG_MOD_SIDE_CLIENT,
     .init = mod_console_init,
     .shutdown = mod_console_shutdown,
     .on_msg = mod_console_on_msg,
+    .fixed_step = NULL,
 };
 
 const NgModOps *mod_console_ops(void) { return &g_console_ops; }
@@ -232,3 +235,4 @@ void mod_console_poll_input(void) {
 // agent: composer-2.5 | 2026-07-29 | console include stdio | b2c613
 // agent: composer-2.5 | 2026-07-28 | generic scene console help | 0a3775
 // agent: composer-2.5 | 2026-07-29 | poll input after BeginDrawing | f8e1d0
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 283fa4

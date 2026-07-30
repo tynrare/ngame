@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-29 | scene runtime server view | 7c20e0
+// agent: composer-2.5 | 2026-07-29 | physics runtime ctx | 2ed88f
 #include "scene/runtime.h"
 
 NgSceneRuntime g_scene_server;
@@ -18,4 +19,7 @@ ModSceneGraphCtx *mod_scene_runtime_graph(void) { return &g_scene_active->graph;
 
 ModSceneAssetsCtx *mod_scene_runtime_assets(void) { return &g_scene_active->assets; }
 
+ModScenePhysicsCtx *mod_scene_runtime_physics(void) { return &g_scene_active->physics; }
+
 // agent: composer-2.5 | 2026-07-29 | scene runtime server view | 7c20e0
+// agent: composer-2.5 | 2026-07-29 | physics runtime ctx | 2ed88f

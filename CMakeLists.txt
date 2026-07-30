@@ -35,7 +35,23 @@ set(NG_SCENE_SOURCES
   src/scene/graph.c
   src/scene/assets.c
   src/scene/native.c
+  src/scene/physics.c
+  src/scene/lockstep.c
 )
+
+# agent: composer-2.5 | 2026-07-29 | lockstep ffp contract cmake | 78f312
+# Cross-platform determinism: no FMA contraction / fast-math on ngame (matches box3d).
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-ffp-contract=off>)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options($<$<COMPILE_LANGUAGE:C>:-fno-fast-math>)
+endif()
+
+# agent: composer-2.5 | 2026-07-29 | link local box3d library | 32efd8
+set(BOX3D_SAMPLES OFF CACHE BOOL "" FORCE)
+set(BOX3D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(BOX3D_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(BOX3D_DOCS OFF CACHE BOOL "" FORCE)
+add_subdirectory(/home/x/code/box3d ${CMAKE_BINARY_DIR}/box3d EXCLUDE_FROM_ALL)
 
 set(NG_SIM_SOURCES
   src/server/sim.c
@@ -92,8 +108,8 @@ else()
 endif()
 
 add_executable(ngame ${NG_CORE_SOURCES} ${NG_CLIENT_SOURCES})
-target_link_libraries(ngame PRIVATE raylib m)
-target_include_directories(ngame PRIVATE src src/vendor)
+target_link_libraries(ngame PRIVATE raylib m box3d)
+target_include_directories(ngame PRIVATE src src/vendor /home/x/code/box3d/include)
 target_compile_definitions(ngame PRIVATE ${NG_RES_ROOT_DEF} ${NG_NET_DEFS} ${NG_ENET_DEFS})
 
 if(EMSCRIPTEN)
@@ -118,8 +134,8 @@ endif()
 
 if(NOT EMSCRIPTEN)
   add_executable(ngame_server ${NG_CORE_SOURCES} ${NG_SERVER_SOURCES})
-  target_link_libraries(ngame_server PRIVATE m)
-  target_include_directories(ngame_server PRIVATE src src/vendor)
+  target_link_libraries(ngame_server PRIVATE m box3d)
+  target_include_directories(ngame_server PRIVATE src src/vendor /home/x/code/box3d/include)
   target_compile_definitions(ngame_server PRIVATE NG_SERVER NG_RES_ROOT=\"res/\" ${NG_ENET_DEFS})
   add_custom_command(TARGET ngame_server POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -128,32 +144,33 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/tests $<TARGET_FILE_DIR:ngame_server>/tests
     COMMENT "Copy res/ and tests/ next to ngame_server binary")
 
-  add_executable(ng_test_net tools/net_smoke.c src/engine/ng_proto.c src/engine/ng_session.c
+  add_executable(ng_test_net EXCLUDE_FROM_ALL tools/net_smoke.c src/engine/ng_proto.c src/engine/ng_session.c
                  src/engine/ng_sync.c src/net/ng_net_enet.c)
   target_include_directories(ng_test_net PRIVATE src src/vendor)
   target_compile_definitions(ng_test_net PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_test_net PRIVATE m)
 
-  add_executable(ng_two_client_smoke tools/two_client_smoke.c src/engine/ng_proto.c src/engine/ng_session.c
+  add_executable(ng_two_client_smoke EXCLUDE_FROM_ALL tools/two_client_smoke.c src/engine/ng_proto.c src/engine/ng_session.c
                  src/engine/ng_sync.c src/net/ng_net_enet.c)
   target_include_directories(ng_two_client_smoke PRIVATE src src/vendor)
   target_compile_definitions(ng_two_client_smoke PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_two_client_smoke PRIVATE raylib m)
 
-  add_executable(ng_cmd_bandwidth tools/ng_cmd_bandwidth.c src/engine/ng_proto.c src/net/ng_net_enet.c)
+  add_executable(ng_cmd_bandwidth EXCLUDE_FROM_ALL tools/ng_cmd_bandwidth.c src/engine/ng_proto.c src/net/ng_net_enet.c)
   target_include_directories(ng_cmd_bandwidth PRIVATE src src/vendor)
   target_compile_definitions(ng_cmd_bandwidth PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_cmd_bandwidth PRIVATE raylib m)
 
-  add_executable(ng_cmd_latency tools/cmd_latency.c src/engine/ng_proto.c src/net/ng_net_enet.c)
+  add_executable(ng_cmd_latency EXCLUDE_FROM_ALL tools/cmd_latency.c src/engine/ng_proto.c src/net/ng_net_enet.c)
   target_include_directories(ng_cmd_latency PRIVATE src src/vendor)
   target_compile_definitions(ng_cmd_latency PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_cmd_latency PRIVATE m)
 
-  add_executable(ng_scene_js_smoke tools/scene_js_smoke.c ${NG_SCENE_SOURCES}
+  add_executable(ng_scene_js_smoke EXCLUDE_FROM_ALL tools/scene_js_smoke.c ${NG_SCENE_SOURCES}
                  src/client/input.c src/engine/ng_session.c src/engine/ng_sync.c
+                 src/engine/ng_mod.c src/engine/ng_bus.c
                  src/world/ng_world.c ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor)
+  target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor /home/x/code/box3d/include)
   target_compile_definitions(ng_scene_js_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
   add_custom_command(TARGET ng_scene_js_smoke POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -161,23 +178,26 @@ if(NOT EMSCRIPTEN)
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/tests $<TARGET_FILE_DIR:ng_scene_js_smoke>/tests
     COMMENT "Copy res/ and tests/ next to ng_scene_js_smoke binary")
-  target_link_libraries(ng_scene_js_smoke PRIVATE m)
+  target_link_libraries(ng_scene_js_smoke PRIVATE m box3d)
 
-  add_executable(ng_cmd_loopback_latency tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
+  add_executable(ng_cmd_loopback_latency EXCLUDE_FROM_ALL tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
                  src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor)
+  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor /home/x/code/box3d/include)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
-  target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m)
+  target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m box3d)
 
-  add_executable(ng_embed_smoke tools/embed_smoke.c ${NG_CORE_SOURCES}
+  add_executable(ng_embed_smoke EXCLUDE_FROM_ALL tools/embed_smoke.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c ${NG_SCENE_SOURCES}
                  src/ng_shader.c src/ng_viewport.c src/server/script.c
                  src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_embed_smoke PRIVATE src src/vendor)
+  target_include_directories(ng_embed_smoke PRIVATE src src/vendor /home/x/code/box3d/include)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
-  target_link_libraries(ng_embed_smoke PRIVATE raylib m)
+  target_link_libraries(ng_embed_smoke PRIVATE raylib m box3d)
 endif()
 
 # agent: composer-2.5 | 2026-07-28 | src layout engine scene client | d2e3f4
+# agent: composer-2.5 | 2026-07-29 | link local box3d library | 32efd8
+# agent: composer-2.5 | 2026-07-29 | lockstep ffp contract cmake | 78f312
+# agent: composer-2.5 | 2026-07-30 | default build ngame only | 061ecb

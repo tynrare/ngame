@@ -1,9 +1,11 @@
 // agent: composer-2.5 | 2026-07-29 | dual scene runtime header | ce9266
+// agent: composer-2.5 | 2026-07-29 | physics runtime ctx | d535f0
 #ifndef NG_SCENE_RUNTIME_H
 #define NG_SCENE_RUNTIME_H
 
 #include "scene/assets.h"
 #include "scene/graph.h"
+#include "scene/physics.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -38,6 +40,7 @@ typedef struct NgSceneRuntime {
   ModSceneCtx scene;
   ModSceneGraphCtx graph;
   ModSceneAssetsCtx assets;
+  ModScenePhysicsCtx physics;
 } NgSceneRuntime;
 
 extern NgSceneRuntime g_scene_server;
@@ -49,6 +52,8 @@ NgSceneRuntime *mod_scene_runtime_active(void);
 ModSceneCtx *mod_scene_runtime_scene(void);
 ModSceneGraphCtx *mod_scene_runtime_graph(void);
 ModSceneAssetsCtx *mod_scene_runtime_assets(void);
+ModScenePhysicsCtx *mod_scene_runtime_physics(void);
 
 #endif
 // agent: composer-2.5 | 2026-07-29 | deferred js scene route support | 149fdb
+// agent: composer-2.5 | 2026-07-29 | physics runtime ctx | d535f0

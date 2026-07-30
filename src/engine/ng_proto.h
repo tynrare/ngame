@@ -9,8 +9,8 @@
 struct NgActionResult;
 
 #define NG_PROTO_MAGIC   0x4E474D45u /* NGME */
-// agent: composer-2.5 | 2026-07-29 | proto v6 session spawn fields | d65177
-#define NG_PROTO_VERSION 6
+// agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa
+#define NG_PROTO_VERSION 7
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -29,6 +29,29 @@ struct NgActionResult;
 #define NG_PKT_STATE_ACK    10
 #define NG_PKT_REGISTER     11
 #define NG_PKT_REGISTER_ACK 12
+#define NG_PKT_LOCK_INPUT   13
+#define NG_PKT_LOCK_ACK     14
+#define NG_PKT_LOCK_HASH    15
+
+#define NG_LOCK_INPUT_MAX 32
+
+typedef struct NgLockInputPkt {
+  uint8_t peer_id;
+  uint32_t base_tick;
+  uint8_t count;
+  uint8_t bits[NG_LOCK_INPUT_MAX];
+} NgLockInputPkt;
+
+typedef struct NgLockAckPkt {
+  uint8_t peer_id;
+  uint32_t ack_tick;
+} NgLockAckPkt;
+
+typedef struct NgLockHashPkt {
+  uint8_t peer_id;
+  uint32_t tick;
+  uint32_t hash;
+} NgLockHashPkt;
 
 typedef enum NgPeerRole {
   NG_PEER_THIN = 0,
@@ -94,6 +117,12 @@ bool ng_proto_encode_register(NgProtoBuf *b, uint16_t seq, const NgRegisterReq *
 bool ng_proto_decode_register(NgProtoBuf *b, NgRegisterReq *req);
 bool ng_proto_encode_register_ack(NgProtoBuf *b, uint16_t seq, const NgRegisterAck *ack);
 bool ng_proto_decode_register_ack(NgProtoBuf *b, NgRegisterAck *ack);
+bool ng_proto_encode_lock_input(NgProtoBuf *b, uint16_t seq, const NgLockInputPkt *pkt);
+bool ng_proto_decode_lock_input(NgProtoBuf *b, NgLockInputPkt *pkt);
+bool ng_proto_encode_lock_ack(NgProtoBuf *b, uint16_t seq, const NgLockAckPkt *pkt);
+bool ng_proto_decode_lock_ack(NgProtoBuf *b, NgLockAckPkt *pkt);
+bool ng_proto_encode_lock_hash(NgProtoBuf *b, uint16_t seq, const NgLockHashPkt *pkt);
+bool ng_proto_decode_lock_hash(NgProtoBuf *b, NgLockHashPkt *pkt);
 
 #endif
-// agent: composer-2.5 | 2026-07-29 | proto v6 session spawn fields | d65177
+// agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa

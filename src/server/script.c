@@ -125,14 +125,18 @@ static void mod_script_shutdown(void *vctx) {
   }
 }
 
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 8020d0
 static const NgModOps g_script_ops = {
     .name = "script",
     .dest = NG_BUS_SCRIPT,
+    .side = NG_MOD_SIDE_BOTH,
     .init = mod_script_init,
     .shutdown = mod_script_shutdown,
     .on_msg = mod_script_on_msg,
+    .fixed_step = NULL,
 };
 
 const NgModOps *mod_script_ops(void) { return &g_script_ops; }
 
 void *mod_script_ctx(void) { return &g_script_ctx; }
+// agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 8020d0

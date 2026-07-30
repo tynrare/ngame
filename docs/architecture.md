@@ -16,6 +16,7 @@ res/
   scenes/
     cube.js         ← full mesh/shader/model/entity describes
     sphere.js
+    physics.js      ← body/shape + box3d fixed-step demo
     example.js      ← demo using helpers.js
   shaders/
 tests/scenes/       ← CI fixtures (owner, local)
@@ -49,3 +50,4 @@ Agent execution checklist: [agent-runbook.md](agent-runbook.md).
 
 <!-- agent: composer-2.5 | 2026-07-29 | add agent runbook link | d1a8b4 -->
 <!-- agent: composer-2.5 | 2026-07-29 | dual runtime register ports | d7e8f9 -->
+<!-- agent: composer-2.5 | 2026-07-29 | document physics body fixed_step | 98abb7 -->

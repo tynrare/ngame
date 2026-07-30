@@ -13,10 +13,12 @@ struct duk_hthread;
 #define NG_SCENE_DESC_MAX 32
 #define NG_SCENE_INST_MAX 64
 
+// agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
 typedef struct NgSceneDesc {
   char kind[16];
   char name[32];
   char model[32];
+  char body[32];
   NgSyncMode sync;
   int func_stash_idx;
   bool alive;
@@ -29,6 +31,8 @@ typedef struct NgSceneInst {
   char desc_name[32];
   char key[32];
   char model[32];
+  char body[32];
+  uint64_t body_id_bits;
   NgSyncMode sync;
   float pos[3];
   float rot[3];
@@ -68,7 +72,7 @@ typedef struct ModSceneGraphCtx {
 
 void mod_scene_graph_reset(void);
 bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode sync,
-                              const char *model, int func_stash_idx);
+                              const char *model, const char *body, int func_stash_idx);
 NgSceneDesc *mod_scene_graph_entity_desc(const char *name);
 bool mod_scene_graph_dispose_desc(const char *kind, const char *name);
 uint32_t mod_scene_graph_alloc_id(void);
@@ -105,3 +109,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 
 #endif
 // agent: composer-2.5 | 2026-07-29 | instance primary spawn registry | d3e238
+// agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
