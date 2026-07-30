@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-07-27 | session spawn table only | a8b9c0
 // agent: composer-2.5 | 2026-07-29 | session spawn key transform | 9339a6
 // agent: composer-2.5 | 2026-07-29 | lockstep session sim flag | 8766dd
+// agent: composer-2.5 | 2026-07-30 | session syncing snap tick | 75da2a
 #ifndef NG_SESSION_H
 #define NG_SESSION_H
 
@@ -27,6 +28,8 @@ typedef struct NgSessionState {
   uint8_t your_id;
   NgSyncMode scene_sync;
   uint8_t lockstep;
+  uint8_t syncing;
+  uint32_t snap_tick;
   int spawn_count;
   NgSessionSpawn spawns[NG_SESSION_SPAWN_MAX];
 } NgSessionState;
@@ -44,3 +47,4 @@ typedef struct NgStateUpdate {
 #endif
 // agent: composer-2.5 | 2026-07-29 | session spawn key transform | 9339a6
 // agent: composer-2.5 | 2026-07-29 | lockstep session sim flag | 8766dd
+// agent: composer-2.5 | 2026-07-30 | session syncing snap tick | 75da2a

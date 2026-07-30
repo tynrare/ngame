@@ -75,6 +75,8 @@ void ng_app_server_frame(void) {
   const float dt = (float)(now - g_last_time);
   g_last_time = now;
   ng_server_runtime_frame(dt);
+  // agent: composer-2.5 | 2026-07-30 | server publish_tick for lockstep | d59def
+  ng_mod_publish_tick(dt);
 }
 
 void ng_app_server_shutdown(void) {
@@ -94,3 +96,4 @@ void ng_app_server_shutdown(void) {
 bool ng_app_server_running(void) { return g_running; }
 
 // agent: composer-2.5 | 2026-07-28 | use shared server runtime | 776fad
+// agent: composer-2.5 | 2026-07-30 | server publish_tick for lockstep | d59def

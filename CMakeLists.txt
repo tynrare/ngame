@@ -47,11 +47,12 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # agent: composer-2.5 | 2026-07-29 | link local box3d library | 32efd8
+# agent: composer-2.5 | 2026-07-30 | cmake third_party box3d | 53baa3
 set(BOX3D_SAMPLES OFF CACHE BOOL "" FORCE)
 set(BOX3D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(BOX3D_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(BOX3D_DOCS OFF CACHE BOOL "" FORCE)
-add_subdirectory(/home/x/code/box3d ${CMAKE_BINARY_DIR}/box3d EXCLUDE_FROM_ALL)
+add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/box3d ${CMAKE_BINARY_DIR}/box3d EXCLUDE_FROM_ALL)
 
 set(NG_SIM_SOURCES
   src/server/sim.c
@@ -109,7 +110,7 @@ endif()
 
 add_executable(ngame ${NG_CORE_SOURCES} ${NG_CLIENT_SOURCES})
 target_link_libraries(ngame PRIVATE raylib m box3d)
-target_include_directories(ngame PRIVATE src src/vendor /home/x/code/box3d/include)
+target_include_directories(ngame PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
 target_compile_definitions(ngame PRIVATE ${NG_RES_ROOT_DEF} ${NG_NET_DEFS} ${NG_ENET_DEFS})
 
 if(EMSCRIPTEN)
@@ -135,7 +136,7 @@ endif()
 if(NOT EMSCRIPTEN)
   add_executable(ngame_server ${NG_CORE_SOURCES} ${NG_SERVER_SOURCES})
   target_link_libraries(ngame_server PRIVATE m box3d)
-  target_include_directories(ngame_server PRIVATE src src/vendor /home/x/code/box3d/include)
+  target_include_directories(ngame_server PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ngame_server PRIVATE NG_SERVER NG_RES_ROOT=\"res/\" ${NG_ENET_DEFS})
   add_custom_command(TARGET ngame_server POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -170,7 +171,7 @@ if(NOT EMSCRIPTEN)
                  src/client/input.c src/engine/ng_session.c src/engine/ng_sync.c
                  src/engine/ng_mod.c src/engine/ng_bus.c
                  src/world/ng_world.c ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor /home/x/code/box3d/include)
+  target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_scene_js_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
   add_custom_command(TARGET ng_scene_js_smoke POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -184,7 +185,7 @@ if(NOT EMSCRIPTEN)
                  src/client/input.c src/net/mod_net.c src/client/render.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
                  src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor /home/x/code/box3d/include)
+  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m box3d)
 
@@ -192,7 +193,7 @@ if(NOT EMSCRIPTEN)
                  src/client/input.c src/net/mod_net.c src/client/render.c ${NG_SCENE_SOURCES}
                  src/ng_shader.c src/ng_viewport.c src/server/script.c
                  src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_embed_smoke PRIVATE src src/vendor /home/x/code/box3d/include)
+  target_include_directories(ng_embed_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_embed_smoke PRIVATE raylib m box3d)
 endif()

@@ -63,24 +63,25 @@ static void mod_scene_lockstep_activate(uint32_t local_peer) {
   // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
   // agent: composer-2.5 | 2026-07-30 | lockstep activate no wipe | bb830d
   // agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823
+  // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 486633
   /* Mid-session re-activate: keep rings. Scene load calls restart instead. */
   if (mod_lockstep_active()) {
     if (mod_lockstep_local_peer_id() == 0) {
-      mod_lockstep_set_local_peer(1u);
+      mod_lockstep_set_local_peer(local_peer ? local_peer : 1u);
     }
     ng_mod_set_fixed_gate(mod_scene_lockstep_fixed_gate);
+    NG_LOG_INFO("lockstep: activate keep-alive peer=%u syncing=%d await=%d tick=%u",
+                mod_lockstep_local_peer_id(), mod_lockstep_syncing() ? 1 : 0,
+                mod_lockstep_awaiting_phys() ? 1 : 0, mod_lockstep_sim_tick());
     return;
   }
   mod_lockstep_set_active(true);
-#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
-  (void)local_peer;
-  mod_lockstep_clear_peers();
-  mod_lockstep_set_local_peer(1u);
-#else
   mod_lockstep_clear_peers();
   mod_lockstep_set_local_peer(local_peer ? local_peer : 1u);
-#endif
   ng_mod_set_fixed_gate(mod_scene_lockstep_fixed_gate);
+  NG_LOG_INFO("lockstep: activate new peer=%u syncing=%d await=%d tick=%u",
+              mod_lockstep_local_peer_id(), mod_lockstep_syncing() ? 1 : 0,
+              mod_lockstep_awaiting_phys() ? 1 : 0, mod_lockstep_sim_tick());
 }
 
 static void mod_scene_lockstep_restart(uint32_t local_peer) {
@@ -1569,12 +1570,20 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
   // Seed pending matches for Scene.start spawn() call-order / keys.
   if (!ctx->started) {
     // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+    // agent: composer-2.5 | 2026-07-30 | host session syncing join | c76f26
+    // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 486633
     if (session->lockstep) {
       mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
     }
-    if (mod_scene_physics_is_lockstep() && mod_lockstep_refuse_late_join()) {
-      NG_LOG_ERROR("lockstep: mid-sim join refused");
-      return;
+    /* Late-join: defer body create until LOCK_PHYS import (syncing or snap_tick). */
+    const bool join_sync = session->lockstep && (session->syncing || session->snap_tick > 0);
+    NG_LOG_INFO("lockstep: session start scene=%s your=%u ctrl=%u lock=%u syncing=%u snap=%u "
+                "join_sync=%d",
+                session->scene_id, session->your_id, session->controller_id, session->lockstep,
+                session->syncing, session->snap_tick, join_sync ? 1 : 0);
+    if (join_sync) {
+      mod_lockstep_await_phys(true);
+      mod_lockstep_begin_sync(session->snap_tick);
     }
     mod_scene_graph_seed_pending(session);
     mod_scene_push_session_obj(ctx, session);
@@ -1583,6 +1592,11 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
     ctx->started = true;
     mod_scene_graph_foreach_unmatched_pending(mod_scene_materialize_pending_ud, ctx);
     mod_scene_lockstep_maybe_activate(session->your_id);
+    if (join_sync && mod_lockstep_active()) {
+      mod_lockstep_begin_sync(session->snap_tick);
+      mod_lockstep_await_phys(true);
+      NG_LOG_INFO("lockstep: joiner waiting for phys snap tick=%u", session->snap_tick);
+    }
   } else if ((session->lockstep || mod_scene_physics_is_lockstep()) &&
              !mod_lockstep_active()) {
     // agent: composer-2.5 | 2026-07-30 | lockstep activate no wipe | bb830d
@@ -2066,3 +2080,5 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | lockstep hash tick only | ca6913
 // agent: composer-2.5 | 2026-07-30 | lockstep own sim clock | 5e56e9
 // agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823
+
+// agent: composer-2.5 | 2026-07-30 | host session syncing join | c76f26

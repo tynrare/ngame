@@ -1,5 +1,7 @@
 // agent: composer-2.5 | 2026-07-25 | mod_net embedded dual net | d02295
 // agent: composer-2.5 | 2026-07-28 | gateway loopback upstream API | 34cffe
+// agent: composer-2.5 | 2026-07-30 | net late join sync flow | 0f03f2
+// agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 8c64cd
 #include "mod_net.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -22,6 +24,7 @@
 #include "net/ng_ws_server.h"
 #endif
 #include "world/ng_world.h"
+#include "box3d/box3d.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +42,11 @@ typedef struct NetPeerState {
   uint16_t seq;
   bool pending_connect_snap;
   bool pending_connect_session;
+  bool pending_lock_phys;
+  uint8_t *lock_phys_data;
+  int lock_phys_size;
+  int lock_phys_sent;
+  uint32_t lock_phys_tick;
   uint8_t peer_id;
   uint8_t role;
   uint16_t assigned_agent_port;
@@ -93,6 +101,13 @@ typedef struct ModNetCtx {
   bool cmd_inflight;
   uint8_t lock_peer_id;
   uint32_t lock_hash_sent_tick;
+  uint8_t *lock_phys_rx;
+  int lock_phys_rx_size;
+  int lock_phys_rx_got;
+  uint32_t lock_phys_rx_tick;
+  uint8_t lock_joining_peer;
+  uint32_t lock_join_hash;
+  bool lock_join_pending;
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   uint8_t controller_id;
   uint8_t next_peer_id;
@@ -158,6 +173,62 @@ static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_
   session->scene_sync = NG_SYNC_SERVER;
   if (session->spawn_count > 0) {
     session->scene_sync = session->spawns[0].sync;
+  }
+  if (mod_lockstep_syncing() || ctx->lock_join_pending) {
+    session->syncing = 1u;
+    session->snap_tick = mod_lockstep_sim_tick();
+  }
+}
+
+
+static void mod_net_lock_free_peer_phys(NetPeerState *ps) {
+  if (ps && ps->lock_phys_data) {
+    b3FreeSaveData(ps->lock_phys_data, ps->lock_phys_size);
+    ps->lock_phys_data = NULL;
+    ps->lock_phys_size = 0;
+    ps->lock_phys_sent = 0;
+    ps->pending_lock_phys = false;
+  }
+}
+
+static void mod_net_lock_free_rx(ModNetCtx *ctx) {
+  if (ctx->lock_phys_rx) {
+    free(ctx->lock_phys_rx);
+    ctx->lock_phys_rx = NULL;
+  }
+  ctx->lock_phys_rx_size = 0;
+  ctx->lock_phys_rx_got = 0;
+  ctx->lock_phys_rx_tick = 0;
+}
+
+static void mod_net_broadcast_lock_pause(ModNetCtx *ctx, NgNet *net, uint32_t tick) {
+  NgLockPausePkt pkt = {.sim_tick = tick};
+  if (!ng_proto_encode_lock_pause(&ctx->tx_buf, ++ctx->seq, &pkt)) {
+    return;
+  }
+  ng_net_broadcast(net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+}
+
+static void mod_net_send_lock_phys_chunks(NgNet *net, NgNetPeer *peer, ModNetCtx *ctx, NetPeerState *ps) {
+  if (!ps || !ps->pending_lock_phys || !ps->lock_phys_data || ps->lock_phys_size <= 0) {
+    return;
+  }
+  while (ps->lock_phys_sent < ps->lock_phys_size) {
+    NgLockPhysPkt pkt = {0};
+    pkt.sim_tick = ps->lock_phys_tick;
+    pkt.offset = (uint32_t)ps->lock_phys_sent;
+    pkt.total = (uint32_t)ps->lock_phys_size;
+    uint32_t remain = (uint32_t)(ps->lock_phys_size - ps->lock_phys_sent);
+    pkt.len = (uint16_t)(remain > NG_LOCK_PHYS_CHUNK ? NG_LOCK_PHYS_CHUNK : remain);
+    memcpy(pkt.data, ps->lock_phys_data + ps->lock_phys_sent, pkt.len);
+    if (!ng_proto_encode_lock_phys(&ctx->tx_buf, ++ctx->seq, &pkt)) {
+      break;
+    }
+    ng_net_send_to(net, peer, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+    ps->lock_phys_sent += (int)pkt.len;
+  }
+  if (ps->lock_phys_sent >= ps->lock_phys_size) {
+    mod_net_lock_free_peer_phys(ps);
   }
 }
 
@@ -427,7 +498,8 @@ static void mod_net_send_connect_snapshot(NgNet *net, NgNetPeer *peer, void *vct
     return;
   }
 #if defined(NG_HAS_EMBEDDED)
-  if (mod_net_skip_local_boot()) {
+  /* Upstream boot: suppress cold entity snap for loopback, but never drop late-join phys. */
+  if (mod_net_skip_local_boot() && !ps->pending_lock_phys) {
     ps->pending_connect_session = false;
     ps->pending_connect_snap = false;
     return;
@@ -435,11 +507,20 @@ static void mod_net_send_connect_snapshot(NgNet *net, NgNetPeer *peer, void *vct
 #endif
   mod_scene_runtime_use_server();
   if (!mod_scene_is_loaded()) {
+    NG_LOG_INFO("lockstep: connect defer peer=%u (scene not loaded)", ps->peer_id);
     return;
   }
   if (ps->pending_connect_session) {
     ps->pending_connect_session = false;
+    NG_LOG_INFO("lockstep: send SESSION peer=%u join_pending=%d syncing=%d tick=%u",
+                ps->peer_id, ctx->lock_join_pending ? 1 : 0, mod_lockstep_syncing() ? 1 : 0,
+                mod_lockstep_sim_tick());
     mod_net_send_session_peer(net, peer, ctx);
+  }
+  if (ps->pending_lock_phys) {
+    NG_LOG_INFO("lockstep: send PHYS peer=%u bytes=%d sent=%d tick=%u", ps->peer_id,
+                ps->lock_phys_size, ps->lock_phys_sent, ps->lock_phys_tick);
+    mod_net_send_lock_phys_chunks(net, peer, ctx, ps);
   }
   if (ps->pending_connect_snap) {
     ps->pending_connect_snap = false;
@@ -512,6 +593,17 @@ static NgNet *mod_net_client_link(ModNetCtx *ctx) {
   }
 #endif
   return ctx->net;
+}
+
+// agent: composer-2.5 | 2026-07-30 | send READY via upstream link | 183632
+/* Gateway with root: lock replies must reach ngame_server, not loopback. */
+static NgNet *mod_net_auth_send_link(ModNetCtx *ctx) {
+#if defined(NG_HAS_EMBEDDED)
+  if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
+    return ctx->net_upstream;
+  }
+#endif
+  return mod_net_client_link(ctx);
 }
 
 bool mod_net_is_connected(void) {
@@ -674,6 +766,14 @@ static void mod_net_handle_upstream_packet(NgNet *net, NgNetPeer *peer, const ui
   case NG_PKT_STATE_BATCH:
   case NG_PKT_ACTION_RESULT:
   case NG_PKT_CMD_REPLY:
+  // agent: composer-2.5 | 2026-07-30 | forward LOCK packets upstream | 5e79c9
+  case NG_PKT_LOCK_INPUT:
+  case NG_PKT_LOCK_ACK:
+  case NG_PKT_LOCK_HASH:
+  case NG_PKT_LOCK_PAUSE:
+  case NG_PKT_LOCK_PHYS:
+  case NG_PKT_LOCK_READY:
+  case NG_PKT_LOCK_RESUME:
     if (h.type == NG_PKT_SNAPSHOT) {
       NgSnapshot snap = {0};
       bool delta = false;
@@ -922,6 +1022,46 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     ng_net_foreach_peer(net, mod_net_relay_state_update, &relay);
     break;
   }
+  case NG_PKT_LOCK_READY: {
+    NgLockReadyPkt pkt = {0};
+    if (!ng_proto_decode_lock_ready(buf, &pkt)) {
+      return;
+    }
+    NG_LOG_INFO("lockstep: READY peer=%u tick=%u hash=0x%08x pending=%d expect=%u", pkt.peer_id,
+                pkt.sim_tick, pkt.hash, ctx->lock_join_pending ? 1 : 0, ctx->lock_joining_peer);
+    if (!ctx->lock_join_pending || pkt.peer_id != ctx->lock_joining_peer) {
+      NG_LOG_WARN("lockstep: READY ignored");
+      break;
+    }
+    if (pkt.hash != ctx->lock_join_hash) {
+      NG_LOG_ERROR("lockstep: join hash mismatch peer=%u got=0x%08x want=0x%08x", pkt.peer_id,
+                   pkt.hash, ctx->lock_join_hash);
+      break;
+    }
+    mod_lockstep_add_peer(pkt.peer_id);
+    NG_LOG_INFO("lockstep: RESUME tick=%u peers local+%u", pkt.sim_tick, pkt.peer_id);
+    NgLockResumePkt resume = {0};
+    resume.sim_tick = pkt.sim_tick;
+    resume.peer_count = 0;
+    uint32_t local = mod_lockstep_local_peer_id();
+    if (local) {
+      resume.peer_ids[resume.peer_count++] = (uint8_t)local;
+    }
+    resume.peer_ids[resume.peer_count++] = pkt.peer_id;
+    if (!ng_proto_encode_lock_resume(&ctx->tx_buf, ++ctx->seq, &resume)) {
+      break;
+    }
+    ng_net_broadcast(net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+    mod_lockstep_end_sync();
+    ctx->lock_join_pending = false;
+    ctx->lock_joining_peer = 0;
+    break;
+  }
+  case NG_PKT_LOCK_PAUSE:
+  case NG_PKT_LOCK_PHYS:
+  case NG_PKT_LOCK_RESUME:
+    /* Host originates these; ignore inbound copies. */
+    break;
   default:
     break;
   }
@@ -1017,6 +1157,8 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     }
     session.tick = h.tick;
     ctx->lock_peer_id = session.your_id;
+    NG_LOG_INFO("net: SESSION scene=%s your=%u lock=%u syncing=%u snap=%u", session.scene_id,
+                session.your_id, session.lockstep, session.syncing, session.snap_tick);
     mod_net_update_root_mirror_session(&session);
     mod_scene_view_on_session(&session);
     break;
@@ -1070,6 +1212,83 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     (void)pkt;
     break;
   }
+  case NG_PKT_LOCK_PAUSE: {
+    NgLockPausePkt pkt = {0};
+    if (!ng_proto_decode_lock_pause(buf, &pkt)) {
+      return;
+    }
+    NG_LOG_INFO("lockstep: PAUSE tick=%u", pkt.sim_tick);
+    mod_lockstep_begin_sync(pkt.sim_tick);
+    break;
+  }
+  case NG_PKT_LOCK_PHYS: {
+    NgLockPhysPkt pkt = {0};
+    if (!ng_proto_decode_lock_phys(buf, &pkt)) {
+      return;
+    }
+    if (pkt.total == 0 || pkt.len == 0 || pkt.offset + pkt.len > pkt.total) {
+      break;
+    }
+    if (!ctx->lock_phys_rx || ctx->lock_phys_rx_tick != pkt.sim_tick ||
+        ctx->lock_phys_rx_size != (int)pkt.total) {
+      mod_net_lock_free_rx(ctx);
+      ctx->lock_phys_rx = (uint8_t *)malloc(pkt.total);
+      if (!ctx->lock_phys_rx) {
+        break;
+      }
+      ctx->lock_phys_rx_size = (int)pkt.total;
+      ctx->lock_phys_rx_got = 0;
+      ctx->lock_phys_rx_tick = pkt.sim_tick;
+    }
+    memcpy(ctx->lock_phys_rx + pkt.offset, pkt.data, pkt.len);
+    if ((int)(pkt.offset + pkt.len) > ctx->lock_phys_rx_got) {
+      ctx->lock_phys_rx_got = (int)(pkt.offset + pkt.len);
+    }
+    if (ctx->lock_phys_rx_got < ctx->lock_phys_rx_size) {
+      break;
+    }
+    NG_LOG_INFO("lockstep: PHYS complete bytes=%d tick=%u — importing", ctx->lock_phys_rx_size,
+                pkt.sim_tick);
+    if (!mod_scene_physics_import(ctx->lock_phys_rx, ctx->lock_phys_rx_size)) {
+      NG_LOG_ERROR("lockstep: phys import failed");
+      mod_net_lock_free_rx(ctx);
+      break;
+    }
+    mod_lockstep_set_sim_tick(pkt.sim_tick);
+    mod_lockstep_await_phys(false);
+    {
+      NgLockReadyPkt ready = {
+          .peer_id = ctx->lock_peer_id ? ctx->lock_peer_id : (uint8_t)mod_lockstep_local_peer_id(),
+          .sim_tick = pkt.sim_tick,
+          .hash = mod_scene_physics_checksum(),
+      };
+      NG_LOG_INFO("lockstep: send READY peer=%u tick=%u hash=0x%08x", ready.peer_id, ready.sim_tick,
+                  ready.hash);
+      if (ng_proto_encode_lock_ready(&ctx->tx_buf, ++ctx->seq, &ready)) {
+        NgNet *link = mod_net_auth_send_link(ctx);
+        if (link && ng_net_connected(link)) {
+          ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+          ng_net_flush(link);
+        }
+      }
+    }
+    mod_net_lock_free_rx(ctx);
+    break;
+  }
+  case NG_PKT_LOCK_RESUME: {
+    NgLockResumePkt pkt = {0};
+    if (!ng_proto_decode_lock_resume(buf, &pkt)) {
+      return;
+    }
+    NG_LOG_INFO("lockstep: RESUME tick=%u peer_count=%u", pkt.sim_tick, pkt.peer_count);
+    for (uint8_t i = 0; i < pkt.peer_count; i++) {
+      NG_LOG_INFO("lockstep: resume add peer=%u", pkt.peer_ids[i]);
+      mod_lockstep_add_peer(pkt.peer_ids[i]);
+    }
+    mod_lockstep_set_sim_tick(pkt.sim_tick);
+    mod_lockstep_end_sync();
+    break;
+  }
   default:
     break;
   }
@@ -1095,19 +1314,59 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
       ctx->controller_id = ps->peer_id;
     }
     ng_net_peer_set_data(peer, ps);
-    if (mod_lockstep_refuse_late_join()) {
-      NG_LOG_ERROR("lockstep: mid-sim join refused peer=%u", ps->peer_id);
-      return;
+    {
+      uint32_t send = 0, local = 0, sim = 0;
+      int peers = 0, started = 0, syncing = 0, awaitp = 0;
+      mod_lockstep_debug_full(&send, &peers, &started, &local, &syncing, &awaitp, &sim);
+      NG_LOG_INFO("net: peer connect id=%u lock active=%d sim=%u send=%u peers=%d started=%d "
+                  "syncing=%d await=%d phys_lock=%d needs_sync=%d",
+                  ps->peer_id, mod_lockstep_active() ? 1 : 0, sim, send, peers, started, syncing,
+                  awaitp, mod_scene_physics_is_lockstep() ? 1 : 0,
+                  mod_lockstep_needs_join_sync() ? 1 : 0);
     }
-    // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
-    /* Empty-input lockstep clocks run per process; do not add remotes as lock
-     * peers (that raises peer_count and STALLs the gate). */
-    mod_net_fill_snapshot_buf(ctx);
-    ps->pending_connect_snap = true;
-    ps->pending_connect_session = true;
+    if (mod_lockstep_needs_join_sync()) {
+      mod_scene_runtime_use_server();
+      const uint32_t tick = mod_lockstep_sim_tick();
+      mod_lockstep_begin_sync(tick);
+      ctx->lock_join_pending = true;
+      ctx->lock_joining_peer = ps->peer_id;
+      ctx->lock_join_hash = mod_scene_physics_checksum();
+      NG_LOG_INFO("lockstep: LATE JOIN peer=%u pause tick=%u hash=0x%08x", ps->peer_id, tick,
+                  ctx->lock_join_hash);
+      mod_net_broadcast_lock_pause(ctx, net, tick);
+      uint8_t *phys = NULL;
+      int phys_size = 0;
+      if (mod_scene_physics_export(&phys, &phys_size) && phys && phys_size > 0) {
+        ps->lock_phys_data = phys;
+        ps->lock_phys_size = phys_size;
+        ps->lock_phys_sent = 0;
+        ps->lock_phys_tick = tick;
+        ps->pending_lock_phys = true;
+        ps->pending_connect_snap = false;
+        NG_LOG_INFO("lockstep: phys export ok peer=%u bytes=%d", ps->peer_id, phys_size);
+      } else {
+        NG_LOG_ERROR("lockstep: phys export failed peer=%u", ps->peer_id);
+        if (phys) {
+          b3FreeSaveData(phys, phys_size);
+        }
+        ps->pending_connect_snap = true;
+      }
+      ps->pending_connect_session = true;
+    } else {
+      // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
+      NG_LOG_INFO("lockstep: cold connect peer=%u (no mid-sim sync)", ps->peer_id);
+      mod_net_fill_snapshot_buf(ctx);
+      ps->pending_connect_snap = true;
+      ps->pending_connect_session = true;
+    }
   } else {
     NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
     const bool was_controller = ps && ps->peer_id == ctx->controller_id;
+    NG_LOG_INFO("net: peer disconnect id=%u controller=%d", ps ? ps->peer_id : 0,
+                was_controller ? 1 : 0);
+    if (ps) {
+      mod_net_lock_free_peer_phys(ps);
+    }
     free(ps);
     ng_net_peer_set_data(peer, NULL);
     if (was_controller) {
@@ -1793,3 +2052,7 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
 // agent: composer-2.5 | 2026-07-30 | lockstep skip transform wire | 353d7b
 // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
+// agent: composer-2.5 | 2026-07-30 | net late join sync flow | 0f03f2
+// agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 8c64cd
+// agent: composer-2.5 | 2026-07-30 | forward LOCK packets upstream | 5e79c9
+// agent: composer-2.5 | 2026-07-30 | send READY via upstream link | 183632

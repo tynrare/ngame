@@ -1,11 +1,15 @@
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | f77a9c
+// agent: composer-2.5 | 2026-07-30 | physics export import names | 1b75f3
 #include "physics.h"
+#include "engine/ng_log.h"
 #include "engine/ng_mod.h"
 #include "graph.h"
+#include "lockstep.h"
 #include "scene/runtime.h"
 #include "world/ng_world.h"
 #include "box3d/box3d.h"
 #include "box3d/collision.h"
+#include "box3d/id.h"
 #include "box3d/math_functions.h"
 #include <math.h>
 #include <string.h>
@@ -224,6 +228,12 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
     inst->body_id_bits = 0;
     return true;
   }
+  /* Late-join: hold body create until Box3D snap restores the world. */
+  if (mod_lockstep_awaiting_phys()) {
+    NG_LOG_INFO("lockstep: defer body create key=%s (awaiting phys)", inst->key);
+    inst->body_id_bits = 0;
+    return true;
+  }
   NgScenePhysBodyDesc *bdesc = mod_scene_physics_find_body(body_name);
   NgScenePhysShapeDesc *sdesc = bdesc ? mod_scene_physics_find_shape(bdesc->shape) : NULL;
   if (!bdesc || !sdesc) {
@@ -251,6 +261,9 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
   shapeDef.density = sdesc->density;
   shapeDef.baseMaterial.friction = sdesc->friction;
   b3CreateHullShape(bodyId, &shapeDef, &box.base);
+  if (inst->key[0] != '\0') {
+    b3Body_SetName(bodyId, inst->key);
+  }
   inst->body_id_bits = b3StoreBodyId(bodyId);
   return true;
 }
@@ -379,4 +392,107 @@ void mod_scene_physics_fixed_step(float fixed_dt, bool on_server, bool is_contro
   }
 }
 
+typedef struct NgPhysCollectCtx {
+  b3BodyId ids[NG_SCENE_INST_MAX];
+  int count;
+} NgPhysCollectCtx;
+
+static bool mod_scene_physics_collect_shape(b3ShapeId shapeId, void *context) {
+  NgPhysCollectCtx *ctx = (NgPhysCollectCtx *)context;
+  if (!ctx || ctx->count >= NG_SCENE_INST_MAX) {
+    return false;
+  }
+  b3BodyId bid = b3Shape_GetBody(shapeId);
+  if (!b3Body_IsValid(bid)) {
+    return true;
+  }
+  for (int i = 0; i < ctx->count; i++) {
+    if (B3_ID_EQUALS(ctx->ids[i], bid)) {
+      return true;
+    }
+  }
+  ctx->ids[ctx->count++] = bid;
+  return true;
+}
+
+bool mod_scene_physics_export(uint8_t **out, int *out_size) {
+  if (!out || !out_size) {
+    return false;
+  }
+  *out = NULL;
+  *out_size = 0;
+  if (!GPHYS().world_alive || !b3World_IsValid(mod_scene_physics_world_id())) {
+    NG_LOG_ERROR("lockstep: export failed — no world");
+    return false;
+  }
+  /* Ensure names are set for rebind after restore. */
+  const int n = mod_scene_graph_inst_count();
+  for (int i = 0; i < n; i++) {
+    NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
+    if (!inst || inst->body_id_bits == 0 || inst->key[0] == '\0') {
+      continue;
+    }
+    b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+    if (b3Body_IsValid(id)) {
+      b3Body_SetName(id, inst->key);
+    }
+  }
+  return b3World_Save(mod_scene_physics_world_id(), out, out_size);
+}
+
+bool mod_scene_physics_import(const uint8_t *data, int size) {
+  if (!data || size <= 0) {
+    return false;
+  }
+  /* Clear old body handles; restore replaces the world image. */
+  const int n = mod_scene_graph_inst_count();
+  for (int i = 0; i < n; i++) {
+    NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
+    if (inst) {
+      inst->body_id_bits = 0;
+    }
+  }
+  mod_scene_physics_destroy_world();
+  if (!mod_scene_physics_ensure_world()) {
+    return false;
+  }
+  if (!b3World_Restore(mod_scene_physics_world_id(), data, size)) {
+    NG_LOG_ERROR("lockstep: b3World_Restore failed size=%d", size);
+    return false;
+  }
+  NG_LOG_INFO("lockstep: phys import restored size=%d", size);
+
+  NgPhysCollectCtx collect = {0};
+  b3AABB aabb = b3World_GetBounds(mod_scene_physics_world_id());
+  /* Expand so sleeping/static bodies at edges are included. */
+  aabb.lowerBound.x -= 1000.0f;
+  aabb.lowerBound.y -= 1000.0f;
+  aabb.lowerBound.z -= 1000.0f;
+  aabb.upperBound.x += 1000.0f;
+  aabb.upperBound.y += 1000.0f;
+  aabb.upperBound.z += 1000.0f;
+  b3QueryFilter filter = b3DefaultQueryFilter();
+  b3World_OverlapAABB(mod_scene_physics_world_id(), aabb, filter, mod_scene_physics_collect_shape,
+                      &collect);
+
+  for (int i = 0; i < n; i++) {
+    NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
+    if (!inst || inst->body[0] == '\0' || inst->key[0] == '\0') {
+      continue;
+    }
+    for (int j = 0; j < collect.count; j++) {
+      const char *name = b3Body_GetName(collect.ids[j]);
+      if (name && strcmp(name, inst->key) == 0) {
+        inst->body_id_bits = b3StoreBodyId(collect.ids[j]);
+        NG_LOG_INFO("lockstep: rebind key=%s", inst->key);
+        break;
+      }
+    }
+  }
+  NG_LOG_INFO("lockstep: import rebound bodies from %d collected", collect.count);
+  return true;
+}
+
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | f77a9c
+// agent: composer-2.5 | 2026-07-30 | physics export import names | 1b75f3
+// agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 4775ae

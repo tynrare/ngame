@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | 9871a5
+// agent: composer-2.5 | 2026-07-30 | physics export import names | 837963
 #ifndef MOD_SCENE_PHYSICS_H
 #define MOD_SCENE_PHYSICS_H
 
@@ -70,5 +71,10 @@ void mod_scene_physics_destroy_world(void);
 void mod_scene_physics_fixed_step(float fixed_dt, bool on_server, bool is_controller);
 uint32_t mod_scene_physics_checksum(void);
 
+/* Box3D world save/restore for lockstep late-join. Caller frees *out with b3FreeSaveData. */
+bool mod_scene_physics_export(uint8_t **out, int *out_size);
+bool mod_scene_physics_import(const uint8_t *data, int size);
+
 #endif
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | 9871a5
+// agent: composer-2.5 | 2026-07-30 | physics export import names | 837963

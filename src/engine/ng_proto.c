@@ -496,9 +496,12 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
     b->len += scene_len;
   }
   // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
+  // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | 259e88
   if (!ng_proto_write_u8(b, session->controller_id) || !ng_proto_write_u8(b, session->your_id) ||
       !ng_proto_write_u8(b, (uint8_t)session->scene_sync) ||
       !ng_proto_write_u8(b, session->lockstep ? 1u : 0u) ||
+      !ng_proto_write_u8(b, session->syncing ? 1u : 0u) ||
+      !ng_proto_write_u32(b, session->snap_tick) ||
       !ng_proto_write_u8(b, (uint8_t)session->spawn_count) ||
       session->spawn_count > NG_SESSION_SPAWN_MAX) {
     return false;
@@ -562,10 +565,25 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
     return true;
   }
   // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
+  // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | 259e88
   if (!ng_proto_read_u8(b, &lockstep)) {
     return false;
   }
   session->lockstep = lockstep ? 1u : 0u;
+  if (b->pos >= b->len) {
+    return true;
+  }
+  uint8_t syncing = 0;
+  if (!ng_proto_read_u8(b, &syncing)) {
+    return false;
+  }
+  session->syncing = syncing ? 1u : 0u;
+  if (b->pos + 4 > b->len) {
+    return true;
+  }
+  if (!ng_proto_read_u32(b, &session->snap_tick)) {
+    return false;
+  }
   if (b->pos >= b->len) {
     return true;
   }
@@ -970,3 +988,140 @@ bool ng_proto_decode_lock_hash(NgProtoBuf *b, NgLockHashPkt *pkt) {
 // agent: composer-2.5 | 2026-07-28 | state ack encode decode | b7c8d9
 // agent: composer-2.5 | 2026-07-28 | wire rad deg rot convert | ba07f0
 // agent: composer-2.5 | 2026-07-29 | full-circle angle wire quant | a7e2c4
+
+// agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | 259e88
+bool ng_proto_encode_lock_pause(NgProtoBuf *b, uint16_t seq, const NgLockPausePkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_LOCK_PAUSE,
+      .seq = seq,
+      .tick = pkt->sim_tick,
+  };
+  return ng_proto_write_header(b, &h) && ng_proto_write_u32(b, pkt->sim_tick);
+}
+
+bool ng_proto_decode_lock_pause(NgProtoBuf *b, NgLockPausePkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  return ng_proto_read_u32(b, &pkt->sim_tick);
+}
+
+bool ng_proto_encode_lock_phys(NgProtoBuf *b, uint16_t seq, const NgLockPhysPkt *pkt) {
+  if (!b || !pkt || pkt->len > NG_LOCK_PHYS_CHUNK) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_LOCK_PHYS,
+      .seq = seq,
+      .tick = pkt->sim_tick,
+  };
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u32(b, pkt->sim_tick) ||
+      !ng_proto_write_u32(b, pkt->offset) || !ng_proto_write_u32(b, pkt->total) ||
+      !ng_proto_write_u16(b, pkt->len)) {
+    return false;
+  }
+  for (uint16_t i = 0; i < pkt->len; i++) {
+    if (!ng_proto_write_u8(b, pkt->data[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ng_proto_decode_lock_phys(NgProtoBuf *b, NgLockPhysPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  if (!ng_proto_read_u32(b, &pkt->sim_tick) || !ng_proto_read_u32(b, &pkt->offset) ||
+      !ng_proto_read_u32(b, &pkt->total) || !ng_proto_read_u16(b, &pkt->len) ||
+      pkt->len > NG_LOCK_PHYS_CHUNK) {
+    return false;
+  }
+  for (uint16_t i = 0; i < pkt->len; i++) {
+    if (!ng_proto_read_u8(b, &pkt->data[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ng_proto_encode_lock_ready(NgProtoBuf *b, uint16_t seq, const NgLockReadyPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_LOCK_READY,
+      .seq = seq,
+      .tick = pkt->sim_tick,
+  };
+  return ng_proto_write_header(b, &h) && ng_proto_write_u8(b, pkt->peer_id) &&
+         ng_proto_write_u32(b, pkt->sim_tick) && ng_proto_write_u32(b, pkt->hash);
+}
+
+bool ng_proto_decode_lock_ready(NgProtoBuf *b, NgLockReadyPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  return ng_proto_read_u8(b, &pkt->peer_id) && ng_proto_read_u32(b, &pkt->sim_tick) &&
+         ng_proto_read_u32(b, &pkt->hash);
+}
+
+bool ng_proto_encode_lock_resume(NgProtoBuf *b, uint16_t seq, const NgLockResumePkt *pkt) {
+  if (!b || !pkt || pkt->peer_count > NG_LOCK_PEER_MAX) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_RELIABLE,
+      .type = NG_PKT_LOCK_RESUME,
+      .seq = seq,
+      .tick = pkt->sim_tick,
+  };
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u32(b, pkt->sim_tick) ||
+      !ng_proto_write_u8(b, pkt->peer_count)) {
+    return false;
+  }
+  for (uint8_t i = 0; i < pkt->peer_count; i++) {
+    if (!ng_proto_write_u8(b, pkt->peer_ids[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ng_proto_decode_lock_resume(NgProtoBuf *b, NgLockResumePkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  if (!ng_proto_read_u32(b, &pkt->sim_tick) || !ng_proto_read_u8(b, &pkt->peer_count) ||
+      pkt->peer_count > NG_LOCK_PEER_MAX) {
+    return false;
+  }
+  for (uint8_t i = 0; i < pkt->peer_count; i++) {
+    if (!ng_proto_read_u8(b, &pkt->peer_ids[i])) {
+      return false;
+    }
+  }
+  return true;
+}

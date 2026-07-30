@@ -10,7 +10,8 @@ struct NgActionResult;
 
 #define NG_PROTO_MAGIC   0x4E474D45u /* NGME */
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa
-#define NG_PROTO_VERSION 7
+// agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | c2b274
+#define NG_PROTO_VERSION 8
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -32,8 +33,16 @@ struct NgActionResult;
 #define NG_PKT_LOCK_INPUT   13
 #define NG_PKT_LOCK_ACK     14
 #define NG_PKT_LOCK_HASH    15
+#define NG_PKT_LOCK_PAUSE   16
+#define NG_PKT_LOCK_PHYS    17
+#define NG_PKT_LOCK_READY   18
+#define NG_PKT_LOCK_RESUME  19
 
 #define NG_LOCK_INPUT_MAX 32
+#define NG_LOCK_PHYS_CHUNK 3072
+#ifndef NG_LOCK_PEER_MAX
+#define NG_LOCK_PEER_MAX 8
+#endif
 
 typedef struct NgLockInputPkt {
   uint8_t peer_id;
@@ -52,6 +61,30 @@ typedef struct NgLockHashPkt {
   uint32_t tick;
   uint32_t hash;
 } NgLockHashPkt;
+
+typedef struct NgLockPausePkt {
+  uint32_t sim_tick;
+} NgLockPausePkt;
+
+typedef struct NgLockPhysPkt {
+  uint32_t sim_tick;
+  uint32_t offset;
+  uint32_t total;
+  uint16_t len;
+  uint8_t data[NG_LOCK_PHYS_CHUNK];
+} NgLockPhysPkt;
+
+typedef struct NgLockReadyPkt {
+  uint8_t peer_id;
+  uint32_t sim_tick;
+  uint32_t hash;
+} NgLockReadyPkt;
+
+typedef struct NgLockResumePkt {
+  uint32_t sim_tick;
+  uint8_t peer_count;
+  uint8_t peer_ids[NG_LOCK_PEER_MAX];
+} NgLockResumePkt;
 
 typedef enum NgPeerRole {
   NG_PEER_THIN = 0,
@@ -123,6 +156,15 @@ bool ng_proto_encode_lock_ack(NgProtoBuf *b, uint16_t seq, const NgLockAckPkt *p
 bool ng_proto_decode_lock_ack(NgProtoBuf *b, NgLockAckPkt *pkt);
 bool ng_proto_encode_lock_hash(NgProtoBuf *b, uint16_t seq, const NgLockHashPkt *pkt);
 bool ng_proto_decode_lock_hash(NgProtoBuf *b, NgLockHashPkt *pkt);
+bool ng_proto_encode_lock_pause(NgProtoBuf *b, uint16_t seq, const NgLockPausePkt *pkt);
+bool ng_proto_decode_lock_pause(NgProtoBuf *b, NgLockPausePkt *pkt);
+bool ng_proto_encode_lock_phys(NgProtoBuf *b, uint16_t seq, const NgLockPhysPkt *pkt);
+bool ng_proto_decode_lock_phys(NgProtoBuf *b, NgLockPhysPkt *pkt);
+bool ng_proto_encode_lock_ready(NgProtoBuf *b, uint16_t seq, const NgLockReadyPkt *pkt);
+bool ng_proto_decode_lock_ready(NgProtoBuf *b, NgLockReadyPkt *pkt);
+bool ng_proto_encode_lock_resume(NgProtoBuf *b, uint16_t seq, const NgLockResumePkt *pkt);
+bool ng_proto_decode_lock_resume(NgProtoBuf *b, NgLockResumePkt *pkt);
 
 #endif
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa
+// agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | c2b274

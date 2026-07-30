@@ -37,7 +37,10 @@ Scene-level mode (one world mode per scene — do not mix with transform-authori
 global.describe("scene", "view", { sim: "lockstep", bg: {...}, camera: {...} });
 ```
 
-In lockstep, every peer creates and steps the same bodies; render uses local transforms (no `STATE_UPDATE` authority). Peers exchange empty tick-indexed `LOCK_INPUT` / `LOCK_ACK` (and optional `LOCK_HASH`) via the server relay, with ~100ms playout delay before the first step. Mid-sim join is refused in v1 — join before sim start or reload the scene.
+In lockstep, every peer creates and steps the same bodies; render uses local transforms (no `STATE_UPDATE` authority). Peers exchange empty tick-indexed `LOCK_INPUT` / `LOCK_ACK` (and optional `LOCK_HASH`) via the server relay, with ~100ms playout delay before the first step.
+
+<!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
+Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Simulation stalls while the joiner fetches.
 
 <!-- agent: composer-2.5 | 2026-07-30 | lockstep sync docs | 00d907 -->
 Entity `sync` / transform bandwidth are **ignored** for entities with a `body` while `sim: "lockstep"` is active: all peers spawn and step those bodies locally; no pose authority over the wire.
@@ -97,3 +100,5 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-29 | document physics body fixed_step | 19851f -->
 <!-- agent: composer-2.5 | 2026-07-29 | lockstep docs scenes | ea6409 -->
 <!-- agent: composer-2.5 | 2026-07-30 | lockstep sync docs | 00d907 -->
+
+<!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
