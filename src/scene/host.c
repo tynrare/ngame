@@ -206,6 +206,28 @@ static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
     mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
   }
   duk_pop(ctx);
+  // agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
+  duk_get_prop_string(ctx, obj_idx, "gravity");
+  if (duk_is_object(ctx, -1)) {
+    float g[3] = {0.0f, 0.0f, 0.0f};
+    duk_get_prop_string(ctx, -1, "x");
+    if (duk_is_number(ctx, -1)) {
+      g[0] = (float)duk_get_number(ctx, -1);
+    }
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, -1, "y");
+    if (duk_is_number(ctx, -1)) {
+      g[1] = (float)duk_get_number(ctx, -1);
+    }
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, -1, "z");
+    if (duk_is_number(ctx, -1)) {
+      g[2] = (float)duk_get_number(ctx, -1);
+    }
+    duk_pop(ctx);
+    mod_scene_physics_set_gravity(g[0], g[1], g[2]);
+  }
+  duk_pop(ctx);
   return mod_scene_assets_describe_view(&view);
 }
 
@@ -319,8 +341,10 @@ static duk_ret_t bind_describe(duk_context *ctx) {
       mod_scene_assets_describe_model(name, mesh, shader);
     } else if (strcmp(kind, "shape") == 0) {
       // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
+      // agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
       const char *stype = "box";
       float hx = 0.5f, hy = 0.5f, hz = 0.5f, density = 1.0f, friction = 0.3f;
+      bool sensor = false;
       duk_get_prop_string(ctx, 2, "type");
       if (duk_is_string(ctx, -1)) {
         stype = duk_get_string(ctx, -1);
@@ -341,6 +365,14 @@ static duk_ret_t bind_describe(duk_context *ctx) {
         hz = (float)duk_get_number(ctx, -1);
       }
       duk_pop(ctx);
+      // agent: composer-2.5 | 2026-07-30 | sphere describe parse | 741115
+      duk_get_prop_string(ctx, 2, "radius");
+      if (duk_is_number(ctx, -1)) {
+        hx = (float)duk_get_number(ctx, -1);
+        hy = hx;
+        hz = hx;
+      }
+      duk_pop(ctx);
       duk_get_prop_string(ctx, 2, "density");
       if (duk_is_number(ctx, -1)) {
         density = (float)duk_get_number(ctx, -1);
@@ -351,7 +383,12 @@ static duk_ret_t bind_describe(duk_context *ctx) {
         friction = (float)duk_get_number(ctx, -1);
       }
       duk_pop(ctx);
-      mod_scene_physics_describe_shape(name, stype, hx, hy, hz, density, friction);
+      duk_get_prop_string(ctx, 2, "sensor");
+      if (duk_is_boolean(ctx, -1)) {
+        sensor = duk_get_boolean(ctx, -1) ? true : false;
+      }
+      duk_pop(ctx);
+      mod_scene_physics_describe_shape(name, stype, hx, hy, hz, density, friction, sensor);
     } else if (strcmp(kind, "body") == 0) {
       const char *btype = "static";
       const char *shape = NULL;
@@ -727,6 +764,35 @@ static duk_ret_t bind_apply_torque(duk_context *ctx) {
   return 1;
 }
 
+// agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
+static duk_ret_t bind_set_linear_velocity(duk_context *ctx) {
+  const int handle = duk_require_int(ctx, 0);
+  float vx = 0.0f, vy = 0.0f, vz = 0.0f;
+  mod_scene_bind_read_vec3(ctx, 1, &vx, &vy, &vz);
+  duk_push_boolean(ctx, mod_scene_physics_set_linear_velocity(handle, vx, vy, vz) ? 1 : 0);
+  return 1;
+}
+
+static duk_ret_t bind_get_linear_velocity(duk_context *ctx) {
+  const int handle = duk_require_int(ctx, 0);
+  float v[3] = {0.0f, 0.0f, 0.0f};
+  (void)mod_scene_physics_get_linear_velocity(handle, v);
+  duk_push_object(ctx);
+  duk_push_number(ctx, v[0]);
+  duk_put_prop_string(ctx, -2, "x");
+  duk_push_number(ctx, v[1]);
+  duk_put_prop_string(ctx, -2, "y");
+  duk_push_number(ctx, v[2]);
+  duk_put_prop_string(ctx, -2, "z");
+  return 1;
+}
+
+static duk_ret_t bind_get_mass(duk_context *ctx) {
+  const int handle = duk_require_int(ctx, 0);
+  duk_push_number(ctx, mod_scene_physics_get_mass(handle));
+  return 1;
+}
+
 // agent: codex-5.3 | 2026-07-29 | add mouse ray plane helper | 27b035
 // agent: composer-2.5 | 2026-07-29 | shared raycast plane helper | 7c1d4a
 bool mod_scene_raycast_plane_y(float plane_y, float *out_x, float *out_y, float *out_z) {
@@ -1015,6 +1081,10 @@ static void mod_scene_bind_global(duk_context *ctx) {
   BIND("apply_impulse", bind_apply_impulse, 4);
   BIND("apply_force", bind_apply_force, 4);
   BIND("apply_torque", bind_apply_torque, 4);
+  // agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
+  BIND("set_linear_velocity", bind_set_linear_velocity, 4);
+  BIND("get_linear_velocity", bind_get_linear_velocity, 1);
+  BIND("get_mass", bind_get_mass, 1);
   // agent: codex-5.3 | 2026-07-29 | bind scene mouse raycast fn | b831e0
   BIND("raycast_plane_y", bind_raycast_plane_y, 1);
   // agent: composer-2.5 | 2026-07-29 | expose JS mouse position | 8a4c2f
@@ -1214,6 +1284,13 @@ static void mod_scene_push_session_obj(ModSceneCtx *ctx, const NgSessionState *s
   duk_put_prop_string(ctx->ctx, -2, "controller_id");
   duk_push_int(ctx->ctx, session->your_id);
   duk_put_prop_string(ctx->ctx, -2, "your_id");
+  // agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
+  duk_push_boolean(ctx->ctx, session->syncing ? 1 : 0);
+  duk_put_prop_string(ctx->ctx, -2, "syncing");
+  duk_push_uint(ctx->ctx, session->snap_tick);
+  duk_put_prop_string(ctx->ctx, -2, "snap_tick");
+  duk_push_boolean(ctx->ctx, session->lockstep ? 1 : 0);
+  duk_put_prop_string(ctx->ctx, -2, "lockstep");
 }
 
 static void mod_scene_materialize_pending_ud(const NgSessionSpawn *sp, void *ud) {
@@ -1679,7 +1756,10 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
   }
 
   if (!ctx->loaded || strcmp(ctx->scene_id, session->scene_id) != 0 || force_reload) {
-    if (!mod_scene_begin(session->scene_id, false,
+    // agent: composer-2.5 | 2026-07-30 | sphere describe parse | 741115
+    /* Server runtime owns lockstep Box3D; view is display-only under lockstep. */
+    const bool server_host = (ctx == &g_scene_server.scene);
+    if (!mod_scene_begin(session->scene_id, server_host,
                          session->your_id != 0 && session->your_id == session->controller_id)) {
       return;
     }
@@ -1983,12 +2063,19 @@ static void mod_scene_entities_text_active(char *out, size_t cap) {
     if (!inst) {
       continue;
     }
+    float mass = 0.0f;
+    float lv[3] = {0};
+    if (inst->body_id_bits != 0) {
+      mass = mod_scene_physics_get_mass(inst->handle);
+      (void)mod_scene_physics_get_linear_velocity(inst->handle, lv);
+    }
     used += (size_t)snprintf(
         out + used, cap - used,
-        " | id=%u key=%s desc=%s body=%u proxy=%d pos=%.3f,%.3f,%.3f rot=%.3f,%.3f,%.3f",
+        " | id=%u key=%s desc=%s body=%u proxy=%d mass=%.3f vel=%.3f,%.3f,%.3f pos=%.3f,%.3f,%.3f "
+        "rot=%.3f,%.3f,%.3f",
         inst->id, inst->key, inst->desc_name, inst->body_id_bits != 0 ? 1u : 0u,
-        inst->phys_proxy ? 1 : 0, inst->pos[0], inst->pos[1], inst->pos[2], inst->rot[0],
-        inst->rot[1], inst->rot[2]);
+        inst->phys_proxy ? 1 : 0, mass, lv[0], lv[1], lv[2], inst->pos[0], inst->pos[1],
+        inst->pos[2], inst->rot[0], inst->rot[1], inst->rot[2]);
   }
   if (used == 0 && cap > 0) {
     out[0] = '\0';
@@ -2435,3 +2522,5 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | smoke single world input bits | 373a09
 // agent: composer-2.5 | 2026-07-30 | smoke next sim tick bits | e7550b
 // agent: composer-2.5 | 2026-07-30 | server entities text helper | 529fd4
+// agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
+// agent: composer-2.5 | 2026-07-30 | sphere describe parse | 741115

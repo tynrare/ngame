@@ -5,6 +5,7 @@
 // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | 10e625
 // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | cbe0b7
 // agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c
+// agent: composer-2.5 | 2026-07-30 | lockstep session server load | f8de1b
 #include "mod_net.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -1213,6 +1214,11 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     NG_LOG_INFO("net: SESSION scene=%s your=%u lock=%u syncing=%u snap=%u", session.scene_id,
                 session.your_id, session.lockstep, session.syncing, session.snap_tick);
     mod_net_update_root_mirror_session(&session);
+    // agent: composer-2.5 | 2026-07-30 | lockstep session server load | f8de1b
+    /* Lockstep peers must load the scene on the server slot (Box3D owner) before view. */
+    if (session.lockstep) {
+      mod_scene_on_session(&session);
+    }
     mod_scene_view_on_session(&session);
     break;
   }
@@ -1309,6 +1315,8 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     }
     NG_LOG_INFO("lockstep: PHYS complete bytes=%d tick=%u — importing", ctx->lock_phys_rx_size,
                 pkt.sim_tick);
+    // agent: composer-2.5 | 2026-07-30 | lockstep session server load | f8de1b
+    mod_scene_runtime_use_server();
     if (!mod_scene_physics_import(ctx->lock_phys_rx, ctx->lock_phys_rx_size)) {
       NG_LOG_ERROR("lockstep: phys import failed");
       mod_net_lock_free_rx(ctx);
@@ -2247,3 +2255,4 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | 10e625
 // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | cbe0b7
 // agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c
+// agent: composer-2.5 | 2026-07-30 | lockstep session server load | f8de1b

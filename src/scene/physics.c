@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | f77a9c
 // agent: composer-2.5 | 2026-07-30 | physics export import names | 1b75f3
+// agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
 #include "physics.h"
 #include "engine/ng_log.h"
 #include "engine/ng_mod.h"
@@ -54,6 +55,11 @@ static NgScenePhysBodyDesc *mod_scene_physics_find_body(const char *name) {
 void mod_scene_physics_reset(void) {
   mod_scene_physics_destroy_world();
   memset(mod_scene_runtime_physics(), 0, sizeof(ModScenePhysicsCtx));
+  // agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
+  GPHYS().gravity[0] = 0.0f;
+  GPHYS().gravity[1] = -10.0f;
+  GPHYS().gravity[2] = 0.0f;
+  GPHYS().gravity_set = false;
 }
 
 void mod_scene_physics_set_sim_mode(NgPhysSimMode mode) {
@@ -68,13 +74,32 @@ bool mod_scene_physics_is_lockstep(void) {
   return GPHYS().sim_mode == NG_PHYS_SIM_LOCKSTEP;
 }
 
+// agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
+void mod_scene_physics_set_gravity(float gx, float gy, float gz) {
+  GPHYS().gravity[0] = gx;
+  GPHYS().gravity[1] = gy;
+  GPHYS().gravity[2] = gz;
+  GPHYS().gravity_set = true;
+  if (GPHYS().world_alive && b3World_IsValid(mod_scene_physics_world_id())) {
+    b3World_SetGravity(mod_scene_physics_world_id(), (b3Vec3){gx, gy, gz});
+  }
+}
+
 bool mod_scene_physics_describe_shape(const char *name, const char *type, float hx, float hy,
-                                      float hz, float density, float friction) {
+                                      float hz, float density, float friction, bool sensor) {
   if (!name || name[0] == '\0') {
     return false;
   }
-  if (type && strcmp(type, "box") != 0 && type[0] != '\0') {
-    return false;
+  // agent: composer-2.5 | 2026-07-30 | sphere shape attach | ebc7a0
+  NgScenePhysShapeType st = NG_PHYS_SHAPE_BOX;
+  if (type && type[0] != '\0') {
+    if (strcmp(type, "box") == 0) {
+      st = NG_PHYS_SHAPE_BOX;
+    } else if (strcmp(type, "sphere") == 0) {
+      st = NG_PHYS_SHAPE_SPHERE;
+    } else {
+      return false;
+    }
   }
   NgScenePhysShapeDesc *existing = mod_scene_physics_find_shape(name);
   if (!existing) {
@@ -86,12 +111,18 @@ bool mod_scene_physics_describe_shape(const char *name, const char *type, float 
     strncpy(existing->name, name, sizeof(existing->name) - 1);
   }
   existing->alive = true;
-  existing->type = NG_PHYS_SHAPE_BOX;
+  existing->type = st;
   existing->hx = hx > 0.0f ? hx : 0.5f;
   existing->hy = hy > 0.0f ? hy : 0.5f;
   existing->hz = hz > 0.0f ? hz : 0.5f;
+  /* Sphere radius: prefer hx; fall back to explicit positive hy/hz average. */
+  existing->radius = existing->hx;
+  if (st == NG_PHYS_SHAPE_SPHERE && existing->radius <= 0.0f) {
+    existing->radius = 0.5f;
+  }
   existing->density = density >= 0.0f ? density : 1.0f;
   existing->friction = friction >= 0.0f ? friction : 0.3f;
+  existing->sensor = sensor;
   return true;
 }
 
@@ -167,8 +198,14 @@ static bool mod_scene_physics_ensure_world(void) {
   if (GPHYS().world_alive && b3World_IsValid(mod_scene_physics_world_id())) {
     return true;
   }
+  // agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
+  if (!GPHYS().gravity_set) {
+    GPHYS().gravity[0] = 0.0f;
+    GPHYS().gravity[1] = -10.0f;
+    GPHYS().gravity[2] = 0.0f;
+  }
   b3WorldDef def = b3DefaultWorldDef();
-  def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
+  def.gravity = (b3Vec3){GPHYS().gravity[0], GPHYS().gravity[1], GPHYS().gravity[2]};
   def.workerCount = 1;
   b3WorldId id = b3CreateWorld(&def);
   if (!b3World_IsValid(id)) {
@@ -268,15 +305,31 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
   }
   bodyDef.position = (b3Pos){pos ? pos[0] : 0.0f, pos ? pos[1] : 0.0f, pos ? pos[2] : 0.0f};
   bodyDef.rotation = mod_scene_physics_quat_from_euler(rot);
+  // agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
+  if (sdesc->sensor && !want_proxy) {
+    bodyDef.enableSleep = false;
+    bodyDef.linearDamping = 0.0f;
+    bodyDef.angularDamping = 0.0f;
+  }
   b3BodyId bodyId = b3CreateBody(mod_scene_physics_world_id(), &bodyDef);
   if (!b3Body_IsValid(bodyId)) {
     return false;
   }
-  b3BoxHull box = b3MakeBoxHull(sdesc->hx, sdesc->hy, sdesc->hz);
+  // agent: composer-2.5 | 2026-07-30 | sphere shape attach | ebc7a0
   b3ShapeDef shapeDef = b3DefaultShapeDef();
   shapeDef.density = want_proxy ? 0.0f : sdesc->density;
   shapeDef.baseMaterial.friction = sdesc->friction;
-  b3CreateHullShape(bodyId, &shapeDef, &box.base);
+  if (sdesc->sensor) {
+    shapeDef.isSensor = true;
+    shapeDef.filter.maskBits = 0;
+  }
+  if (sdesc->type == NG_PHYS_SHAPE_SPHERE) {
+    b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, sdesc->radius > 0.0f ? sdesc->radius : 0.5f};
+    b3CreateSphereShape(bodyId, &shapeDef, &sphere);
+  } else {
+    b3BoxHull box = b3MakeBoxHull(sdesc->hx, sdesc->hy, sdesc->hz);
+    b3CreateHullShape(bodyId, &shapeDef, &box.base);
+  }
   if (inst->key[0] != '\0') {
     b3Body_SetName(bodyId, inst->key);
   }
@@ -359,6 +412,55 @@ bool mod_scene_physics_apply_torque(int handle, float tx, float ty, float tz) {
   }
   b3Body_ApplyTorque(id, (b3Vec3){tx, ty, tz}, true);
   return true;
+}
+
+// agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
+bool mod_scene_physics_set_linear_velocity(int handle, float vx, float vy, float vz) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
+  if (!inst || inst->body_id_bits == 0 || inst->phys_proxy) {
+    return false;
+  }
+  b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+  if (!b3Body_IsValid(id)) {
+    return false;
+  }
+  b3Body_SetLinearVelocity(id, (b3Vec3){vx, vy, vz});
+  inst->lin_vel[0] = vx;
+  inst->lin_vel[1] = vy;
+  inst->lin_vel[2] = vz;
+  return true;
+}
+
+bool mod_scene_physics_get_linear_velocity(int handle, float out[3]) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
+  if (!out) {
+    return false;
+  }
+  out[0] = out[1] = out[2] = 0.0f;
+  if (!inst || inst->body_id_bits == 0) {
+    return false;
+  }
+  b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+  if (!b3Body_IsValid(id)) {
+    return false;
+  }
+  b3Vec3 v = b3Body_GetLinearVelocity(id);
+  out[0] = (float)v.x;
+  out[1] = (float)v.y;
+  out[2] = (float)v.z;
+  return true;
+}
+
+float mod_scene_physics_get_mass(int handle) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
+  if (!inst || inst->body_id_bits == 0) {
+    return 0.0f;
+  }
+  b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+  if (!b3Body_IsValid(id)) {
+    return 0.0f;
+  }
+  return b3Body_GetMass(id);
 }
 
 uint32_t mod_scene_physics_checksum(void) {
@@ -618,3 +720,5 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 // agent: composer-2.5 | 2026-07-30 | skip view attach under lockstep | dfc161
 // agent: composer-2.5 | 2026-07-30 | apply linear impulse helper | 3ee627
 // agent: composer-2.5 | 2026-07-30 | apply force and torque helpers | fc5a41
+// agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
+// agent: composer-2.5 | 2026-07-30 | sphere shape attach | ebc7a0
