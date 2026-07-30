@@ -22,6 +22,7 @@ typedef enum NgEntityType {
   NG_ENTITY_CUBE = 2,
 } NgEntityType;
 
+// agent: composer-2.5 | 2026-07-30 | comp mask lin ang vel | 1de454
 typedef enum NgCompMask {
   NG_COMP_TYPE  = 1u << 0,
   NG_COMP_POS   = 1u << 1,
@@ -29,7 +30,9 @@ typedef enum NgCompMask {
   NG_COMP_PHASE = 1u << 3,
   NG_COMP_FLAGS = 1u << 4,
   NG_COMP_SCALE = 1u << 5,
-  NG_COMP_ALL   = 0x3fu,
+  NG_COMP_LIN_VEL = 1u << 6,
+  NG_COMP_ANG_VEL = 1u << 7,
+  NG_COMP_ALL   = 0xffu,
 } NgCompMask;
 
 typedef struct NgEntitySnap {
@@ -89,3 +92,5 @@ void ng_world_fill_snapshot_delta(NgWorld *w, NgSnapshot *cur, const NgSnapshot 
 uint32_t ng_world_hash(const NgWorld *w);
 
 #endif
+// agent: composer-2.5 | 2026-07-25 | web smaller snapshot caps | d34d5e
+// agent: composer-2.5 | 2026-07-30 | comp mask lin ang vel | 1de454

@@ -645,6 +645,22 @@ static int16_t ng_proto_quant_cm(float v) {
 
 static float ng_proto_dequant_cm(int16_t v) { return (float)v / 100.0f; }
 
+// agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec
+/* Linear: cm/s (same scale as position). Angular: mrad/s. */
+static int16_t ng_proto_quant_vel(float v) { return ng_proto_quant_cm(v); }
+static float ng_proto_dequant_vel(int16_t v) { return ng_proto_dequant_cm(v); }
+static int16_t ng_proto_quant_ang_vel(float rad_s) {
+  float q = rad_s * 1000.0f;
+  if (q > 32767.0f) {
+    q = 32767.0f;
+  }
+  if (q < -32768.0f) {
+    q = -32768.0f;
+  }
+  return (int16_t)q;
+}
+static float ng_proto_dequant_ang_vel(int16_t v) { return (float)v / 1000.0f; }
+
 // agent: composer-2.5 | 2026-07-29 | full-circle angle wire quant | a7e2c4
 static uint16_t ng_proto_quant_angle(float rad) {
   const float tau = 6.28318530718f;
@@ -673,6 +689,7 @@ static bool ng_proto_read_i16(NgProtoBuf *b, int16_t *out) {
 }
 
 static bool ng_proto_write_state_body(NgProtoBuf *b, const NgStateUpdate *update) {
+  // agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec
   return ng_proto_write_u32(b, update->entity_id) && ng_proto_write_u16(b, update->seq) &&
          ng_proto_write_u8(b, update->comp_mask) &&
          (!(update->comp_mask & NG_COMP_POS) ||
@@ -684,10 +701,19 @@ static bool ng_proto_write_state_body(NgProtoBuf *b, const NgStateUpdate *update
            ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[1])) &&
            ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[2])))) &&
          (!(update->comp_mask & NG_COMP_SCALE) ||
-          ng_proto_write_i16(b, ng_proto_quant_cm(update->scale)));
+          ng_proto_write_i16(b, ng_proto_quant_cm(update->scale))) &&
+         (!(update->comp_mask & NG_COMP_LIN_VEL) ||
+          (ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[0])) &&
+           ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[1])) &&
+           ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[2])))) &&
+         (!(update->comp_mask & NG_COMP_ANG_VEL) ||
+          (ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[0])) &&
+           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[1])) &&
+           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[2]))));
 }
 
 static bool ng_proto_read_state_body(NgProtoBuf *b, NgStateUpdate *update) {
+  // agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec
   uint8_t mask = 0;
   if (!ng_proto_read_u32(b, &update->entity_id) || !ng_proto_read_u16(b, &update->seq) ||
       !ng_proto_read_u8(b, &mask)) {
@@ -718,6 +744,24 @@ static bool ng_proto_read_state_body(NgProtoBuf *b, NgStateUpdate *update) {
       return false;
     }
     update->scale = ng_proto_dequant_cm(qs);
+  }
+  if (mask & NG_COMP_LIN_VEL) {
+    int16_t q0 = 0, q1 = 0, q2 = 0;
+    if (!ng_proto_read_i16(b, &q0) || !ng_proto_read_i16(b, &q1) || !ng_proto_read_i16(b, &q2)) {
+      return false;
+    }
+    update->lin_vel[0] = ng_proto_dequant_vel(q0);
+    update->lin_vel[1] = ng_proto_dequant_vel(q1);
+    update->lin_vel[2] = ng_proto_dequant_vel(q2);
+  }
+  if (mask & NG_COMP_ANG_VEL) {
+    int16_t q0 = 0, q1 = 0, q2 = 0;
+    if (!ng_proto_read_i16(b, &q0) || !ng_proto_read_i16(b, &q1) || !ng_proto_read_i16(b, &q2)) {
+      return false;
+    }
+    update->ang_vel[0] = ng_proto_dequant_ang_vel(q0);
+    update->ang_vel[1] = ng_proto_dequant_ang_vel(q1);
+    update->ang_vel[2] = ng_proto_dequant_ang_vel(q2);
   }
   return true;
 }
@@ -1125,3 +1169,4 @@ bool ng_proto_decode_lock_resume(NgProtoBuf *b, NgLockResumePkt *pkt) {
   }
   return true;
 }
+// agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec

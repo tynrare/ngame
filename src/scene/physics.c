@@ -345,7 +345,10 @@ void mod_scene_physics_fixed_step(float fixed_dt, bool on_server, bool is_contro
     return;
   }
   b3World_Step(mod_scene_physics_world_id(), fixed_dt, 4);
+  // agent: composer-2.5 | 2026-07-30 | physics emit vel sleep | 530cd0
   const bool lockstep = mod_scene_physics_is_lockstep();
+  const float sleep_lin = 0.02f;
+  const float sleep_ang = 0.02f;
   for (int i = 0; i < n; i++) {
     NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
     if (!inst || inst->body_id_bits == 0) {
@@ -360,34 +363,67 @@ void mod_scene_physics_fixed_step(float fixed_dt, bool on_server, bool is_contro
     }
     b3Pos p = b3Body_GetPosition(id);
     b3Quat q = b3Body_GetRotation(id);
+    b3Vec3 lv = b3Body_GetLinearVelocity(id);
+    b3Vec3 av = b3Body_GetAngularVelocity(id);
     float nrot[3];
     mod_scene_physics_euler_from_quat(q, nrot);
     const float px = (float)p.x;
     const float py = (float)p.y;
     const float pz = (float)p.z;
-    bool changed = false;
+    const float lvx = (float)lv.x;
+    const float lvy = (float)lv.y;
+    const float lvz = (float)lv.z;
+    const float avx = (float)av.x;
+    const float avy = (float)av.y;
+    const float avz = (float)av.z;
+    bool pose_changed = false;
+    bool vel_changed = false;
     if (fabsf(inst->pos[0] - px) > 1e-5f || fabsf(inst->pos[1] - py) > 1e-5f ||
         fabsf(inst->pos[2] - pz) > 1e-5f) {
       inst->pos[0] = px;
       inst->pos[1] = py;
       inst->pos[2] = pz;
-      changed = true;
-      if (!lockstep) {
-        mod_scene_graph_mark_dirty(inst, NG_COMP_POS);
-      }
+      pose_changed = true;
     }
     if (fabsf(inst->rot[0] - nrot[0]) > 1e-5f || fabsf(inst->rot[1] - nrot[1]) > 1e-5f ||
         fabsf(inst->rot[2] - nrot[2]) > 1e-5f) {
       inst->rot[0] = nrot[0];
       inst->rot[1] = nrot[1];
       inst->rot[2] = nrot[2];
-      changed = true;
-      if (!lockstep) {
-        mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
-      }
+      pose_changed = true;
     }
-    if (changed) {
+    if (fabsf(inst->lin_vel[0] - lvx) > 1e-4f || fabsf(inst->lin_vel[1] - lvy) > 1e-4f ||
+        fabsf(inst->lin_vel[2] - lvz) > 1e-4f) {
+      inst->lin_vel[0] = lvx;
+      inst->lin_vel[1] = lvy;
+      inst->lin_vel[2] = lvz;
+      vel_changed = true;
+    }
+    if (fabsf(inst->ang_vel[0] - avx) > 1e-4f || fabsf(inst->ang_vel[1] - avy) > 1e-4f ||
+        fabsf(inst->ang_vel[2] - avz) > 1e-4f) {
+      inst->ang_vel[0] = avx;
+      inst->ang_vel[1] = avy;
+      inst->ang_vel[2] = avz;
+      vel_changed = true;
+    }
+    if (pose_changed) {
       mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
+    }
+    if (lockstep) {
+      continue;
+    }
+    const float lin_spd2 = lvx * lvx + lvy * lvy + lvz * lvz;
+    const float ang_spd2 = avx * avx + avy * avy + avz * avz;
+    const bool at_rest =
+        !pose_changed && lin_spd2 < (sleep_lin * sleep_lin) && ang_spd2 < (sleep_ang * sleep_ang);
+    if (at_rest) {
+      continue;
+    }
+    if (pose_changed) {
+      mod_scene_graph_mark_dirty(inst, NG_COMP_POS | NG_COMP_ROT);
+    }
+    if (vel_changed || pose_changed) {
+      mod_scene_graph_mark_dirty(inst, NG_COMP_LIN_VEL | NG_COMP_ANG_VEL);
     }
   }
 }
@@ -496,3 +532,4 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | f77a9c
 // agent: composer-2.5 | 2026-07-30 | physics export import names | 1b75f3
 // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 4775ae
+// agent: composer-2.5 | 2026-07-30 | physics emit vel sleep | 530cd0

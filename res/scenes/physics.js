@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-29 | physics lockstep scene js | c3e03d
 // agent: composer-2.5 | 2026-07-30 | lockstep physics sync note | e2ce57
+// agent: composer-2.5 | 2026-07-30 | physics sim flag note only | d4ecc2
 function Box() {}
 Box.prototype.init = function () {};
 Box.prototype.start = function () {};
@@ -58,6 +59,8 @@ Scene.prototype.init = function () {
   global.describe("body", "box_body", { type: "dynamic", shape: "box_shape" });
   global.describe("body", "ground_body", { type: "static", shape: "ground_shape" });
 
+  // sim: physics-only (bodies). Bodiless entities still use entity.sync (cube-compatible).
+  // Under lockstep, body entity sync is ignored; transforms for bodies are not streamed.
   global.describe("scene", "view", {
     sim: "lockstep",
     bg: { r: 24, g: 28, b: 36 },
@@ -69,7 +72,8 @@ Scene.prototype.init = function () {
     },
   });
 
-  // sync server: session materializes on all views; lockstep ignores entity sync for bodies.
+  // agent: composer-2.5 | 2026-07-30 | physics sim flag note only | d4ecc2
+  // sync on bodies unused under sim:lockstep; kept for sim:server compatibility.
   global.describe("entity", "box_e", {
     model: "box_mo",
     body: "box_body",
@@ -129,3 +133,4 @@ Scene.prototype.dispose = function () {
 
 // agent: composer-2.5 | 2026-07-29 | physics lockstep scene js | c3e03d
 // agent: composer-2.5 | 2026-07-30 | lockstep physics sync note | e2ce57
+// agent: composer-2.5 | 2026-07-30 | physics sim flag note only | d4ecc2

@@ -24,6 +24,7 @@ typedef struct NgSceneDesc {
   bool alive;
 } NgSceneDesc;
 
+// agent: composer-2.5 | 2026-07-30 | inst store lin ang vel | 779394
 typedef struct NgSceneInst {
   bool alive;
   int handle;
@@ -37,6 +38,9 @@ typedef struct NgSceneInst {
   float pos[3];
   float rot[3];
   float scale;
+  float lin_vel[3];
+  float ang_vel[3];
+  double state_time;
   float phase;
   uint32_t world_id;
   uint32_t comp_dirty;
@@ -110,3 +114,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 #endif
 // agent: composer-2.5 | 2026-07-29 | instance primary spawn registry | d3e238
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
+// agent: composer-2.5 | 2026-07-30 | inst store lin ang vel | 779394

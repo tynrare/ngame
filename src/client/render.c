@@ -198,6 +198,30 @@ static void mod_render_update_camera(ModRenderCtx *ctx) {
 static float mod_render_lerp(float a, float b, float t) { return a + (b - a) * t; }
 
 // agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
+// agent: composer-2.5 | 2026-07-30 | overlay connecting status | 0d072a
+static bool mod_render_remote_connecting(char *out, size_t cap) {
+#if defined(NG_HAS_EMBEDDED)
+  char up_host[64] = {0};
+  uint16_t up_port = 0;
+  mod_net_upstream_endpoint(up_host, sizeof(up_host), &up_port);
+  if (up_host[0] == '\0' || up_port == 0) {
+    return false;
+  }
+  if (mod_scene_view_is_loaded()) {
+    return false;
+  }
+  if (out && cap > 0) {
+    snprintf(out, cap, "connecting at %s:%u (%.1fs)", up_host, up_port,
+             mod_net_connect_elapsed());
+  }
+  return true;
+#else
+  (void)out;
+  (void)cap;
+  return false;
+#endif
+}
+
 static const char *mod_render_authoritative_label(ModRenderCtx *ctx) {
   mod_scene_runtime_use_view();
   const char *view_id = mod_scene_view_current_id();
@@ -210,7 +234,12 @@ static const char *mod_render_authoritative_label(ModRenderCtx *ctx) {
 }
 
 static void mod_render_draw_overlay(const char *label, int y) {
-  DrawText(TextFormat("scene: %s", label ? label : "?"), 10, y, 20, RAYWHITE);
+  char connecting[128];
+  if (mod_render_remote_connecting(connecting, sizeof(connecting))) {
+    DrawText(connecting, 10, y, 20, RAYWHITE);
+  } else {
+    DrawText(TextFormat("scene: %s", label ? label : "?"), 10, y, 20, RAYWHITE);
+  }
   const char *banner = mod_scene_native_banner();
   if (banner) {
     DrawText(banner, 10, y + 24, 18, YELLOW);
@@ -242,6 +271,7 @@ static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type,
 }
 
 static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *inst) {
+  // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
   RenderAsset *a = mod_render_asset_for_model(ctx, inst->model);
   if (!a) {
     return;
@@ -251,8 +281,30 @@ static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *ins
   if (mod_scene_assets_resolve_model(inst->model, &resolved) && resolved.ok) {
     type = mod_scene_assets_entity_type_for_kind(resolved.mesh_kind);
   }
-  mod_render_draw_entity_live(a, type, inst->pos[0], inst->pos[1], inst->pos[2], inst->rot,
-                              inst->scale, inst->phase);
+  float x = inst->pos[0];
+  float y = inst->pos[1];
+  float z = inst->pos[2];
+  float rot[3] = {inst->rot[0], inst->rot[1], inst->rot[2]};
+  const float lin2 = inst->lin_vel[0] * inst->lin_vel[0] + inst->lin_vel[1] * inst->lin_vel[1] +
+                     inst->lin_vel[2] * inst->lin_vel[2];
+  const float ang2 = inst->ang_vel[0] * inst->ang_vel[0] + inst->ang_vel[1] * inst->ang_vel[1] +
+                     inst->ang_vel[2] * inst->ang_vel[2];
+  if ((lin2 > 1e-6f || ang2 > 1e-6f) && inst->state_time > 0.0) {
+    float age = (float)(GetTime() - inst->state_time);
+    if (age < 0.0f) {
+      age = 0.0f;
+    }
+    if (age > 0.12f) {
+      age = 0.12f;
+    }
+    x += inst->lin_vel[0] * age;
+    y += inst->lin_vel[1] * age;
+    z += inst->lin_vel[2] * age;
+    rot[0] += inst->ang_vel[0] * age;
+    rot[1] += inst->ang_vel[1] * age;
+    rot[2] += inst->ang_vel[2] * age;
+  }
+  mod_render_draw_entity_live(a, type, x, y, z, rot, inst->scale, inst->phase);
 }
 
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
@@ -269,15 +321,18 @@ static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
 }
 
 static void mod_render_draw_waiting(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-07-30 | remote waiting status text | 1abeff
   ClearBackground(BLACK);
-  char line[160];
-  if (!mod_net_is_connected()) {
-    snprintf(line, sizeof(line), "gateway: waiting for local server...");
+  char line[192];
+  if (mod_render_remote_connecting(line, sizeof(line))) {
+    /* connecting at host:port (time) */
+  } else if (!mod_net_is_connected()) {
+    snprintf(line, sizeof(line), "Starting local play — waiting for the loopback link...");
   } else {
-    snprintf(line, sizeof(line), "gateway: waiting for snapshot...");
+    snprintf(line, sizeof(line), "Waiting for the local world to load...");
   }
   (void)ctx;
-  DrawText(line, 20, 20, 18, GRAY);
+  DrawText(line, 20, 20, 18, RAYWHITE);
 }
 
 static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
@@ -438,8 +493,11 @@ static bool mod_render_on_msg(const NgMsg *msg, void *vctx) {
     }
     return true;
   case NG_MSG_DRAW:
-    if (ctx->have_curr || ctx->have_session || mod_scene_view_is_loaded() ||
-        (mod_net_is_authoritative() && mod_scene_is_loaded())) {
+    // Prefer waiting UI while a remote join has not received a view yet.
+    if (mod_render_remote_connecting(NULL, 0)) {
+      mod_render_draw_waiting(ctx);
+    } else if (ctx->have_curr || ctx->have_session || mod_scene_view_is_loaded() ||
+               (mod_net_is_authoritative() && mod_scene_is_loaded())) {
       mod_render_draw_scene(ctx);
     } else {
       mod_render_draw_waiting(ctx);
@@ -523,3 +581,6 @@ void mod_render_visibility_text(char *out, size_t cap) {
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
 // agent: composer-2.5 | 2026-07-29 | draw entities via model transform | 1415d8
 // agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 220dba
+// agent: composer-2.5 | 2026-07-30 | remote waiting status text | 1abeff
+// agent: composer-2.5 | 2026-07-30 | overlay connecting status | 0d072a
+// agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348

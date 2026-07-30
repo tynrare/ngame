@@ -97,7 +97,8 @@ set(NG_SERVER_SOURCES
 )
 
 if(EMSCRIPTEN)
-  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_loopback.c)
+  # agent: composer-2.5 | 2026-07-30 | link agent stubs on web | 1fca96
+  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_loopback.c src/server/agent_web.c)
   set(NG_NET_DEFS NG_HAS_EMBEDDED GRAPHICS_API_OPENGL_ES3)
   set(NG_RES_ROOT_DEF NG_RES_ROOT=\"/res/\")
 else()
@@ -202,3 +203,4 @@ endif()
 # agent: composer-2.5 | 2026-07-29 | link local box3d library | 32efd8
 # agent: composer-2.5 | 2026-07-29 | lockstep ffp contract cmake | 78f312
 # agent: composer-2.5 | 2026-07-30 | default build ngame only | 061ecb
+# agent: composer-2.5 | 2026-07-30 | link agent stubs on web | 1fca96

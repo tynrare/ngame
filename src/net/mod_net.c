@@ -79,6 +79,13 @@ typedef struct ModNetCtx {
   uint16_t assigned_agent_port;
   bool register_pending;
   bool console_cmd_pending;
+  // agent: composer-2.5 | 2026-07-30 | async upstream connect status | 421223
+  int upstream_phase; /* 0 none, 1 connecting, 2 registering, 3 waiting scene, 4 ready, 5 lost */
+  int upstream_phase_logged;
+  bool upstream_register_sent;
+  bool upstream_was_connected;
+  double upstream_phase_t0;
+  double upstream_last_hint_log;
 #endif
 #if defined(NG_SERVER)
   NgWsServer *ws;
@@ -757,7 +764,13 @@ static void mod_net_handle_upstream_packet(NgNet *net, NgNetPeer *peer, const ui
     }
     ctx->assigned_agent_port = ack.agent_port;
     ctx->register_pending = false;
-    NG_LOG_INFO("upstream register ack peer=%u agent=%u", ack.peer_id, ack.agent_port);
+    // agent: composer-2.5 | 2026-07-30 | async upstream connect status | 421223
+    NG_LOG_INFO("Registered with the game server (peer %u). Waiting for the world...",
+                ack.peer_id);
+    if (ctx->upstream_phase < 3) {
+      ctx->upstream_phase = 3;
+      ctx->upstream_phase_t0 = GetTime();
+    }
     break;
   }
   case NG_PKT_SESSION:
@@ -824,13 +837,38 @@ bool mod_net_gateway_upstream_cmd(const char *line, char *reply, size_t reply_ca
 }
 
 void mod_net_gateway_status_text(char *out, size_t cap) {
+  // agent: composer-2.5 | 2026-07-30 | human upstream status text | 84c654
   if (!out || cap == 0) {
     return;
   }
   ModNetCtx *ctx = &g_net_ctx;
-  snprintf(out, cap, "gateway upstream=%d agent=%u ready=%d",
-           mod_net_upstream_connected() ? 1 : 0, ctx->assigned_agent_port,
-           mod_render_has_snapshot() ? 1 : 0);
+  if (ctx->upstream_host[0] == '\0' || ctx->upstream_port == 0) {
+    snprintf(out, cap, "Playing offline (no remote server).");
+    return;
+  }
+  switch (ctx->upstream_phase) {
+  case 1:
+    snprintf(out, cap, "Connecting to %s:%u...", ctx->upstream_host, ctx->upstream_port);
+    break;
+  case 2:
+    snprintf(out, cap, "Connected to %s:%u — registering...", ctx->upstream_host,
+             ctx->upstream_port);
+    break;
+  case 3:
+    snprintf(out, cap, "Connected to %s:%u — loading world...", ctx->upstream_host,
+             ctx->upstream_port);
+    break;
+  case 4:
+    snprintf(out, cap, "Connected to %s:%u.", ctx->upstream_host, ctx->upstream_port);
+    break;
+  case 5:
+    snprintf(out, cap, "Not connected to %s:%u.", ctx->upstream_host, ctx->upstream_port);
+    break;
+  default:
+    snprintf(out, cap, "Looking up game server %s:%u...", ctx->upstream_host,
+             ctx->upstream_port);
+    break;
+  }
 }
 #endif
 
@@ -1575,57 +1613,124 @@ void mod_net_gateway_resync(void) {
   mod_net_client_recv(ctx);
 }
 
-static bool mod_net_gateway_register(ModNetCtx *ctx) {
-  if (!ctx || !ctx->net_upstream) {
-    return false;
+// agent: composer-2.5 | 2026-07-30 | async upstream connect status | 421223
+static void mod_net_upstream_send_register(ModNetCtx *ctx) {
+  if (!ctx || !ctx->net_upstream || !ng_net_connected(ctx->net_upstream)) {
+    return;
   }
-  const double deadline = GetTime() + 5.0;
-  while (!ng_net_connected(ctx->net_upstream) && GetTime() < deadline) {
-    ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
-    usleep(1000);
+  if (ctx->upstream_register_sent || ctx->assigned_agent_port != 0) {
+    return;
   }
-  if (!ng_net_connected(ctx->net_upstream)) {
-    NG_LOG_WARN("upstream not connected for register");
-    return false;
-  }
-
   NgRegisterReq req = {0};
   snprintf(req.name, sizeof(req.name), "gateway-%d", (int)getpid());
   req.proto_ver = NG_PROTO_VERSION;
   if (!ng_proto_encode_register(&ctx->tx_buf, ++ctx->seq, &req)) {
-    return false;
+    NG_LOG_ERROR("Could not build the registration packet for the game server.");
+    return;
   }
   ctx->register_pending = true;
+  ctx->upstream_register_sent = true;
+  ctx->upstream_phase = 2;
+  ctx->upstream_phase_t0 = GetTime();
   ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
   ng_net_flush(ctx->net_upstream);
+  NG_LOG_INFO("Link is up to %s:%u — introducing this client to the server...",
+              ctx->upstream_host, ctx->upstream_port);
+}
 
-  while (ctx->register_pending && GetTime() < deadline) {
-    ng_net_poll_wait(ctx->net_upstream, mod_net_handle_upstream_packet, ctx, 1);
+static void mod_net_upstream_log_phase(ModNetCtx *ctx, int phase) {
+  if (!ctx || phase == ctx->upstream_phase_logged) {
+    return;
   }
-  if (ctx->assigned_agent_port == 0) {
-    NG_LOG_WARN("upstream register ack timeout");
-    return false;
+  ctx->upstream_phase_logged = phase;
+  switch (phase) {
+  case 1:
+    NG_LOG_INFO("Connecting to the game server at %s:%u...", ctx->upstream_host,
+                ctx->upstream_port);
+    break;
+  case 2:
+    /* logged in send_register */
+    break;
+  case 3:
+    /* detailed register log already printed */
+    break;
+  case 4:
+    NG_LOG_INFO("Connected to %s:%u — world is ready.", ctx->upstream_host, ctx->upstream_port);
+    break;
+  case 5:
+    NG_LOG_WARN("Not connected to the game server at %s:%u.", ctx->upstream_host,
+                ctx->upstream_port);
+    break;
+  default:
+    break;
   }
-  return true;
+}
+
+static void mod_net_upstream_tick(ModNetCtx *ctx) {
+  if (!ctx || !ctx->gateway || ctx->upstream_host[0] == '\0' || ctx->upstream_port == 0) {
+    return;
+  }
+  if (!ctx->net_upstream) {
+    ctx->upstream_phase = 5;
+    mod_net_upstream_log_phase(ctx, 5);
+    return;
+  }
+
+  const bool connected = ng_net_connected(ctx->net_upstream);
+  const double now = GetTime();
+
+  if (connected) {
+    if (!ctx->upstream_was_connected) {
+      ctx->upstream_was_connected = true;
+      NG_LOG_INFO("Connected to the game server at %s:%u.", ctx->upstream_host,
+                  ctx->upstream_port);
+    }
+    mod_net_upstream_send_register(ctx);
+    if (ctx->assigned_agent_port != 0) {
+      if (mod_scene_view_is_loaded() || ctx->have_baseline) {
+        ctx->upstream_phase = 4;
+      } else if (ctx->upstream_phase < 3) {
+        ctx->upstream_phase = 3;
+        ctx->upstream_phase_t0 = now;
+      }
+    } else if (ctx->upstream_register_sent) {
+      ctx->upstream_phase = 2;
+    } else {
+      ctx->upstream_phase = 2;
+    }
+  } else {
+    if (ctx->upstream_was_connected) {
+      ctx->upstream_was_connected = false;
+      ctx->upstream_register_sent = false;
+      ctx->register_pending = false;
+      ctx->assigned_agent_port = 0;
+      ctx->upstream_phase = 5;
+      NG_LOG_WARN("Lost connection to the game server at %s:%u.", ctx->upstream_host,
+                  ctx->upstream_port);
+    } else if (ctx->upstream_phase != 5) {
+      ctx->upstream_phase = 1;
+      if (now - ctx->upstream_last_hint_log >= 2.0) {
+        ctx->upstream_last_hint_log = now;
+        const double waited = now - ctx->upstream_phase_t0;
+        NG_LOG_INFO("Still connecting to %s:%u (%.0fs)... is the server running?",
+                    ctx->upstream_host, ctx->upstream_port, waited);
+      }
+    }
+  }
+
+  mod_net_upstream_log_phase(ctx, ctx->upstream_phase);
 }
 
 void mod_net_gateway_sync_view(void) {
-  // agent: composer-2.5 | 2026-07-29 | drain upstream view sync | 2705b6
-  // agent: composer-2.5 | 2026-07-30 | sync_view exit on view load | 6c2018
+  // agent: composer-2.5 | 2026-07-30 | nonblock sync view drain | 3995f3
+  /* Non-blocking: one poll pass. Frame loop finishes sync without freezing. */
   ModNetCtx *ctx = &g_net_ctx;
-  if (!ctx->gateway || !ctx->net_upstream || !ng_net_connected(ctx->net_upstream)) {
+  if (!ctx->gateway || !ctx->net_upstream) {
     return;
   }
-  const double deadline = GetTime() + 5.0;
-  while (GetTime() < deadline) {
-    ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
-    mod_net_client_recv(ctx);
-    /* Late-join sends SESSION+PHYS, not SNAPSHOT — don't require have_baseline. */
-    if (mod_scene_view_is_loaded() || ctx->have_baseline) {
-      return;
-    }
-    usleep(1000);
-  }
+  ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
+  mod_net_client_recv(ctx);
+  mod_net_upstream_tick(ctx);
 }
 #endif
 
@@ -1681,12 +1786,23 @@ static bool mod_net_init(void *vctx) {
     ng_net_set_peer_fn(ctx->net, mod_net_on_peer, ctx);
     ng_net_loopback_connect(ctx->loopback);
     if (ctx->upstream_host[0] != '\0' && ctx->upstream_port != 0) {
+      // agent: composer-2.5 | 2026-07-30 | async upstream connect status | 421223
+      ctx->upstream_phase = 1;
+      ctx->upstream_phase_logged = 0;
+      ctx->upstream_phase_t0 = GetTime();
+      ctx->upstream_last_hint_log = 0.0;
+      ctx->upstream_register_sent = false;
+      ctx->upstream_was_connected = false;
+      NG_LOG_INFO("Connecting to the game server at %s:%u...", ctx->upstream_host,
+                  ctx->upstream_port);
+      ctx->upstream_phase_logged = 1;
       ctx->net_upstream =
           ng_net_create(NG_NET_ROLE_CLIENT, ctx->upstream_host, ctx->upstream_port);
       if (!ctx->net_upstream) {
-        NG_LOG_WARN("upstream connect failed %s:%u", ctx->upstream_host, ctx->upstream_port);
-      } else if (!mod_net_gateway_register(ctx)) {
-        NG_LOG_WARN("upstream register failed %s:%u", ctx->upstream_host, ctx->upstream_port);
+        ctx->upstream_phase = 5;
+        NG_LOG_WARN("Could not start a connection to %s:%u.", ctx->upstream_host,
+                    ctx->upstream_port);
+        ctx->upstream_phase_logged = 5;
       }
     }
     if (!g_connect_t0_set) {
@@ -1796,6 +1912,8 @@ void mod_net_gateway_host_poll(void) {
     ng_net_flush(ctx->net_upstream);
     mod_net_client_recv(ctx);
   }
+  // agent: composer-2.5 | 2026-07-30 | async upstream connect status | 421223
+  mod_net_upstream_tick(ctx);
 }
 #endif
 
@@ -1937,11 +2055,10 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
 }
 
 static void mod_net_flush_state_update(ModNetCtx *ctx) {
-  // agent: composer-2.5 | 2026-07-30 | lockstep skip transform wire | 353d7b
-  /* Lockstep bodies are local-only — never emit STATE_UPDATE bandwidth. */
+  // agent: composer-2.5 | 2026-07-30 | dual channel lockstep state flush | 611cd9
+  /* Lockstep channel: inputs/acks/hashes. Transform channel: bodiless sync entities. */
   if (mod_lockstep_active()) {
     mod_net_flush_lockstep(ctx);
-    return;
   }
   if (!mod_scene_is_loaded()) {
     return;
@@ -2001,12 +2118,7 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
 }
 
 void mod_net_flush_scene_updates(void) {
-  // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
-  /* flush_state_update already runs lockstep when active — do not double-flush. */
-  if (mod_lockstep_active()) {
-    mod_net_flush_lockstep(&g_net_ctx);
-    return;
-  }
+  // agent: composer-2.5 | 2026-07-30 | flush lockstep and state updates | 84dae7
   mod_net_flush_state_update(&g_net_ctx);
 }
 
@@ -2064,3 +2176,8 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-30 | send READY via upstream link | 183632
 // agent: composer-2.5 | 2026-07-30 | sync_view exit on view load | 6c2018
 // agent: composer-2.5 | 2026-07-30 | flush late-join connect immediately | fc4cb2
+// agent: composer-2.5 | 2026-07-30 | async upstream connect status | 421223
+// agent: composer-2.5 | 2026-07-30 | human upstream status text | 84c654
+// agent: composer-2.5 | 2026-07-30 | nonblock sync view drain | 3995f3
+// agent: composer-2.5 | 2026-07-30 | dual channel lockstep state flush | 611cd9
+// agent: composer-2.5 | 2026-07-30 | flush lockstep and state updates | 84dae7

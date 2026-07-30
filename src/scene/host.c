@@ -1232,15 +1232,16 @@ static void mod_scene_run_entity_fixed_steps(ModSceneCtx *ctx, float fixed_dt) {
   if (!ctx->ctx) {
     return;
   }
+  // agent: composer-2.5 | 2026-07-30 | fixed_step body vs sync | 5afc64
   const bool on_server = mod_scene_is_server();
-  const bool lockstep = mod_scene_physics_is_lockstep();
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
     if (!inst) {
       continue;
     }
-    if (!lockstep) {
+    /* Lockstep bodies run on every peer; bodiless follow entity.sync (cube rules). */
+    if (!mod_scene_lockstep_body(inst->body)) {
       if (on_server) {
         if (inst->sync != NG_SYNC_SERVER) {
           continue;
@@ -1287,8 +1288,8 @@ static void mod_scene_fixed_step_ctx(ModSceneCtx *ctx, float fixed_dt) {
   mod_scene_run_entity_fixed_steps(ctx, fixed_dt);
   mod_scene_physics_fixed_step(fixed_dt, mod_scene_is_server(), ctx->is_controller);
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
-  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
-  if (mod_scene_is_server() && !mod_scene_physics_is_lockstep()) {
+  // agent: composer-2.5 | 2026-07-30 | apply_remote skip lockstep bodies | 7b8dd8
+  if (mod_scene_is_server()) {
     mod_scene_mirror_server(mod_sim_world());
   }
 #endif
@@ -1524,11 +1525,8 @@ bool mod_scene_is_controller(void) {
 
 bool mod_scene_can_author(NgSyncMode sync) {
   // agent: composer-2.5 | 2026-07-29 | author uses active runtime | b3f7a1
-  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
-  if (mod_scene_physics_is_lockstep()) {
-    (void)sync;
-    return false;
-  }
+  // agent: composer-2.5 | 2026-07-30 | narrow can_author lockstep bodies | 5153b8
+  /* Lockstep only owns physics bodies; bodiless shared/owner still author transforms. */
   if (sync == NG_SYNC_SHARED) {
     return true;
   }
@@ -1618,13 +1616,22 @@ void mod_scene_view_on_session(const NgSessionState *session) {
   mod_scene_on_session_ctx(mod_scene_runtime_scene(), session, true);
 }
 
+static bool mod_scene_update_is_lockstep_body(const NgStateUpdate *update) {
+  // agent: composer-2.5 | 2026-07-30 | apply_remote skip lockstep bodies | 7b8dd8
+  if (!update || !mod_scene_physics_is_lockstep()) {
+    return false;
+  }
+  NgSceneInst *inst = mod_scene_graph_inst_by_id(update->entity_id);
+  return inst && mod_scene_lockstep_body(inst->body);
+}
+
 void mod_scene_apply_remote(const NgStateUpdate *update) {
   mod_scene_runtime_use_server();
   if (!update || !NG_SCENE_ACTIVE()->loaded) {
     return;
   }
-  // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
-  if (mod_scene_physics_is_lockstep()) {
+  // agent: composer-2.5 | 2026-07-30 | apply_remote skip lockstep bodies | 7b8dd8
+  if (mod_scene_update_is_lockstep_body(update)) {
     return;
   }
   mod_scene_graph_apply_update(update);
@@ -1635,10 +1642,18 @@ void mod_scene_view_apply_remote(const NgStateUpdate *update) {
   if (!update || !NG_SCENE_ACTIVE()->loaded) {
     return;
   }
-  if (mod_scene_physics_is_lockstep()) {
+  // agent: composer-2.5 | 2026-07-30 | apply_remote skip lockstep bodies | 7b8dd8
+  if (mod_scene_update_is_lockstep_body(update)) {
     return;
   }
   mod_scene_graph_apply_update(update);
+#if !defined(NG_SERVER)
+  // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
+  NgSceneInst *inst = mod_scene_graph_inst_by_id(update->entity_id);
+  if (inst) {
+    inst->state_time = GetTime();
+  }
+#endif
 }
 
 // agent: composer-2.5 | 2026-07-29 | flush shared from view graph | c8e4f0
@@ -1646,12 +1661,11 @@ static bool mod_scene_take_flush_active(NgStateUpdate *out) {
   if (!out || !NG_SCENE_ACTIVE()->loaded) {
     return false;
   }
-  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
-  const bool lockstep = mod_scene_physics_is_lockstep();
+  // agent: composer-2.5 | 2026-07-30 | take_flush lockstep bodies only | bf6a08
   NgStateUpdate tmp;
   while (mod_scene_graph_take_dirty(&tmp)) {
     NgSceneInst *inst = mod_scene_graph_inst_by_id(tmp.entity_id);
-    if (lockstep && inst && mod_scene_lockstep_body(inst->body)) {
+    if (inst && mod_scene_lockstep_body(inst->body)) {
       continue;
     }
     if (inst && mod_scene_can_author(inst->sync)) {
@@ -1824,10 +1838,7 @@ void mod_scene_mirror_server(NgWorld *w) {
   if (!w || !NG_SCENE_ACTIVE()->loaded) {
     return;
   }
-  // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
-  if (mod_scene_physics_is_lockstep()) {
-    return;
-  }
+  // agent: composer-2.5 | 2026-07-30 | apply_remote skip lockstep bodies | 7b8dd8
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     const NgSceneInst *cinst = mod_scene_graph_inst_at(i);
@@ -1836,6 +1847,10 @@ void mod_scene_mirror_server(NgWorld *w) {
     }
     NgSceneInst *inst = mod_scene_graph_inst_by_handle(cinst->handle);
     if (!inst || inst->sync != NG_SYNC_SERVER) {
+      continue;
+    }
+    /* Lockstep physics bodies stay off the transform mirror path. */
+    if (mod_scene_lockstep_body(inst->body)) {
       continue;
     }
     NgSceneResolvedModel resolved;
@@ -2030,6 +2045,37 @@ static bool mod_scene_lockstep_hash_smoke(void) {
       ok = false;
     }
   }
+  // agent: composer-2.5 | 2026-07-30 | lockstep dual channel flush smoke | 26e91c
+  /* Dual-channel: bodiless shared still flushes; lockstep bodies never do.
+   * Smoke binary is NG_SERVER — take_flush only drains the server graph. */
+  if (ok && !mod_scene_can_author(NG_SYNC_SHARED)) {
+    ok = false;
+  }
+  if (ok) {
+    mod_scene_runtime_use_server();
+    NgSceneInst *box = mod_scene_graph_inst_by_key("box");
+    if (!box) {
+      ok = false;
+    } else {
+      char saved_body[32];
+      const NgSyncMode saved_sync = box->sync;
+      memcpy(saved_body, box->body, sizeof(saved_body));
+      box->body[0] = '\0';
+      box->sync = NG_SYNC_SHARED;
+      mod_scene_graph_mark_dirty(box, NG_COMP_POS);
+      NgStateUpdate u = {0};
+      if (!mod_scene_take_flush(&u) || u.entity_id != box->id) {
+        ok = false;
+      }
+      memcpy(box->body, saved_body, sizeof(box->body));
+      box->sync = NG_SYNC_SHARED;
+      mod_scene_graph_mark_dirty(box, NG_COMP_POS);
+      if (ok && mod_scene_take_flush(&u)) {
+        ok = false;
+      }
+      box->sync = saved_sync;
+    }
+  }
 
   mod_scene_runtime_use_view();
   mod_scene_unload(mod_scene_runtime_scene());
@@ -2041,12 +2087,32 @@ static bool mod_scene_lockstep_hash_smoke(void) {
 }
 
 bool mod_scene_smoke_test(void) {
-  return mod_scene_smoke_one("cube", "cube_a_e", false) &&
-         mod_scene_smoke_one("sphere", "sphere_a_e", true) &&
-         mod_scene_smoke_one("physics", "box_e", true) &&
-         mod_scene_smoke_one("owner", "owner_e", false) &&
-         mod_scene_smoke_one("local", NULL, false) &&
-         mod_scene_lockstep_hash_smoke();
+  // agent: composer-2.5 | 2026-07-30 | lockstep dual channel flush smoke | 26e91c
+  if (!mod_scene_smoke_one("cube", "cube_a_e", false)) {
+    fprintf(stderr, "smoke fail: cube\n");
+    return false;
+  }
+  if (!mod_scene_smoke_one("sphere", "sphere_a_e", true)) {
+    fprintf(stderr, "smoke fail: sphere\n");
+    return false;
+  }
+  if (!mod_scene_smoke_one("physics", "box_e", true)) {
+    fprintf(stderr, "smoke fail: physics\n");
+    return false;
+  }
+  if (!mod_scene_smoke_one("owner", "owner_e", false)) {
+    fprintf(stderr, "smoke fail: owner\n");
+    return false;
+  }
+  if (!mod_scene_smoke_one("local", NULL, false)) {
+    fprintf(stderr, "smoke fail: local\n");
+    return false;
+  }
+  if (!mod_scene_lockstep_hash_smoke()) {
+    fprintf(stderr, "smoke fail: lockstep_hash\n");
+    return false;
+  }
+  return true;
 }
 
 // agent: composer-2.5 | 2026-07-29 | spawn opts key ordinal match | 701175
@@ -2080,5 +2146,11 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | lockstep hash tick only | ca6913
 // agent: composer-2.5 | 2026-07-30 | lockstep own sim clock | 5e56e9
 // agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823
+// agent: composer-2.5 | 2026-07-30 | narrow can_author lockstep bodies | 5153b8
+// agent: composer-2.5 | 2026-07-30 | apply_remote skip lockstep bodies | 7b8dd8
+// agent: composer-2.5 | 2026-07-30 | fixed_step body vs sync | 5afc64
+// agent: composer-2.5 | 2026-07-30 | take_flush lockstep bodies only | bf6a08
+// agent: composer-2.5 | 2026-07-30 | lockstep dual channel flush smoke | 26e91c
+// agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
 
 // agent: composer-2.5 | 2026-07-30 | host session syncing join | c76f26

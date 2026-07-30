@@ -28,26 +28,44 @@ global.describe("entity", "box_e", { model: "box_mo", body: "box_body", func: Bo
 
 Units match box3d HelloWorld: gravity `(0,-10,0)`, ground half-extents `(50,10,50)` at `y=-10` (top at 0), dynamic cube half-extent `1` resting near `y=1`. Use `shaders/flat.fs` for solid meshes (`cube.fs` is a stripe demo shader).
 
-<!-- agent: composer-2.5 | 2026-07-29 | lockstep docs scenes | ea6409 -->
-### Lockstep sim
+<!-- agent: composer-2.5 | 2026-07-30 | docs dual-channel sim sync | 43d96e -->
+## Sim vs sync (two layers)
 
-Scene-level mode (one world mode per scene — do not mix with transform-authority bodies):
+| Layer | Scope | Flag | Wire |
+|-------|--------|------|------|
+| **Physics (`sim`)** | Entities **with** a `body` | Scene `sim: "lockstep"` or default `server` | Lockstep: inputs/acks/hash (+ late-join phys). Server: host Box3D + quantized pose/vel `STATE_UPDATE` |
+| **Entity (`sync`)** | Entities **without** a `body` (and non-lockstep bodies) | Entity `sync: shared\|owner\|server\|local` | Cube-compatible `STATE_UPDATE` (POS/ROT/SCALE) |
+
+```text
+entity.has_body  →  follow scene.sim
+entity.no_body   →  follow entity.sync   // same rules as cube.js
+```
+
+A lockstep physics scene may also host bodiless `shared` / `owner` props; those still author and apply transforms independently of the lockstep channel.
+
+### Lockstep sim (`sim: "lockstep"`)
 
 ```javascript
 global.describe("scene", "view", { sim: "lockstep", bg: {...}, camera: {...} });
 ```
 
-In lockstep, every peer creates and steps the same bodies; render uses local transforms (no `STATE_UPDATE` authority). Peers exchange empty tick-indexed `LOCK_INPUT` / `LOCK_ACK` (and optional `LOCK_HASH`) via the server relay, with ~100ms playout delay before the first step.
+Every peer creates and steps the same **bodies**; render uses local body transforms (no pose authority for those entities). Peers exchange tick-indexed `LOCK_INPUT` / `LOCK_ACK` (and optional `LOCK_HASH`) via the server relay, with ~100ms playout delay before the first step.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
 Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Simulation stalls while the joiner fetches.
 
-<!-- agent: composer-2.5 | 2026-07-30 | lockstep sync docs | 00d907 -->
-Entity `sync` / transform bandwidth are **ignored** for entities with a `body` while `sim: "lockstep"` is active: all peers spawn and step those bodies locally; no pose authority over the wire.
+Entity `sync` on bodies is **ignored** under lockstep (spawn/step/author). Net flush still sends `STATE_UPDATE` for bodiless entities.
 
 Agent: `lockstep_hash` returns the current physics transform checksum and tick.
 
-For non-lockstep scenes, body create/step follows entity sync: `server` on server host, `shared`/`local` on views, `owner` on controller. Do not mix local debris with networked bodies in one contact island.
+### Server sim (default)
+
+<!-- agent: composer-2.5 | 2026-07-30 | docs server pose vel stream | 0ab3f0 -->
+Omit `sim`, or use non-`lockstep` (implicit `server`): host runs Box3D for bodies according to entity sync (`server` on host, `shared`/`local` on views, `owner` on controller).
+
+Live replication uses `STATE_UPDATE` with quantized **pose + linear/angular velocity** (cm/s and mrad/s). At-rest bodies stop streaming. Views store the last sample and **extrapolate** draw pose for up to ~120 ms between packets. Clients do not create Box3D bodies for `sync: "server"`.
+
+Do not mix local debris with networked bodies in one contact island.
 
 ## Spawn (multi-instance)
 
@@ -69,12 +87,16 @@ Join matching: optional `key`, else ordinal among `spawn()` calls in `Scene.star
 
 ## Sync modes
 
+Applies to **bodiless** entities always, and to bodies when `sim` is not lockstep.
+
 | Mode | Create | Join / materialize | Author |
 |------|--------|--------------------|--------|
 | `shared` | every view | session match | all views |
 | `owner` | controller | all views from session | controller |
 | `server` | server | views from session | server |
 | `local` | each peer | not in session | local only |
+
+Under `sim: "lockstep"`, bodies ignore this table (all peers create/step locally).
 
 ## Helpers (optional)
 
@@ -100,5 +122,7 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-29 | document physics body fixed_step | 19851f -->
 <!-- agent: composer-2.5 | 2026-07-29 | lockstep docs scenes | ea6409 -->
 <!-- agent: composer-2.5 | 2026-07-30 | lockstep sync docs | 00d907 -->
+<!-- agent: composer-2.5 | 2026-07-30 | docs dual-channel sim sync | 43d96e -->
+<!-- agent: composer-2.5 | 2026-07-30 | docs server pose vel stream | 0ab3f0 -->
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->

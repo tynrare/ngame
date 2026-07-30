@@ -34,6 +34,7 @@ typedef struct NgSessionState {
   NgSessionSpawn spawns[NG_SESSION_SPAWN_MAX];
 } NgSessionState;
 
+// agent: composer-2.5 | 2026-07-30 | state update lin ang vel | 16a0ac
 typedef struct NgStateUpdate {
   uint32_t entity_id;
   uint16_t seq;
@@ -42,9 +43,12 @@ typedef struct NgStateUpdate {
   float pos[3];
   float rot[3];
   float scale;
+  float lin_vel[3];
+  float ang_vel[3];
 } NgStateUpdate;
 
 #endif
 // agent: composer-2.5 | 2026-07-29 | session spawn key transform | 9339a6
 // agent: composer-2.5 | 2026-07-29 | lockstep session sim flag | 8766dd
 // agent: composer-2.5 | 2026-07-30 | session syncing snap tick | 75da2a
+// agent: composer-2.5 | 2026-07-30 | state update lin ang vel | 16a0ac

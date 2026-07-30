@@ -124,7 +124,10 @@ void ng_app_client_init(int argc, char **argv) {
   }
 
   if (g_launch.use_upstream) {
+    // agent: composer-2.5 | 2026-07-30 | remote connect no freeze | c52f96
+    /* One non-blocking drain; connect/register/world continue in the frame loop. */
     mod_net_gateway_sync_view();
+    NG_LOG_INFO("Remote mode: drawing while we connect — watch the status line.");
   }
 
   mod_net_gateway_resync();
@@ -137,11 +140,18 @@ void ng_app_client_init(int argc, char **argv) {
 #else
   const uint16_t assigned_port = 0;
 #endif
-  NG_LOG_INFO("gateway client ready listen=%u assigned=%u upstream=%s", listen_port,
-              assigned_port, g_launch.use_upstream ? "yes" : "no");
+  if (g_launch.use_upstream) {
+    NG_LOG_INFO("Gateway is up. Joining %s:%u as a remote client...", g_launch.host,
+                g_launch.port);
+  } else {
+    NG_LOG_INFO("Gateway ready (offline/solo). agent listen=%u", listen_port);
+  }
+  (void)assigned_port;
 
-  if (!ng_app_client_bootstrap()) {
-    NG_LOG_WARN("gateway bootstrap: no snapshot yet");
+  if (!g_launch.use_upstream) {
+    if (!ng_app_client_bootstrap()) {
+      NG_LOG_WARN("Local world not ready yet — will keep trying in-frame.");
+    }
   }
 }
 
@@ -200,3 +210,4 @@ void ng_app_client_shutdown(void) {
 // agent: composer-2.5 | 2026-07-29 | poll console after BeginDrawing | a4b5c6
 // agent: composer-2.5 | 2026-07-29 | scene init before net upstream | eda89a
 // agent: composer-2.5 | 2026-07-29 | expose launch mode text | c7835e
+// agent: composer-2.5 | 2026-07-30 | remote connect no freeze | c52f96

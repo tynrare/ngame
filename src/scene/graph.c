@@ -443,6 +443,7 @@ void mod_scene_graph_mark_dirty(NgSceneInst *inst, uint32_t comp) {
 }
 
 bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
+  // agent: composer-2.5 | 2026-07-30 | take dirty apply vel | 22b8f6
   if (!out) {
     return false;
   }
@@ -455,7 +456,9 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
       inst->comp_dirty = 0;
       continue;
     }
-    const uint32_t wire_mask = inst->comp_dirty & (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE);
+    const uint32_t wire_mask =
+        inst->comp_dirty &
+        (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE | NG_COMP_LIN_VEL | NG_COMP_ANG_VEL);
     if (wire_mask == 0) {
       inst->comp_dirty = 0;
       continue;
@@ -477,6 +480,16 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
     }
     if (wire_mask & NG_COMP_SCALE) {
       out->scale = inst->scale;
+    }
+    if (wire_mask & NG_COMP_LIN_VEL) {
+      out->lin_vel[0] = inst->lin_vel[0];
+      out->lin_vel[1] = inst->lin_vel[1];
+      out->lin_vel[2] = inst->lin_vel[2];
+    }
+    if (wire_mask & NG_COMP_ANG_VEL) {
+      out->ang_vel[0] = inst->ang_vel[0];
+      out->ang_vel[1] = inst->ang_vel[1];
+      out->ang_vel[2] = inst->ang_vel[2];
     }
     inst->comp_dirty &= ~wire_mask;
     return true;
@@ -511,6 +524,17 @@ void mod_scene_graph_apply_update(const NgStateUpdate *update) {
     }
     if (update->comp_mask & NG_COMP_SCALE) {
       inst->scale = update->scale;
+    }
+    // agent: composer-2.5 | 2026-07-30 | take dirty apply vel | 22b8f6
+    if (update->comp_mask & NG_COMP_LIN_VEL) {
+      inst->lin_vel[0] = update->lin_vel[0];
+      inst->lin_vel[1] = update->lin_vel[1];
+      inst->lin_vel[2] = update->lin_vel[2];
+    }
+    if (update->comp_mask & NG_COMP_ANG_VEL) {
+      inst->ang_vel[0] = update->ang_vel[0];
+      inst->ang_vel[1] = update->ang_vel[1];
+      inst->ang_vel[2] = update->ang_vel[2];
     }
   }
   float pos[3] = {0}, rot[3] = {0};
@@ -577,4 +601,5 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 }
 // agent: composer-2.5 | 2026-07-29 | instance primary spawn registry | 9c2f5c
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | a88872
+// agent: composer-2.5 | 2026-07-30 | take dirty apply vel | 22b8f6
 // agent: composer-2.5 | 2026-07-29 | stable spawn key order | 091bfd

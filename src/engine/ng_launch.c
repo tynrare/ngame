@@ -68,9 +68,10 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
   if (!cfg) {
     return false;
   }
+  // agent: composer-2.5 | 2026-07-30 | web default solo mode | 74296b
   cfg->mode =
 #if defined(__EMSCRIPTEN__)
-      NG_LAUNCH_LOCAL;
+      NG_LAUNCH_SOLO;
 #else
       NG_LAUNCH_LOCAL;
 #endif
@@ -274,4 +275,4 @@ bool ng_launch_server_spawned(void) { return g_server_pid > 0; }
 
 // agent: composer-2.5 | 2026-07-29 | reuse running server | a3c7e4
 // agent: composer-2.5 | 2026-07-29 | default local sets upstream | c2d01b
-// agent: composer-2.5 | 2026-07-29 | default local sets upstream | c2d01b
+// agent: composer-2.5 | 2026-07-30 | web default solo mode | 74296b

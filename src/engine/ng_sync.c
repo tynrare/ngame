@@ -39,6 +39,11 @@ bool ng_sync_runs_on_client(NgSyncMode mode) {
 
 bool ng_sync_runs_on_server(NgSyncMode mode) { return mode == NG_SYNC_SERVER; }
 
+// agent: composer-2.5 | 2026-07-30 | posts wire includes server | cad507
 bool ng_sync_posts_wire(NgSyncMode mode) {
-  return mode == NG_SYNC_SHARED || mode == NG_SYNC_OWNER;
+  /* server: host-authored physics / transforms stream via STATE_UPDATE. */
+  return mode == NG_SYNC_SHARED || mode == NG_SYNC_OWNER || mode == NG_SYNC_SERVER;
 }
+
+// agent: composer-2.5 | 2026-07-26 | sync mode parse helpers | d4e5f6
+// agent: composer-2.5 | 2026-07-30 | posts wire includes server | cad507
