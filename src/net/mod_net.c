@@ -1352,6 +1352,10 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
         ps->pending_connect_snap = true;
       }
       ps->pending_connect_session = true;
+      // agent: composer-2.5 | 2026-07-30 | flush late-join connect immediately | fc4cb2
+      /* Don't wait for the next poll — joiner is blocked in sync_view. */
+      mod_net_send_connect_snapshot(net, peer, ctx);
+      ng_net_flush(net);
     } else {
       // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
       NG_LOG_INFO("lockstep: cold connect peer=%u (no mid-sim sync)", ps->peer_id);
@@ -1607,6 +1611,7 @@ static bool mod_net_gateway_register(ModNetCtx *ctx) {
 
 void mod_net_gateway_sync_view(void) {
   // agent: composer-2.5 | 2026-07-29 | drain upstream view sync | 2705b6
+  // agent: composer-2.5 | 2026-07-30 | sync_view exit on view load | 6c2018
   ModNetCtx *ctx = &g_net_ctx;
   if (!ctx->gateway || !ctx->net_upstream || !ng_net_connected(ctx->net_upstream)) {
     return;
@@ -1615,7 +1620,8 @@ void mod_net_gateway_sync_view(void) {
   while (GetTime() < deadline) {
     ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
     mod_net_client_recv(ctx);
-    if (ctx->have_baseline && mod_scene_view_is_loaded()) {
+    /* Late-join sends SESSION+PHYS, not SNAPSHOT — don't require have_baseline. */
+    if (mod_scene_view_is_loaded() || ctx->have_baseline) {
       return;
     }
     usleep(1000);
@@ -2056,3 +2062,5 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 8c64cd
 // agent: composer-2.5 | 2026-07-30 | forward LOCK packets upstream | 5e79c9
 // agent: composer-2.5 | 2026-07-30 | send READY via upstream link | 183632
+// agent: composer-2.5 | 2026-07-30 | sync_view exit on view load | 6c2018
+// agent: composer-2.5 | 2026-07-30 | flush late-join connect immediately | fc4cb2
