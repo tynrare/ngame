@@ -635,17 +635,91 @@ static duk_ret_t bind_dispose(duk_context *ctx) {
 static duk_ret_t bind_get_input(duk_context *ctx) {
   const int key = duk_require_int(ctx, 0);
   // agent: codex-5.3 | 2026-07-29 | expose W S input keys | a3a058
+  // agent: composer-2.5 | 2026-07-30 | get_input uses lockstep bits | 47960c
+  // agent: composer-2.5 | 2026-07-30 | get_input solo live fallback | 523e81
+  int buttons = mod_input_buttons();
+  if (mod_lockstep_active()) {
+    const uint32_t peer = mod_lockstep_local_peer_id();
+    const uint32_t tick = mod_lockstep_step_tick();
+    if (mod_lockstep_peer_count() <= 1) {
+      /* Solo / embedded: live keys (slots still filled for wire when peers join). */
+      buttons = mod_input_buttons();
+    } else if (mod_lockstep_have_input(peer, tick)) {
+      buttons = (int)mod_lockstep_bits_for(peer, tick);
+    } else {
+      buttons = 0;
+    }
+  }
   if (key == NG_SCENE_KEY_A) {
-    duk_push_boolean(ctx, (mod_input_buttons() & NG_INPUT_A) != 0);
+    duk_push_boolean(ctx, (buttons & NG_INPUT_A) != 0);
   } else if (key == NG_SCENE_KEY_D) {
-    duk_push_boolean(ctx, (mod_input_buttons() & NG_INPUT_D) != 0);
+    duk_push_boolean(ctx, (buttons & NG_INPUT_D) != 0);
   } else if (key == NG_SCENE_KEY_W) {
-    duk_push_boolean(ctx, (mod_input_buttons() & NG_INPUT_W) != 0);
+    duk_push_boolean(ctx, (buttons & NG_INPUT_W) != 0);
   } else if (key == NG_SCENE_KEY_S) {
-    duk_push_boolean(ctx, (mod_input_buttons() & NG_INPUT_S) != 0);
+    duk_push_boolean(ctx, (buttons & NG_INPUT_S) != 0);
   } else {
     duk_push_false(ctx);
   }
+  return 1;
+}
+
+// agent: composer-2.5 | 2026-07-30 | apply_impulse JS binding | b980ed
+static duk_ret_t bind_apply_impulse(duk_context *ctx) {
+  const int handle = duk_require_int(ctx, 0);
+  float ix = 0.0f, iy = 0.0f, iz = 0.0f;
+  if (duk_is_object(ctx, 1)) {
+    duk_get_prop_string(ctx, 1, "x");
+    ix = (float)duk_get_number(ctx, -1);
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, 1, "y");
+    iy = (float)duk_get_number(ctx, -1);
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, 1, "z");
+    iz = (float)duk_get_number(ctx, -1);
+    duk_pop(ctx);
+  } else {
+    ix = (float)duk_get_number(ctx, 1);
+    iy = (float)duk_get_number(ctx, 2);
+    iz = (float)duk_get_number(ctx, 3);
+  }
+  duk_push_boolean(ctx, mod_scene_physics_apply_impulse(handle, ix, iy, iz) ? 1 : 0);
+  return 1;
+}
+
+// agent: composer-2.5 | 2026-07-30 | apply force torque JS bindings | cd7a18
+static bool mod_scene_bind_read_vec3(duk_context *ctx, int idx, float *x, float *y, float *z) {
+  if (duk_is_object(ctx, idx)) {
+    duk_get_prop_string(ctx, idx, "x");
+    *x = (float)duk_get_number(ctx, -1);
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, idx, "y");
+    *y = (float)duk_get_number(ctx, -1);
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, idx, "z");
+    *z = (float)duk_get_number(ctx, -1);
+    duk_pop(ctx);
+    return true;
+  }
+  *x = (float)duk_get_number(ctx, idx);
+  *y = (float)duk_get_number(ctx, idx + 1);
+  *z = (float)duk_get_number(ctx, idx + 2);
+  return true;
+}
+
+static duk_ret_t bind_apply_force(duk_context *ctx) {
+  const int handle = duk_require_int(ctx, 0);
+  float fx = 0.0f, fy = 0.0f, fz = 0.0f;
+  mod_scene_bind_read_vec3(ctx, 1, &fx, &fy, &fz);
+  duk_push_boolean(ctx, mod_scene_physics_apply_force(handle, fx, fy, fz) ? 1 : 0);
+  return 1;
+}
+
+static duk_ret_t bind_apply_torque(duk_context *ctx) {
+  const int handle = duk_require_int(ctx, 0);
+  float tx = 0.0f, ty = 0.0f, tz = 0.0f;
+  mod_scene_bind_read_vec3(ctx, 1, &tx, &ty, &tz);
+  duk_push_boolean(ctx, mod_scene_physics_apply_torque(handle, tx, ty, tz) ? 1 : 0);
   return 1;
 }
 
@@ -932,6 +1006,11 @@ static void mod_scene_bind_global(duk_context *ctx) {
   BIND("despawn", bind_despawn, 1);
   BIND("dispose", bind_dispose, 2);
   BIND("get_input", bind_get_input, 1);
+  // agent: composer-2.5 | 2026-07-30 | apply_impulse JS binding | b980ed
+  // agent: composer-2.5 | 2026-07-30 | apply force torque JS bindings | cd7a18
+  BIND("apply_impulse", bind_apply_impulse, 4);
+  BIND("apply_force", bind_apply_force, 4);
+  BIND("apply_torque", bind_apply_torque, 4);
   // agent: codex-5.3 | 2026-07-29 | bind scene mouse raycast fn | b831e0
   BIND("raycast_plane_y", bind_raycast_plane_y, 1);
   // agent: composer-2.5 | 2026-07-29 | expose JS mouse position | 8a4c2f
@@ -1233,15 +1312,26 @@ static void mod_scene_run_entity_fixed_steps(ModSceneCtx *ctx, float fixed_dt) {
     return;
   }
   // agent: composer-2.5 | 2026-07-30 | fixed_step body vs sync | 5afc64
+  // agent: composer-2.5 | 2026-07-30 | skip view phys step lockstep | 890ea4
   const bool on_server = mod_scene_is_server();
+  /* In-process: view skips duplicate body scripts when server owns the world.
+   * Each network peer still runs input→force→step on its phys owner. */
+  const bool lockstep_view_skip =
+      mod_scene_physics_is_lockstep() && ctx == &g_scene_view.scene &&
+      g_scene_server.scene.loaded && g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP;
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
     if (!inst) {
       continue;
     }
-    /* Lockstep bodies run on every peer; bodiless follow entity.sync (cube rules). */
-    if (!mod_scene_lockstep_body(inst->body)) {
+    /* Lockstep bodies: run on phys owner only (avoid double torque in one process). */
+    if (mod_scene_lockstep_body(inst->body)) {
+      if (lockstep_view_skip) {
+        continue;
+      }
+    } else {
+      /* Bodiless follow entity.sync (cube rules). */
       if (on_server) {
         if (inst->sync != NG_SYNC_SERVER) {
           continue;
@@ -1282,11 +1372,17 @@ static void mod_scene_fixed_step_ctx(ModSceneCtx *ctx, float fixed_dt) {
   if (!ctx || !ctx->loaded || !ctx->started || ctx->native || !ctx->ctx) {
     return;
   }
+  // agent: composer-2.5 | 2026-07-30 | skip view phys step lockstep | 890ea4
   mod_scene_set_active_for(ctx);
   duk_push_number(ctx->ctx, fixed_dt);
   mod_scene_call_method(ctx, "fixed_step", 1);
   mod_scene_run_entity_fixed_steps(ctx, fixed_dt);
-  mod_scene_physics_fixed_step(fixed_dt, mod_scene_is_server(), ctx->is_controller);
+  const bool lockstep_view_skip =
+      mod_scene_physics_is_lockstep() && ctx == &g_scene_view.scene &&
+      g_scene_server.scene.loaded && g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP;
+  if (!lockstep_view_skip) {
+    mod_scene_physics_fixed_step(fixed_dt, mod_scene_is_server(), ctx->is_controller);
+  }
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   // agent: composer-2.5 | 2026-07-30 | apply_remote skip lockstep bodies | 7b8dd8
   if (mod_scene_is_server()) {
@@ -1297,6 +1393,7 @@ static void mod_scene_fixed_step_ctx(ModSceneCtx *ctx, float fixed_dt) {
 
 // agent: composer-2.5 | 2026-07-29 | server phys poses to view | c05110
 // agent: composer-2.5 | 2026-07-29 | server phys snapshot to view | d2d78d
+// agent: composer-2.5 | 2026-07-30 | push lockstep poses to view | 25fe35
 #if !defined(NG_SERVER)
 static void mod_scene_push_server_phys_to_view(void) {
   typedef struct {
@@ -1307,15 +1404,29 @@ static void mod_scene_push_server_phys_to_view(void) {
   } NgPhysPose;
   NgPhysPose poses[NG_SCENE_INST_MAX];
   int n = 0;
+  const bool lockstep = mod_scene_physics_is_lockstep() ||
+                        g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP;
   mod_scene_runtime_use_server();
   const int count = mod_scene_graph_inst_count();
   for (int i = 0; i < count && n < NG_SCENE_INST_MAX; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (!inst || inst->sync != NG_SYNC_SERVER || inst->body_id_bits == 0) {
+    if (!inst) {
+      continue;
+    }
+    /* sim:server — sync:server bodies; lockstep — any local body with Box3D. */
+    if (lockstep) {
+      if (inst->body_id_bits == 0 && inst->body[0] == '\0') {
+        continue;
+      }
+      if (inst->body_id_bits == 0) {
+        continue;
+      }
+    } else if (inst->sync != NG_SYNC_SERVER || inst->body_id_bits == 0) {
       continue;
     }
     poses[n].id = inst->id;
     strncpy(poses[n].key, inst->key, sizeof(poses[n].key) - 1);
+    poses[n].key[sizeof(poses[n].key) - 1] = '\0';
     poses[n].pos[0] = inst->pos[0];
     poses[n].pos[1] = inst->pos[1];
     poses[n].pos[2] = inst->pos[2];
@@ -1352,10 +1463,16 @@ static void mod_scene_push_server_phys_to_view(void) {
 static void mod_scene_fixed_step(void *vctx, float fixed_dt, uint32_t tick) {
   (void)vctx;
   (void)tick;
+  if (mod_lockstep_active()) {
+    mod_lockstep_set_step_tick(mod_lockstep_sim_tick() + 1u);
+  }
   mod_scene_fixed_step_ctx(&g_scene_server.scene, fixed_dt);
 #if !defined(NG_SERVER)
   // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
-  if (!mod_scene_physics_is_lockstep()) {
+  // agent: composer-2.5 | 2026-07-30 | push lockstep poses to view | 25fe35
+  /* Local mirror only: lockstep still runs on every peer; this copies one local world → view. */
+  if (!mod_scene_physics_is_lockstep() ||
+      (g_scene_server.scene.loaded && g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP)) {
     mod_scene_push_server_phys_to_view();
   }
 #endif
@@ -1366,6 +1483,9 @@ static void mod_scene_fixed_step(void *vctx, float fixed_dt, uint32_t tick) {
     uint32_t hash = 0;
     const uint32_t next = mod_lockstep_sim_tick() + 1u;
     mod_scene_runtime_use_server();
+    if (!g_scene_server.scene.loaded || g_scene_server.physics.sim_mode != NG_PHYS_SIM_LOCKSTEP) {
+      mod_scene_runtime_use_view();
+    }
     if (mod_scene_physics_is_lockstep() && next > 0 && (next % 60u) == 0u) {
       hash = mod_scene_physics_checksum();
     }
@@ -1648,10 +1768,15 @@ void mod_scene_view_apply_remote(const NgStateUpdate *update) {
   }
   mod_scene_graph_apply_update(update);
 #if !defined(NG_SERVER)
-  // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
+  // agent: composer-2.5 | 2026-07-30 | view apply push sample drive | 62a9c2
   NgSceneInst *inst = mod_scene_graph_inst_by_id(update->entity_id);
   if (inst) {
-    inst->state_time = GetTime();
+    const double now = GetTime();
+    mod_scene_graph_push_sample(inst, now);
+    if (inst->phys_proxy) {
+      mod_scene_physics_drive_proxy(inst->handle, inst->pos, inst->rot, inst->lin_vel,
+                                    inst->ang_vel);
+    }
   }
 #endif
 }
@@ -1959,6 +2084,7 @@ bool mod_scene_is_native(void) {
 }
 
 // agent: composer-2.5 | 2026-07-29 | lockstep smoke hash test | 258f24
+// agent: composer-2.5 | 2026-07-30 | smoke single world input bits | 373a09
 static bool mod_scene_lockstep_hash_smoke(void) {
   mod_lockstep_reset();
   ng_mod_set_fixed_gate(NULL);
@@ -1982,6 +2108,7 @@ static bool mod_scene_lockstep_hash_smoke(void) {
     mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
   }
 
+#if !defined(NG_SERVER)
   mod_scene_runtime_use_view();
   if (!mod_scene_begin("physics", false, true)) {
     mod_scene_runtime_use_server();
@@ -2007,9 +2134,46 @@ static bool mod_scene_lockstep_hash_smoke(void) {
     ctx->started = true;
     mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
   }
+  /* View must not own a second Box3D world when server slot is lockstep. */
+  {
+    NgSceneInst *vbox = mod_scene_graph_inst_by_key("box");
+    if (vbox && vbox->body_id_bits != 0) {
+      mod_scene_unload(mod_scene_runtime_scene());
+      mod_scene_runtime_use_server();
+      mod_scene_unload(mod_scene_runtime_scene());
+      return false;
+    }
+  }
+#endif
 
   mod_lockstep_reset();
   mod_scene_lockstep_restart(0);
+
+  // agent: composer-2.5 | 2026-07-30 | smoke next sim tick bits | e7550b
+  /* Gate must commit bits for sim_tick+1; step_tick must match. */
+  {
+    const NgLockGate g0 = mod_lockstep_gate();
+    if (g0 == NG_LOCK_GATE_STALL) {
+      mod_scene_runtime_use_server();
+      mod_scene_unload(mod_scene_runtime_scene());
+      return false;
+    }
+    const uint32_t next = mod_lockstep_sim_tick() + 1u;
+    mod_lockstep_set_step_tick(next);
+    if (!mod_lockstep_have_input(mod_lockstep_local_peer_id(), next)) {
+      mod_scene_runtime_use_server();
+      mod_scene_unload(mod_scene_runtime_scene());
+      return false;
+    }
+  }
+
+  /* Capture non-zero bits into a later slot (store_remote; server input stub is 0). */
+  mod_lockstep_store_remote_input(mod_lockstep_local_peer_id(), 2u, (uint8_t)(NG_INPUT_A | NG_INPUT_W));
+  if (mod_lockstep_bits_for(mod_lockstep_local_peer_id(), 2u) != (uint8_t)(NG_INPUT_A | NG_INPUT_W)) {
+    mod_scene_runtime_use_server();
+    mod_scene_unload(mod_scene_runtime_scene());
+    return false;
+  }
 
   bool ok = true;
   uint32_t sim_tick = 0;
@@ -2023,25 +2187,23 @@ static bool mod_scene_lockstep_hash_smoke(void) {
       break;
     }
     sim_tick++;
-    mod_scene_runtime_use_server();
-    mod_scene_physics_fixed_step(NG_MOD_FIXED_DT, true, true);
-    const uint32_t hs = mod_scene_physics_checksum();
-    mod_scene_runtime_use_view();
-    mod_scene_physics_fixed_step(NG_MOD_FIXED_DT, false, true);
-    const uint32_t hv = mod_scene_physics_checksum();
-    mod_lockstep_on_stepped(sim_tick, hs);
-    if (hs != hv) {
+    mod_lockstep_set_step_tick(sim_tick);
+    if (!mod_lockstep_have_input(mod_lockstep_local_peer_id(), sim_tick)) {
       ok = false;
       break;
     }
+    mod_scene_runtime_use_server();
+    mod_scene_physics_fixed_step(NG_MOD_FIXED_DT, true, true);
+    const uint32_t hs = mod_scene_physics_checksum();
+    mod_lockstep_on_stepped(sim_tick, hs);
   }
   if (ok && sim_tick < 120u) {
     ok = false;
   }
   if (ok) {
-    mod_scene_runtime_use_view();
+    mod_scene_runtime_use_server();
     NgSceneInst *box = mod_scene_graph_inst_by_key("box");
-    if (!box || fabsf(box->pos[1] - 1.0f) > 0.15f) {
+    if (!box || box->body_id_bits == 0 || fabsf(box->pos[1] - 1.0f) > 0.15f) {
       ok = false;
     }
   }
@@ -2077,8 +2239,10 @@ static bool mod_scene_lockstep_hash_smoke(void) {
     }
   }
 
+#if !defined(NG_SERVER)
   mod_scene_runtime_use_view();
   mod_scene_unload(mod_scene_runtime_scene());
+#endif
   mod_scene_runtime_use_server();
   mod_scene_unload(mod_scene_runtime_scene());
   mod_lockstep_reset();
@@ -2152,5 +2316,14 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | take_flush lockstep bodies only | bf6a08
 // agent: composer-2.5 | 2026-07-30 | lockstep dual channel flush smoke | 26e91c
 // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
+// agent: composer-2.5 | 2026-07-30 | view apply push sample drive | 62a9c2
 
 // agent: composer-2.5 | 2026-07-30 | host session syncing join | c76f26
+// agent: composer-2.5 | 2026-07-30 | skip view phys step lockstep | 890ea4
+// agent: composer-2.5 | 2026-07-30 | push lockstep poses to view | 25fe35
+// agent: composer-2.5 | 2026-07-30 | get_input uses lockstep bits | 47960c
+// agent: composer-2.5 | 2026-07-30 | get_input solo live fallback | 523e81
+// agent: composer-2.5 | 2026-07-30 | apply_impulse JS binding | b980ed
+// agent: composer-2.5 | 2026-07-30 | apply force torque JS bindings | cd7a18
+// agent: composer-2.5 | 2026-07-30 | smoke single world input bits | 373a09
+// agent: composer-2.5 | 2026-07-30 | smoke next sim tick bits | e7550b

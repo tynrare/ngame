@@ -219,12 +219,25 @@ static void mod_scene_physics_euler_from_quat(b3Quat q, float rot[3]) {
 
 bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync, bool on_server,
                               bool is_controller, const float pos[3], const float rot[3]) {
+  // agent: composer-2.5 | 2026-07-30 | kinematic proxy attach drive | a64b5e
+  // agent: composer-2.5 | 2026-07-30 | skip view attach under lockstep | dfc161
   NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
   if (!inst || !body_name || body_name[0] == '\0') {
     return false;
   }
   strncpy(inst->body, body_name, sizeof(inst->body) - 1);
-  if (!mod_scene_physics_should_simulate(sync, on_server, is_controller)) {
+  inst->phys_proxy = false;
+  /* One Box3D world per process under lockstep: view skips attach when server slot owns sim. */
+  if (mod_scene_physics_is_lockstep() && mod_scene_runtime_active() == &g_scene_view &&
+      g_scene_server.scene.loaded && g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP) {
+    inst->body_id_bits = 0;
+    return true;
+  }
+  const bool sim = mod_scene_physics_should_simulate(sync, on_server, is_controller);
+  /* View-side kinematic proxy for server-auth bodies (sim:server, not lockstep). */
+  const bool want_proxy = !sim && !mod_scene_physics_is_lockstep() && sync == NG_SYNC_SERVER &&
+                          !on_server;
+  if (!sim && !want_proxy) {
     inst->body_id_bits = 0;
     return true;
   }
@@ -243,7 +256,10 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
     return false;
   }
   b3BodyDef bodyDef = b3DefaultBodyDef();
-  if (bdesc->type == NG_PHYS_BODY_DYNAMIC) {
+  if (want_proxy) {
+    bodyDef.type = b3_kinematicBody;
+    inst->phys_proxy = true;
+  } else if (bdesc->type == NG_PHYS_BODY_DYNAMIC) {
     bodyDef.type = b3_dynamicBody;
   } else if (bdesc->type == NG_PHYS_BODY_KINEMATIC) {
     bodyDef.type = b3_kinematicBody;
@@ -258,7 +274,7 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
   }
   b3BoxHull box = b3MakeBoxHull(sdesc->hx, sdesc->hy, sdesc->hz);
   b3ShapeDef shapeDef = b3DefaultShapeDef();
-  shapeDef.density = sdesc->density;
+  shapeDef.density = want_proxy ? 0.0f : sdesc->density;
   shapeDef.baseMaterial.friction = sdesc->friction;
   b3CreateHullShape(bodyId, &shapeDef, &box.base);
   if (inst->key[0] != '\0') {
@@ -278,6 +294,71 @@ void mod_scene_physics_detach(int handle) {
     b3DestroyBody(id);
   }
   inst->body_id_bits = 0;
+  inst->phys_proxy = false;
+}
+
+void mod_scene_physics_drive_proxy(int handle, const float pos[3], const float rot[3],
+                                   const float lin_vel[3], const float ang_vel[3]) {
+  // agent: composer-2.5 | 2026-07-30 | kinematic proxy attach drive | a64b5e
+  NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
+  if (!inst || !inst->phys_proxy || inst->body_id_bits == 0) {
+    return;
+  }
+  b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+  if (!b3Body_IsValid(id)) {
+    return;
+  }
+  if (pos && rot) {
+    b3Body_SetTransform(id, (b3Pos){pos[0], pos[1], pos[2]},
+                        mod_scene_physics_quat_from_euler(rot));
+  }
+  if (lin_vel) {
+    b3Body_SetLinearVelocity(id, (b3Vec3){lin_vel[0], lin_vel[1], lin_vel[2]});
+  }
+  if (ang_vel) {
+    b3Body_SetAngularVelocity(id, (b3Vec3){ang_vel[0], ang_vel[1], ang_vel[2]});
+  }
+}
+
+// agent: composer-2.5 | 2026-07-30 | apply linear impulse helper | 3ee627
+bool mod_scene_physics_apply_impulse(int handle, float ix, float iy, float iz) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
+  if (!inst || inst->body_id_bits == 0 || inst->phys_proxy) {
+    return false;
+  }
+  b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+  if (!b3Body_IsValid(id)) {
+    return false;
+  }
+  b3Body_ApplyLinearImpulseToCenter(id, (b3Vec3){ix, iy, iz}, true);
+  return true;
+}
+
+// agent: composer-2.5 | 2026-07-30 | apply force and torque helpers | fc5a41
+bool mod_scene_physics_apply_force(int handle, float fx, float fy, float fz) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
+  if (!inst || inst->body_id_bits == 0 || inst->phys_proxy) {
+    return false;
+  }
+  b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+  if (!b3Body_IsValid(id)) {
+    return false;
+  }
+  b3Body_ApplyForceToCenter(id, (b3Vec3){fx, fy, fz}, true);
+  return true;
+}
+
+bool mod_scene_physics_apply_torque(int handle, float tx, float ty, float tz) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_handle(handle);
+  if (!inst || inst->body_id_bits == 0 || inst->phys_proxy) {
+    return false;
+  }
+  b3BodyId id = b3LoadBodyId(inst->body_id_bits);
+  if (!b3Body_IsValid(id)) {
+    return false;
+  }
+  b3Body_ApplyTorque(id, (b3Vec3){tx, ty, tz}, true);
+  return true;
 }
 
 uint32_t mod_scene_physics_checksum(void) {
@@ -533,3 +614,7 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 // agent: composer-2.5 | 2026-07-30 | physics export import names | 1b75f3
 // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 4775ae
 // agent: composer-2.5 | 2026-07-30 | physics emit vel sleep | 530cd0
+// agent: composer-2.5 | 2026-07-30 | kinematic proxy attach drive | a64b5e
+// agent: composer-2.5 | 2026-07-30 | skip view attach under lockstep | dfc161
+// agent: composer-2.5 | 2026-07-30 | apply linear impulse helper | 3ee627
+// agent: composer-2.5 | 2026-07-30 | apply force and torque helpers | fc5a41

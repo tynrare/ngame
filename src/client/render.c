@@ -271,7 +271,7 @@ static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type,
 }
 
 static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *inst) {
-  // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
+  // agent: composer-2.5 | 2026-07-30 | render hermite state samples | f452ba
   RenderAsset *a = mod_render_asset_for_model(ctx, inst->model);
   if (!a) {
     return;
@@ -281,30 +281,17 @@ static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *ins
   if (mod_scene_assets_resolve_model(inst->model, &resolved) && resolved.ok) {
     type = mod_scene_assets_entity_type_for_kind(resolved.mesh_kind);
   }
-  float x = inst->pos[0];
-  float y = inst->pos[1];
-  float z = inst->pos[2];
-  float rot[3] = {inst->rot[0], inst->rot[1], inst->rot[2]};
-  const float lin2 = inst->lin_vel[0] * inst->lin_vel[0] + inst->lin_vel[1] * inst->lin_vel[1] +
-                     inst->lin_vel[2] * inst->lin_vel[2];
-  const float ang2 = inst->ang_vel[0] * inst->ang_vel[0] + inst->ang_vel[1] * inst->ang_vel[1] +
-                     inst->ang_vel[2] * inst->ang_vel[2];
-  if ((lin2 > 1e-6f || ang2 > 1e-6f) && inst->state_time > 0.0) {
-    float age = (float)(GetTime() - inst->state_time);
-    if (age < 0.0f) {
-      age = 0.0f;
-    }
-    if (age > 0.12f) {
-      age = 0.12f;
-    }
-    x += inst->lin_vel[0] * age;
-    y += inst->lin_vel[1] * age;
-    z += inst->lin_vel[2] * age;
-    rot[0] += inst->ang_vel[0] * age;
-    rot[1] += inst->ang_vel[1] * age;
-    rot[2] += inst->ang_vel[2] * age;
+  float pos[3];
+  float rot[3];
+  if (!mod_scene_graph_sample_draw_pose(inst, GetTime(), 0.10f, pos, rot)) {
+    pos[0] = inst->pos[0];
+    pos[1] = inst->pos[1];
+    pos[2] = inst->pos[2];
+    rot[0] = inst->rot[0];
+    rot[1] = inst->rot[1];
+    rot[2] = inst->rot[2];
   }
-  mod_render_draw_entity_live(a, type, x, y, z, rot, inst->scale, inst->phase);
+  mod_render_draw_entity_live(a, type, pos[0], pos[1], pos[2], rot, inst->scale, inst->phase);
 }
 
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
@@ -584,3 +571,4 @@ void mod_render_visibility_text(char *out, size_t cap) {
 // agent: composer-2.5 | 2026-07-30 | remote waiting status text | 1abeff
 // agent: composer-2.5 | 2026-07-30 | overlay connecting status | 0d072a
 // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
+// agent: composer-2.5 | 2026-07-30 | render hermite state samples | f452ba

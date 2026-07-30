@@ -5,6 +5,7 @@
 #include "scene/runtime.h"
 #include "world/ng_world.h"
 #include "vendor/duktape.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -512,29 +513,59 @@ void mod_scene_graph_apply_update(const NgStateUpdate *update) {
       return;
     }
     inst->last_applied_seq = update->seq;
+    // agent: composer-2.5 | 2026-07-30 | take dirty apply vel | 22b8f6
+    // agent: composer-2.5 | 2026-07-30 | ack baseline encode apply | 1a55f8
+    const bool is_delta = (update->comp_mask & NG_COMP_FLAGS) != 0;
     if (update->comp_mask & NG_COMP_POS) {
-      inst->pos[0] = update->pos[0];
-      inst->pos[1] = update->pos[1];
-      inst->pos[2] = update->pos[2];
+      if (is_delta) {
+        inst->pos[0] += update->pos[0];
+        inst->pos[1] += update->pos[1];
+        inst->pos[2] += update->pos[2];
+      } else {
+        inst->pos[0] = update->pos[0];
+        inst->pos[1] = update->pos[1];
+        inst->pos[2] = update->pos[2];
+      }
     }
     if (update->comp_mask & NG_COMP_ROT) {
-      inst->rot[0] = update->rot[0];
-      inst->rot[1] = update->rot[1];
-      inst->rot[2] = update->rot[2];
+      if (is_delta) {
+        inst->rot[0] += update->rot[0];
+        inst->rot[1] += update->rot[1];
+        inst->rot[2] += update->rot[2];
+      } else {
+        inst->rot[0] = update->rot[0];
+        inst->rot[1] = update->rot[1];
+        inst->rot[2] = update->rot[2];
+      }
     }
     if (update->comp_mask & NG_COMP_SCALE) {
-      inst->scale = update->scale;
+      if (is_delta) {
+        inst->scale += update->scale;
+      } else {
+        inst->scale = update->scale;
+      }
     }
-    // agent: composer-2.5 | 2026-07-30 | take dirty apply vel | 22b8f6
     if (update->comp_mask & NG_COMP_LIN_VEL) {
-      inst->lin_vel[0] = update->lin_vel[0];
-      inst->lin_vel[1] = update->lin_vel[1];
-      inst->lin_vel[2] = update->lin_vel[2];
+      if (is_delta) {
+        inst->lin_vel[0] += update->lin_vel[0];
+        inst->lin_vel[1] += update->lin_vel[1];
+        inst->lin_vel[2] += update->lin_vel[2];
+      } else {
+        inst->lin_vel[0] = update->lin_vel[0];
+        inst->lin_vel[1] = update->lin_vel[1];
+        inst->lin_vel[2] = update->lin_vel[2];
+      }
     }
     if (update->comp_mask & NG_COMP_ANG_VEL) {
-      inst->ang_vel[0] = update->ang_vel[0];
-      inst->ang_vel[1] = update->ang_vel[1];
-      inst->ang_vel[2] = update->ang_vel[2];
+      if (is_delta) {
+        inst->ang_vel[0] += update->ang_vel[0];
+        inst->ang_vel[1] += update->ang_vel[1];
+        inst->ang_vel[2] += update->ang_vel[2];
+      } else {
+        inst->ang_vel[0] = update->ang_vel[0];
+        inst->ang_vel[1] = update->ang_vel[1];
+        inst->ang_vel[2] = update->ang_vel[2];
+      }
     }
   }
   float pos[3] = {0}, rot[3] = {0};
@@ -576,6 +607,236 @@ void mod_scene_graph_apply_update(const NgStateUpdate *update) {
   mod_scene_graph_registry_set_pose(update->entity_id, p, r, scale);
 }
 
+// agent: composer-2.5 | 2026-07-30 | push state sample ring | 19d0cd
+void mod_scene_graph_push_sample(NgSceneInst *inst, double t) {
+  if (!inst) {
+    return;
+  }
+  NgStateSample *s = &inst->samples[inst->sample_head % NG_STATE_SAMPLE_MAX];
+  s->t = t;
+  s->pos[0] = inst->pos[0];
+  s->pos[1] = inst->pos[1];
+  s->pos[2] = inst->pos[2];
+  s->rot[0] = inst->rot[0];
+  s->rot[1] = inst->rot[1];
+  s->rot[2] = inst->rot[2];
+  s->lin_vel[0] = inst->lin_vel[0];
+  s->lin_vel[1] = inst->lin_vel[1];
+  s->lin_vel[2] = inst->lin_vel[2];
+  s->ang_vel[0] = inst->ang_vel[0];
+  s->ang_vel[1] = inst->ang_vel[1];
+  s->ang_vel[2] = inst->ang_vel[2];
+  inst->sample_head = (uint8_t)((inst->sample_head + 1u) % NG_STATE_SAMPLE_MAX);
+  if (inst->sample_count < NG_STATE_SAMPLE_MAX) {
+    inst->sample_count++;
+  }
+  inst->state_time = t;
+}
+
+static const NgStateSample *mod_scene_graph_sample_at(const NgSceneInst *inst, int chron_idx) {
+  /* chron_idx 0 = oldest, sample_count-1 = newest */
+  if (!inst || chron_idx < 0 || chron_idx >= (int)inst->sample_count) {
+    return NULL;
+  }
+  const int oldest =
+      (inst->sample_head + NG_STATE_SAMPLE_MAX - (int)inst->sample_count) % NG_STATE_SAMPLE_MAX;
+  return &inst->samples[(oldest + chron_idx) % NG_STATE_SAMPLE_MAX];
+}
+
+static float mod_scene_graph_hermite1(float p0, float v0, float p1, float v1, float dt, float a) {
+  const float a2 = a * a;
+  const float a3 = a2 * a;
+  const float h00 = 2.0f * a3 - 3.0f * a2 + 1.0f;
+  const float h10 = a3 - 2.0f * a2 + a;
+  const float h01 = -2.0f * a3 + 3.0f * a2;
+  const float h11 = a3 - a2;
+  return h00 * p0 + h10 * dt * v0 + h01 * p1 + h11 * dt * v1;
+}
+
+bool mod_scene_graph_sample_draw_pose(const NgSceneInst *inst, double now, float delay_s,
+                                      float out_pos[3], float out_rot[3]) {
+  if (!inst || !out_pos || !out_rot) {
+    return false;
+  }
+  out_pos[0] = inst->pos[0];
+  out_pos[1] = inst->pos[1];
+  out_pos[2] = inst->pos[2];
+  out_rot[0] = inst->rot[0];
+  out_rot[1] = inst->rot[1];
+  out_rot[2] = inst->rot[2];
+  if (inst->sample_count == 0) {
+    return false;
+  }
+  const double render_t = now - (double)delay_s;
+  const NgStateSample *newest = mod_scene_graph_sample_at(inst, (int)inst->sample_count - 1);
+  const NgStateSample *oldest = mod_scene_graph_sample_at(inst, 0);
+  if (!newest || !oldest) {
+    return false;
+  }
+  if (inst->sample_count == 1 || render_t >= newest->t) {
+    float age = (float)(now - newest->t);
+    if (age < 0.0f) {
+      age = 0.0f;
+    }
+    if (age > delay_s) {
+      age = delay_s;
+    }
+    out_pos[0] = newest->pos[0] + newest->lin_vel[0] * age;
+    out_pos[1] = newest->pos[1] + newest->lin_vel[1] * age;
+    out_pos[2] = newest->pos[2] + newest->lin_vel[2] * age;
+    out_rot[0] = newest->rot[0] + newest->ang_vel[0] * age;
+    out_rot[1] = newest->rot[1] + newest->ang_vel[1] * age;
+    out_rot[2] = newest->rot[2] + newest->ang_vel[2] * age;
+    return true;
+  }
+  if (render_t <= oldest->t) {
+    out_pos[0] = oldest->pos[0];
+    out_pos[1] = oldest->pos[1];
+    out_pos[2] = oldest->pos[2];
+    out_rot[0] = oldest->rot[0];
+    out_rot[1] = oldest->rot[1];
+    out_rot[2] = oldest->rot[2];
+    return true;
+  }
+  const NgStateSample *a = oldest;
+  const NgStateSample *b = newest;
+  for (int i = 0; i < (int)inst->sample_count - 1; i++) {
+    const NgStateSample *s0 = mod_scene_graph_sample_at(inst, i);
+    const NgStateSample *s1 = mod_scene_graph_sample_at(inst, i + 1);
+    if (s0 && s1 && render_t >= s0->t && render_t <= s1->t) {
+      a = s0;
+      b = s1;
+      break;
+    }
+  }
+  float dt = (float)(b->t - a->t);
+  if (dt < 1e-4f) {
+    out_pos[0] = b->pos[0];
+    out_pos[1] = b->pos[1];
+    out_pos[2] = b->pos[2];
+    out_rot[0] = b->rot[0];
+    out_rot[1] = b->rot[1];
+    out_rot[2] = b->rot[2];
+    return true;
+  }
+  const float alpha = (float)((render_t - a->t) / (double)dt);
+  for (int i = 0; i < 3; i++) {
+    out_pos[i] = mod_scene_graph_hermite1(a->pos[i], a->lin_vel[i], b->pos[i], b->lin_vel[i], dt,
+                                          alpha);
+    out_rot[i] = mod_scene_graph_hermite1(a->rot[i], a->ang_vel[i], b->rot[i], b->ang_vel[i], dt,
+                                          alpha);
+  }
+  return true;
+}
+
+// agent: composer-2.5 | 2026-07-30 | ack baseline encode apply | 1a55f8
+void mod_scene_graph_note_sent(NgSceneInst *inst, const NgStateUpdate *update) {
+  if (!inst || !update) {
+    return;
+  }
+  inst->last_sent_seq = update->seq;
+  inst->last_sent_pos[0] = inst->pos[0];
+  inst->last_sent_pos[1] = inst->pos[1];
+  inst->last_sent_pos[2] = inst->pos[2];
+  inst->last_sent_rot[0] = inst->rot[0];
+  inst->last_sent_rot[1] = inst->rot[1];
+  inst->last_sent_rot[2] = inst->rot[2];
+  inst->last_sent_scale = inst->scale;
+  inst->last_sent_lin_vel[0] = inst->lin_vel[0];
+  inst->last_sent_lin_vel[1] = inst->lin_vel[1];
+  inst->last_sent_lin_vel[2] = inst->lin_vel[2];
+  inst->last_sent_ang_vel[0] = inst->ang_vel[0];
+  inst->last_sent_ang_vel[1] = inst->ang_vel[1];
+  inst->last_sent_ang_vel[2] = inst->ang_vel[2];
+}
+
+void mod_scene_graph_note_ack(uint32_t entity_id, uint16_t ack_seq) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
+  if (!inst) {
+    return;
+  }
+  /* Accept ack for the last sent seq (or any not-newer wrap-safe match). */
+  if (inst->last_sent_seq == 0) {
+    return;
+  }
+  if (ack_seq != inst->last_sent_seq &&
+      (uint16_t)(inst->last_sent_seq - ack_seq) > 0x8000u) {
+    return;
+  }
+  inst->have_wire_ack = true;
+  inst->ack_pos[0] = inst->last_sent_pos[0];
+  inst->ack_pos[1] = inst->last_sent_pos[1];
+  inst->ack_pos[2] = inst->last_sent_pos[2];
+  inst->ack_rot[0] = inst->last_sent_rot[0];
+  inst->ack_rot[1] = inst->last_sent_rot[1];
+  inst->ack_rot[2] = inst->last_sent_rot[2];
+  inst->ack_scale = inst->last_sent_scale;
+  inst->ack_lin_vel[0] = inst->last_sent_lin_vel[0];
+  inst->ack_lin_vel[1] = inst->last_sent_lin_vel[1];
+  inst->ack_lin_vel[2] = inst->last_sent_lin_vel[2];
+  inst->ack_ang_vel[0] = inst->last_sent_ang_vel[0];
+  inst->ack_ang_vel[1] = inst->last_sent_ang_vel[1];
+  inst->ack_ang_vel[2] = inst->last_sent_ang_vel[2];
+}
+
+bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout) {
+  if (!inst || !inout) {
+    return false;
+  }
+  /* Absolute if no ack baseline; else FLAGS marks delta from ack. */
+  if (!inst->have_wire_ack) {
+    inout->comp_mask = (uint8_t)(inout->comp_mask & (uint8_t)~NG_COMP_FLAGS);
+    return true;
+  }
+  const uint8_t mask = inout->comp_mask;
+  NgStateUpdate d = *inout;
+  d.comp_mask = (uint8_t)(mask | NG_COMP_FLAGS);
+  if (mask & NG_COMP_POS) {
+    d.pos[0] = inst->pos[0] - inst->ack_pos[0];
+    d.pos[1] = inst->pos[1] - inst->ack_pos[1];
+    d.pos[2] = inst->pos[2] - inst->ack_pos[2];
+  }
+  if (mask & NG_COMP_ROT) {
+    d.rot[0] = inst->rot[0] - inst->ack_rot[0];
+    d.rot[1] = inst->rot[1] - inst->ack_rot[1];
+    d.rot[2] = inst->rot[2] - inst->ack_rot[2];
+  }
+  if (mask & NG_COMP_SCALE) {
+    d.scale = inst->scale - inst->ack_scale;
+  }
+  if (mask & NG_COMP_LIN_VEL) {
+    d.lin_vel[0] = inst->lin_vel[0] - inst->ack_lin_vel[0];
+    d.lin_vel[1] = inst->lin_vel[1] - inst->ack_lin_vel[1];
+    d.lin_vel[2] = inst->lin_vel[2] - inst->ack_lin_vel[2];
+  }
+  if (mask & NG_COMP_ANG_VEL) {
+    d.ang_vel[0] = inst->ang_vel[0] - inst->ack_ang_vel[0];
+    d.ang_vel[1] = inst->ang_vel[1] - inst->ack_ang_vel[1];
+    d.ang_vel[2] = inst->ang_vel[2] - inst->ack_ang_vel[2];
+  }
+  *inout = d;
+  return true;
+}
+
+float mod_scene_graph_flush_priority(const NgStateUpdate *u) {
+  if (!u) {
+    return 0.0f;
+  }
+  float score = 0.0f;
+  if (u->comp_mask & NG_COMP_LIN_VEL) {
+    score += u->lin_vel[0] * u->lin_vel[0] + u->lin_vel[1] * u->lin_vel[1] +
+             u->lin_vel[2] * u->lin_vel[2];
+  }
+  if (u->comp_mask & NG_COMP_ANG_VEL) {
+    score += 0.25f * (u->ang_vel[0] * u->ang_vel[0] + u->ang_vel[1] * u->ang_vel[1] +
+                      u->ang_vel[2] * u->ang_vel[2]);
+  }
+  if (u->comp_mask & (NG_COMP_POS | NG_COMP_ROT)) {
+    score += 0.01f;
+  }
+  return score;
+}
+
 int mod_scene_graph_inst_count(void) {
   int n = 0;
   for (int i = 0; i < GGRAPH().inst_count; i++) {
@@ -603,3 +864,5 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | a88872
 // agent: composer-2.5 | 2026-07-30 | take dirty apply vel | 22b8f6
 // agent: composer-2.5 | 2026-07-29 | stable spawn key order | 091bfd
+// agent: composer-2.5 | 2026-07-30 | push state sample ring | 19d0cd
+// agent: composer-2.5 | 2026-07-30 | ack baseline encode apply | 1a55f8

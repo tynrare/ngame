@@ -66,6 +66,13 @@ bool mod_scene_physics_should_simulate(NgSyncMode sync, bool on_server, bool is_
 bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync, bool on_server,
                               bool is_controller, const float pos[3], const float rot[3]);
 void mod_scene_physics_detach(int handle);
+void mod_scene_physics_drive_proxy(int handle, const float pos[3], const float rot[3],
+                                   const float lin_vel[3], const float ang_vel[3]);
+// agent: composer-2.5 | 2026-07-30 | apply linear impulse helper | 4c0fcc
+bool mod_scene_physics_apply_impulse(int handle, float ix, float iy, float iz);
+// agent: composer-2.5 | 2026-07-30 | apply force and torque helpers | 257985
+bool mod_scene_physics_apply_force(int handle, float fx, float fy, float fz);
+bool mod_scene_physics_apply_torque(int handle, float tx, float ty, float tz);
 void mod_scene_physics_destroy_world(void);
 
 void mod_scene_physics_fixed_step(float fixed_dt, bool on_server, bool is_controller);
@@ -78,3 +85,6 @@ bool mod_scene_physics_import(const uint8_t *data, int size);
 #endif
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | 9871a5
 // agent: composer-2.5 | 2026-07-30 | physics export import names | 837963
+// agent: composer-2.5 | 2026-07-30 | physics proxy drive API | 36fd45
+// agent: composer-2.5 | 2026-07-30 | apply linear impulse helper | 4c0fcc
+// agent: composer-2.5 | 2026-07-30 | apply force and torque helpers | 257985

@@ -1,7 +1,15 @@
 // agent: composer-2.5 | 2026-07-29 | lockstep clock module | 4a4ad4
 // agent: composer-2.5 | 2026-07-30 | lockstep slot tick tags | bd99f2
 // agent: composer-2.5 | 2026-07-30 | lockstep syncing gate APIs | ae43d3
+// agent: composer-2.5 | 2026-07-30 | capture buttons into lock slots | 60a1ec
+// agent: composer-2.5 | 2026-07-30 | bits_for and step tick APIs | a119d0
+// agent: composer-2.5 | 2026-07-30 | ack trims send window | 0bb3f0
+// agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
+// agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | 98511c
+// agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | abbc70
 #include "lockstep.h"
+#include "client/input.h"
+#include "engine/ng_log.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -16,6 +24,7 @@ typedef struct NgLockPeer {
   uint32_t peer_id;
   NgLockSlot slots[NG_LOCK_RING];
   uint32_t highest_recv;
+  uint32_t ack_our; /* remote reports they have world inputs through this tick */
 } NgLockPeer;
 
 typedef struct NgLockCtx {
@@ -25,7 +34,9 @@ typedef struct NgLockCtx {
   bool await_phys;
   uint32_t local_peer_id;
   uint32_t sim_tick;
+  uint32_t step_tick;
   uint32_t local_send_tick;
+  uint32_t playout_ticks;
   NgLockPeer peers[NG_LOCK_PEER_MAX];
   int peer_count;
   uint32_t last_hash;
@@ -84,6 +95,8 @@ static void mod_lockstep_advance_contiguous(NgLockPeer *p) {
 }
 
 static void mod_lockstep_gen_local(uint32_t tick) {
+  // agent: composer-2.5 | 2026-07-30 | capture buttons into lock slots | 60a1ec
+  // agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
   if (tick == 0) {
     return;
   }
@@ -96,8 +109,16 @@ static void mod_lockstep_gen_local(uint32_t tick) {
     return;
   }
   NgLockSlot *s = &self->slots[tick % NG_LOCK_RING];
+  const uint8_t bits = (uint8_t)(mod_input_buttons() & 0xff);
+  if (s->present && s->tick == tick) {
+    /* Already committed for this tick — do not change bits. */
+    if (tick > g_lock.local_send_tick) {
+      g_lock.local_send_tick = tick;
+    }
+    return;
+  }
   s->present = true;
-  s->bits = 0;
+  s->bits = bits;
   s->tick = tick;
   if (tick > g_lock.local_send_tick) {
     g_lock.local_send_tick = tick;
@@ -125,7 +146,25 @@ static bool mod_lockstep_all_have(uint32_t tick) {
   return true;
 }
 
-void mod_lockstep_reset(void) { memset(&g_lock, 0, sizeof(g_lock)); }
+void mod_lockstep_reset(void) {
+  // agent: composer-2.5 | 2026-07-30 | lockstep playout setter | 9b7f42
+  memset(&g_lock, 0, sizeof(g_lock));
+  g_lock.playout_ticks = (uint32_t)NG_LOCK_PLAYOUT_TICKS;
+}
+
+void mod_lockstep_set_playout_ticks(uint32_t ticks) {
+  if (ticks < 1u) {
+    ticks = 1u;
+  }
+  if (ticks > (uint32_t)NG_LOCK_RING / 2u) {
+    ticks = (uint32_t)NG_LOCK_RING / 2u;
+  }
+  g_lock.playout_ticks = ticks;
+}
+
+uint32_t mod_lockstep_playout_ticks(void) {
+  return g_lock.playout_ticks ? g_lock.playout_ticks : (uint32_t)NG_LOCK_PLAYOUT_TICKS;
+}
 
 void mod_lockstep_set_active(bool active) {
   // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 5d65f6
@@ -134,6 +173,7 @@ void mod_lockstep_set_active(bool active) {
     if (!g_lock.syncing && !g_lock.await_phys) {
       g_lock.sim_started = false;
       g_lock.sim_tick = 0;
+      g_lock.step_tick = 0;
       g_lock.local_send_tick = 0;
       g_lock.last_hash = 0;
       g_lock.last_hash_tick = 0;
@@ -169,6 +209,25 @@ void mod_lockstep_add_peer(uint32_t peer_id) {
   p->alive = true;
   p->peer_id = peer_id;
   p->highest_recv = 0;
+  p->ack_our = 0;
+}
+
+void mod_lockstep_remove_peer(uint32_t peer_id) {
+  // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | 98511c
+  if (peer_id == 0 || peer_id == g_lock.local_peer_id) {
+    return;
+  }
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    if (!g_lock.peers[i].alive || g_lock.peers[i].peer_id != peer_id) {
+      continue;
+    }
+    g_lock.peers[i] = g_lock.peers[g_lock.peer_count - 1];
+    memset(&g_lock.peers[g_lock.peer_count - 1], 0, sizeof(g_lock.peers[0]));
+    g_lock.peer_count--;
+    mod_lockstep_recompute_ack();
+    NG_LOG_INFO("lockstep: removed peer=%u count=%d", peer_id, g_lock.peer_count);
+    return;
+  }
 }
 
 bool mod_lockstep_needs_join_sync(void) {
@@ -192,6 +251,7 @@ void mod_lockstep_end_sync(void) {
   for (int i = 0; i < g_lock.peer_count; i++) {
     if (g_lock.peers[i].alive) {
       g_lock.peers[i].highest_recv = g_lock.sim_tick;
+      g_lock.peers[i].ack_our = g_lock.sim_tick;
       memset(g_lock.peers[i].slots, 0, sizeof(g_lock.peers[i].slots));
     }
   }
@@ -206,8 +266,15 @@ void mod_lockstep_await_phys(bool await) { g_lock.await_phys = await; }
 
 bool mod_lockstep_awaiting_phys(void) { return g_lock.await_phys; }
 
+void mod_lockstep_note_desync(void) {
+  // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | abbc70
+  NG_LOG_ERROR("lockstep: desync — stalling at tick=%u", g_lock.sim_tick);
+  mod_lockstep_begin_sync(g_lock.sim_tick);
+}
+
 NgLockGate mod_lockstep_gate(void) {
   // agent: composer-2.5 | 2026-07-30 | solo lockstep always go | 4950ad
+  // agent: composer-2.5 | 2026-07-30 | gate capture next sim tick | ba4520
   if (!g_lock.active) {
     return NG_LOCK_GATE_GO;
   }
@@ -217,23 +284,31 @@ NgLockGate mod_lockstep_gate(void) {
   if (g_lock.local_peer_id == 0) {
     mod_lockstep_set_local_peer(1);
   }
-  const uint32_t next_input = g_lock.local_send_tick + 1u;
-  mod_lockstep_gen_local(next_input);
 
-  /* Empty-input lockstep (current physics): one peer never waits. */
+  const uint32_t next_sim = g_lock.sim_tick + 1u;
+  /* Always sample/commit bits for the tick about to step. */
+  mod_lockstep_gen_local(next_sim);
+
+  /* Solo lockstep: one peer never waits. */
   if (g_lock.peer_count <= 1) {
     g_lock.sim_started = true;
     return NG_LOCK_GATE_GO;
   }
 
+  /* Multi-peer: fill send-ahead for playout without changing next_sim. */
+  const uint32_t playout = mod_lockstep_playout_ticks();
+  const uint32_t send_target = g_lock.sim_tick + playout;
+  while (g_lock.local_send_tick < send_target) {
+    mod_lockstep_gen_local(g_lock.local_send_tick + 1u);
+  }
+
   if (!g_lock.sim_started) {
-    if (g_lock.local_send_tick < (uint32_t)NG_LOCK_PLAYOUT_TICKS) {
+    if (g_lock.local_send_tick < playout) {
       return NG_LOCK_GATE_BUFFER;
     }
     g_lock.sim_started = true;
   }
 
-  const uint32_t next_sim = g_lock.sim_tick + 1u;
   if (!mod_lockstep_all_have(next_sim)) {
     return NG_LOCK_GATE_STALL;
   }
@@ -244,6 +319,7 @@ void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash) {
   // agent: composer-2.5 | 2026-07-30 | lockstep own sim clock | b39964
   (void)tick;
   g_lock.sim_tick += 1u;
+  g_lock.step_tick = 0;
   if (g_lock.sim_tick > 0 && (g_lock.sim_tick % 60u) == 0u) {
     g_lock.last_hash = hash;
     g_lock.last_hash_tick = g_lock.sim_tick;
@@ -252,6 +328,7 @@ void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash) {
 
 void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits) {
   // agent: composer-2.5 | 2026-07-30 | solo lockstep always go | 4950ad
+  // agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
   if (tick == 0 || peer_id == 0) {
     return;
   }
@@ -260,6 +337,14 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
     return;
   }
   NgLockSlot *s = &p->slots[tick % NG_LOCK_RING];
+  if (s->present && s->tick == tick) {
+    if (s->bits != bits) {
+      NG_LOG_ERROR("lockstep: input conflict peer=%u tick=%u got=%u have=%u", peer_id, tick,
+                   (unsigned)bits, (unsigned)s->bits);
+      mod_lockstep_note_desync();
+    }
+    return;
+  }
   s->present = true;
   s->bits = bits;
   s->tick = tick;
@@ -267,16 +352,59 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
 }
 
 void mod_lockstep_store_ack(uint32_t peer_id, uint32_t ack_tick) {
-  (void)peer_id;
-  (void)ack_tick;
+  // agent: composer-2.5 | 2026-07-30 | ack trims send window | 0bb3f0
+  if (peer_id == 0 || peer_id == g_lock.local_peer_id) {
+    return;
+  }
+  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
+  if (!p) {
+    return;
+  }
+  if (ack_tick > p->ack_our) {
+    p->ack_our = ack_tick;
+  }
 }
 
 uint32_t mod_lockstep_sim_tick(void) { return g_lock.sim_tick; }
+
+uint32_t mod_lockstep_step_tick(void) {
+  return g_lock.step_tick ? g_lock.step_tick : (g_lock.sim_tick + 1u);
+}
+
+void mod_lockstep_set_step_tick(uint32_t tick) { g_lock.step_tick = tick; }
+
+uint8_t mod_lockstep_bits_for(uint32_t peer_id, uint32_t tick) {
+  // agent: composer-2.5 | 2026-07-30 | bits_for and step tick APIs | a119d0
+  if (tick == 0 || peer_id == 0) {
+    return 0;
+  }
+  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
+  if (!p || !mod_lockstep_slot_has(p, tick)) {
+    return 0;
+  }
+  return p->slots[tick % NG_LOCK_RING].bits;
+}
+
+bool mod_lockstep_have_input(uint32_t peer_id, uint32_t tick) {
+  // agent: composer-2.5 | 2026-07-30 | peer count accessor | ea5827
+  if (tick == 0 || peer_id == 0) {
+    return false;
+  }
+  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
+  return p && mod_lockstep_slot_has(p, tick);
+}
+
+int mod_lockstep_peer_count(void) {
+  // agent: composer-2.5 | 2026-07-30 | peer count accessor | ea5827
+  return g_lock.peer_count;
+}
+
 uint32_t mod_lockstep_local_ack(void) { return g_lock.local_ack; }
 uint32_t mod_lockstep_last_hash(void) { return g_lock.last_hash; }
 uint32_t mod_lockstep_last_hash_tick(void) { return g_lock.last_hash_tick; }
 
 int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits, int max_count) {
+  // agent: composer-2.5 | 2026-07-30 | ack trims send window | 0bb3f0
   if (!out_base_tick || !out_bits || max_count <= 0 || g_lock.local_send_tick == 0) {
     return 0;
   }
@@ -287,6 +415,22 @@ int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits, in
   uint32_t start = g_lock.local_send_tick > 8u ? (g_lock.local_send_tick - 7u) : 1u;
   if (g_lock.local_ack + 1u > start) {
     start = g_lock.local_ack + 1u;
+  }
+  /* Trim using remotes' ack of world inputs (includes our stream). */
+  uint32_t min_remote_ack = UINT32_MAX;
+  bool any_remote = false;
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->peer_id == g_lock.local_peer_id) {
+      continue;
+    }
+    any_remote = true;
+    if (p->ack_our < min_remote_ack) {
+      min_remote_ack = p->ack_our;
+    }
+  }
+  if (any_remote && min_remote_ack + 1u > start) {
+    start = min_remote_ack + 1u;
   }
   if (start > g_lock.local_send_tick) {
     return 0;
@@ -337,3 +481,12 @@ void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_starte
 // agent: composer-2.5 | 2026-07-30 | lockstep slot tick tags | bd99f2
 // agent: composer-2.5 | 2026-07-30 | lockstep syncing gate APIs | ae43d3
 // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 5d65f6
+// agent: composer-2.5 | 2026-07-30 | lockstep playout setter | 9b7f42
+// agent: composer-2.5 | 2026-07-30 | capture buttons into lock slots | 60a1ec
+// agent: composer-2.5 | 2026-07-30 | bits_for and step tick APIs | a119d0
+// agent: composer-2.5 | 2026-07-30 | ack trims send window | 0bb3f0
+// agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
+// agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | 98511c
+// agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | abbc70
+// agent: composer-2.5 | 2026-07-30 | gate capture next sim tick | ba4520
+// agent: composer-2.5 | 2026-07-30 | peer count accessor | ea5827

@@ -24,7 +24,18 @@ typedef struct NgSceneDesc {
   bool alive;
 } NgSceneDesc;
 
-// agent: composer-2.5 | 2026-07-30 | inst store lin ang vel | 779394
+// agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
+// agent: composer-2.5 | 2026-07-30 | state sample ring hermite | 0ba8fd
+#define NG_STATE_SAMPLE_MAX 8
+
+typedef struct NgStateSample {
+  double t;
+  float pos[3];
+  float rot[3];
+  float lin_vel[3];
+  float ang_vel[3];
+} NgStateSample;
+
 typedef struct NgSceneInst {
   bool alive;
   int handle;
@@ -34,6 +45,7 @@ typedef struct NgSceneInst {
   char model[32];
   char body[32];
   uint64_t body_id_bits;
+  bool phys_proxy; /* view kinematic driven by STATE_UPDATE (sim:server) */
   NgSyncMode sync;
   float pos[3];
   float rot[3];
@@ -41,11 +53,26 @@ typedef struct NgSceneInst {
   float lin_vel[3];
   float ang_vel[3];
   double state_time;
+  NgStateSample samples[NG_STATE_SAMPLE_MAX];
+  uint8_t sample_count;
+  uint8_t sample_head;
   float phase;
   uint32_t world_id;
   uint32_t comp_dirty;
   uint16_t last_applied_seq;
   uint16_t last_sent_seq;
+  /* Host: last STATE_UPDATE payload acked by a peer — delta baseline. */
+  bool have_wire_ack;
+  float ack_pos[3];
+  float ack_rot[3];
+  float ack_scale;
+  float ack_lin_vel[3];
+  float ack_ang_vel[3];
+  float last_sent_pos[3];
+  float last_sent_rot[3];
+  float last_sent_scale;
+  float last_sent_lin_vel[3];
+  float last_sent_ang_vel[3];
   int script_inst_stash;
 } NgSceneInst;
 
@@ -108,6 +135,13 @@ NgSyncMode mod_scene_graph_sync_for_entity(uint32_t entity_id);
 void mod_scene_graph_mark_dirty(NgSceneInst *inst, uint32_t comp);
 bool mod_scene_graph_take_dirty(NgStateUpdate *out);
 void mod_scene_graph_apply_update(const NgStateUpdate *update);
+void mod_scene_graph_push_sample(NgSceneInst *inst, double t);
+bool mod_scene_graph_sample_draw_pose(const NgSceneInst *inst, double now, float delay_s,
+                                      float out_pos[3], float out_rot[3]);
+void mod_scene_graph_note_sent(NgSceneInst *inst, const NgStateUpdate *update);
+void mod_scene_graph_note_ack(uint32_t entity_id, uint16_t ack_seq);
+bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout);
+float mod_scene_graph_flush_priority(const NgStateUpdate *u);
 int mod_scene_graph_inst_count(void);
 const NgSceneInst *mod_scene_graph_inst_at(int index);
 
@@ -115,3 +149,5 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-07-29 | instance primary spawn registry | d3e238
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
 // agent: composer-2.5 | 2026-07-30 | inst store lin ang vel | 779394
+// agent: composer-2.5 | 2026-07-30 | state sample ring hermite | 0ba8fd
+// agent: composer-2.5 | 2026-07-30 | state ack baseline delta | 4585d3

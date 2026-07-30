@@ -49,10 +49,19 @@ A lockstep physics scene may also host bodiless `shared` / `owner` props; those 
 global.describe("scene", "view", { sim: "lockstep", bg: {...}, camera: {...} });
 ```
 
-Every peer creates and steps the same **bodies**; render uses local body transforms (no pose authority for those entities). Peers exchange tick-indexed `LOCK_INPUT` / `LOCK_ACK` (and optional `LOCK_HASH`) via the server relay, with ~100ms playout delay before the first step.
+Every peer process runs the **same** body path: capture/share tick inputs → `fixed_step` (`get_input` → forces/torque) → `b3World_Step` → local poses for draw. Lockstep ≠ `sim: "server"` pose authority; do not stream forces.
+
+**One Box3D world per process:** if both server and view scene slots are loaded (embedded), the **server slot is the phys owner** (attach + body `fixed_step` + step once); the view mirrors poses for draw only (no second world / no double step). A pure client with only the view slot owns physics there — that peer still runs the full input→force→step code.
+
+<!-- agent: composer-2.5 | 2026-07-30 | docs lockstep input consumers | 0ecb5e -->
+**Inputs:** each gate samples buttons into the slot for `sim_tick+1` (the tick about to step). Peers exchange `LOCK_INPUT` / `LOCK_ACK` / `LOCK_HASH`. Under lockstep, `get_input` reads those slots (solo/`peer_count<=1` may use live keys). Body scripts on the phys owner apply torque/force from that. Conflicting bits for the same peer/tick stall the gate.
+
+<!-- agent: composer-2.5 | 2026-07-30 | docs bandwidth lockstep playout | 563455 -->
+**Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`. Missing peer input **stalls** the gate (no short phys rewind in this build).
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
-Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Simulation stalls while the joiner fetches.
+<!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
+Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Join hash mismatch **aborts** the join (no RESUME). Periodic `LOCK_HASH` mismatch stalls sync. Disconnect removes the peer from the lockstep set.
 
 Entity `sync` on bodies is **ignored** under lockstep (spawn/step/author). Net flush still sends `STATE_UPDATE` for bodiless entities.
 
@@ -61,9 +70,12 @@ Agent: `lockstep_hash` returns the current physics transform checksum and tick.
 ### Server sim (default)
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs server pose vel stream | 0ab3f0 -->
+<!-- agent: composer-2.5 | 2026-07-30 | docs interp kinematic proxies | 610025 -->
 Omit `sim`, or use non-`lockstep` (implicit `server`): host runs Box3D for bodies according to entity sync (`server` on host, `shared`/`local` on views, `owner` on controller).
 
-Live replication uses `STATE_UPDATE` with quantized **pose + linear/angular velocity** (cm/s and mrad/s). At-rest bodies stop streaming. Views store the last sample and **extrapolate** draw pose for up to ~120 ms between packets. Clients do not create Box3D bodies for `sync: "server"`.
+Live replication uses `STATE_UPDATE` with quantized **pose + linear/angular velocity** (cm/s and mrad/s). At-rest bodies stop streaming. After a peer `STATE_ACK`, further updates for that entity are **delta-encoded** (`NG_COMP_FLAGS`) vs the acked baseline. Flush **prioritizes** high |velocity| entities (up to 16 per pass).
+
+Views keep a short sample ring and **Hermite-interpolate** draw pose ~100 ms behind wall clock (extrapolate past the newest sample). For `sync: "server"` bodies, the view also attaches a **kinematic Box3D proxy** driven by the stream (for queries/contacts) — it does not run dynamic simulation.
 
 Do not mix local debris with networked bodies in one contact island.
 
@@ -124,5 +136,9 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-30 | lockstep sync docs | 00d907 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs dual-channel sim sync | 43d96e -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs server pose vel stream | 0ab3f0 -->
+<!-- agent: composer-2.5 | 2026-07-30 | docs interp kinematic proxies | 610025 -->
+<!-- agent: composer-2.5 | 2026-07-30 | docs bandwidth lockstep playout | 563455 -->
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
+<!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
+<!-- agent: composer-2.5 | 2026-07-30 | docs lockstep input consumers | 0ecb5e -->

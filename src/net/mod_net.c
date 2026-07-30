@@ -2,6 +2,9 @@
 // agent: composer-2.5 | 2026-07-28 | gateway loopback upstream API | 34cffe
 // agent: composer-2.5 | 2026-07-30 | net late join sync flow | 0f03f2
 // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 8c64cd
+// agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | 10e625
+// agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | cbe0b7
+// agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c
 #include "mod_net.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -1007,11 +1010,12 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
   }
   case NG_PKT_STATE_ACK: {
     // agent: composer-2.5 | 2026-07-28 | host accepts state ack pkt | 2c89bf
+    // agent: composer-2.5 | 2026-07-30 | priority flush ack track | eda41b
     uint32_t entity_id = 0;
     uint16_t ack_seq = 0;
     if (ng_proto_decode_state_ack(buf, &entity_id, &ack_seq)) {
-      (void)entity_id;
-      (void)ack_seq;
+      mod_scene_runtime_use_server();
+      mod_scene_graph_note_ack(entity_id, ack_seq);
     }
     break;
   }
@@ -1048,11 +1052,18 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     break;
   }
   case NG_PKT_LOCK_HASH: {
+    // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | 10e625
     NgLockHashPkt pkt = {0};
     if (!ng_proto_decode_lock_hash(buf, &pkt)) {
       return;
     }
-    (void)pkt;
+    if (pkt.peer_id != 0 && pkt.peer_id != (uint8_t)mod_lockstep_local_peer_id() &&
+        pkt.tick != 0 && pkt.tick == mod_lockstep_last_hash_tick() &&
+        pkt.hash != mod_lockstep_last_hash()) {
+      NG_LOG_ERROR("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x", pkt.peer_id,
+                   pkt.tick, pkt.hash, mod_lockstep_last_hash());
+      mod_lockstep_note_desync();
+    }
     if (!ng_proto_encode_lock_hash(&ctx->tx_buf, ++ctx->seq, &pkt)) {
       return;
     }
@@ -1072,8 +1083,12 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
       break;
     }
     if (pkt.hash != ctx->lock_join_hash) {
-      NG_LOG_ERROR("lockstep: join hash mismatch peer=%u got=0x%08x want=0x%08x", pkt.peer_id,
-                   pkt.hash, ctx->lock_join_hash);
+      // agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c
+      NG_LOG_ERROR("lockstep: join hash mismatch peer=%u got=0x%08x want=0x%08x — abort join",
+                   pkt.peer_id, pkt.hash, ctx->lock_join_hash);
+      ctx->lock_join_pending = false;
+      ctx->lock_joining_peer = 0;
+      /* Stay paused (syncing); do not RESUME with a bad world. */
       break;
     }
     mod_lockstep_add_peer(pkt.peer_id);
@@ -1243,11 +1258,18 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     break;
   }
   case NG_PKT_LOCK_HASH: {
+    // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | 10e625
     NgLockHashPkt pkt = {0};
     if (!ng_proto_decode_lock_hash(buf, &pkt)) {
       return;
     }
-    (void)pkt;
+    if (pkt.peer_id != 0 && pkt.peer_id != (uint8_t)mod_lockstep_local_peer_id() &&
+        pkt.tick != 0 && pkt.tick == mod_lockstep_last_hash_tick() &&
+        pkt.hash != mod_lockstep_last_hash()) {
+      NG_LOG_ERROR("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x", pkt.peer_id,
+                   pkt.tick, pkt.hash, mod_lockstep_last_hash());
+      mod_lockstep_note_desync();
+    }
     break;
   }
   case NG_PKT_LOCK_PAUSE: {
@@ -1407,6 +1429,14 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
     NG_LOG_INFO("net: peer disconnect id=%u controller=%d", ps ? ps->peer_id : 0,
                 was_controller ? 1 : 0);
     if (ps) {
+      // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | cbe0b7
+      mod_lockstep_remove_peer(ps->peer_id);
+      if (ctx->lock_join_pending && ctx->lock_joining_peer == ps->peer_id) {
+        NG_LOG_WARN("lockstep: joiner disconnect peer=%u — end sync", ps->peer_id);
+        ctx->lock_join_pending = false;
+        ctx->lock_joining_peer = 0;
+        mod_lockstep_end_sync();
+      }
       mod_net_lock_free_peer_phys(ps);
     }
     free(ps);
@@ -2056,6 +2086,7 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
 
 static void mod_net_flush_state_update(ModNetCtx *ctx) {
   // agent: composer-2.5 | 2026-07-30 | dual channel lockstep state flush | 611cd9
+  // agent: composer-2.5 | 2026-07-30 | priority flush ack track | eda41b
   /* Lockstep channel: inputs/acks/hashes. Transform channel: bodiless sync entities. */
   if (mod_lockstep_active()) {
     mod_net_flush_lockstep(ctx);
@@ -2063,26 +2094,62 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
   if (!mod_scene_is_loaded()) {
     return;
   }
-  NgStateUpdate batch[16];
+  NgStateUpdate cand[64];
+  float prio[64];
   for (;;) {
-    int count = 0;
+    int n = 0;
     uint32_t tick = 0;
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
     tick = mod_sim_world()->tick;
 #else
     tick = ctx->last_snap_tick;
 #endif
-    while (count < 16 && mod_scene_take_flush(&batch[count])) {
-      batch[count].tick = tick;
-      count++;
+    while (n < 64 && mod_scene_take_flush(&cand[n])) {
+      cand[n].tick = tick;
+      NgSceneInst *inst = mod_scene_graph_inst_by_id(cand[n].entity_id);
+      if (inst) {
+        mod_scene_graph_prepare_wire_update(inst, &cand[n]);
+      }
+      prio[n] = mod_scene_graph_flush_priority(&cand[n]);
+      n++;
     }
-    if (count == 0) {
+    if (n == 0) {
       return;
     }
+    /* Priority sort (descending) — send hottest movers first. */
+    for (int i = 0; i < n; i++) {
+      for (int j = i + 1; j < n; j++) {
+        if (prio[j] > prio[i]) {
+          const float tp = prio[i];
+          prio[i] = prio[j];
+          prio[j] = tp;
+          const NgStateUpdate tu = cand[i];
+          cand[i] = cand[j];
+          cand[j] = tu;
+        }
+      }
+    }
+    const int send_n = n < 16 ? n : 16;
+    /* Re-dirty leftovers so they retry next flush. */
+    for (int i = send_n; i < n; i++) {
+      NgSceneInst *inst = mod_scene_graph_inst_by_id(cand[i].entity_id);
+      if (inst) {
+        mod_scene_graph_mark_dirty(inst, cand[i].comp_mask & ~NG_COMP_FLAGS);
+      }
+    }
+    NgStateUpdate batch[16];
+    for (int i = 0; i < send_n; i++) {
+      batch[i] = cand[i];
+      batch[i].seq = ++ctx->seq;
+      NgSceneInst *inst = mod_scene_graph_inst_by_id(batch[i].entity_id);
+      if (inst) {
+        mod_scene_graph_note_sent(inst, &batch[i]);
+      }
+    }
     const bool ok =
-        (count == 1)
-            ? ng_proto_encode_state_update(&ctx->tx_buf, ++ctx->seq, &batch[0])
-            : ng_proto_encode_state_batch(&ctx->tx_buf, ++ctx->seq, tick, batch, count);
+        (send_n == 1)
+            ? ng_proto_encode_state_update(&ctx->tx_buf, batch[0].seq, &batch[0])
+            : ng_proto_encode_state_batch(&ctx->tx_buf, batch[0].seq, tick, batch, send_n);
     if (!ok) {
       return;
     }
@@ -2092,16 +2159,11 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
       ng_net_flush(ctx->net);
     }
 #elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
-    // agent: composer-2.5 | 2026-07-29 | flush shared transforms upstream | 9d2e71
-    // agent: composer-2.5 | 2026-07-29 | gateway host state broadcast | d5b8b5
 #if defined(NG_HAS_EMBEDDED)
-    // Solo/local gateway: server-authored (physics) updates must reach the loopback view.
     if (ctx->gateway && ctx->net) {
       ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
       ng_net_flush(ctx->net);
     }
-    // Gateway with upstream must not route shared updates through the local
-    // host graph (local boot scene entity ids can collide / wrong sync).
     if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
       ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE,
                   false);
@@ -2181,3 +2243,7 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-30 | nonblock sync view drain | 3995f3
 // agent: composer-2.5 | 2026-07-30 | dual channel lockstep state flush | 611cd9
 // agent: composer-2.5 | 2026-07-30 | flush lockstep and state updates | 84dae7
+// agent: composer-2.5 | 2026-07-30 | priority flush ack track | eda41b
+// agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | 10e625
+// agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | cbe0b7
+// agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c

@@ -1,11 +1,28 @@
 // agent: composer-2.5 | 2026-07-29 | physics lockstep scene js | c3e03d
 // agent: composer-2.5 | 2026-07-30 | lockstep physics sync note | e2ce57
 // agent: composer-2.5 | 2026-07-30 | physics sim flag note only | d4ecc2
+// agent: composer-2.5 | 2026-07-30 | physics js wasd impulse demo | 9e37b8
+// agent: composer-2.5 | 2026-07-30 | wasd torque rotate cube | 40bf8c
 function Box() {}
 Box.prototype.init = function () {};
 Box.prototype.start = function () {};
 Box.prototype.step = function (dt) {};
-Box.prototype.fixed_step = function (dt) {};
+Box.prototype.fixed_step = function (dt) {
+  // Tick-indexed get_input under lockstep — same bits on every peer for this sim tick.
+  // Torque (angular force) while held — integrates into ω over the fixed step.
+  // Prefer apply_torque/apply_force over impulse for continuous input; impulse is one-shot Δv/Δω.
+  var tx = 0;
+  var ty = 0;
+  var tz = 0;
+  if (global.get_input(global.KEY_A)) ty += 1;
+  if (global.get_input(global.KEY_D)) ty -= 1;
+  if (global.get_input(global.KEY_W)) tx += 1;
+  if (global.get_input(global.KEY_S)) tx -= 1;
+  if (tx !== 0 || ty !== 0 || tz !== 0) {
+    var s = 800.0;
+    global.apply_torque(this.handle, { x: tx * s, y: ty * s, z: tz * s });
+  }
+};
 Box.prototype.stop = function () {};
 Box.prototype.dispose = function () {};
 
@@ -61,6 +78,7 @@ Scene.prototype.init = function () {
 
   // sim: physics-only (bodies). Bodiless entities still use entity.sync (cube-compatible).
   // Under lockstep, body entity sync is ignored; transforms for bodies are not streamed.
+  // Every peer runs Box3D; one world per process (no dual server/view sim).
   global.describe("scene", "view", {
     sim: "lockstep",
     bg: { r: 24, g: 28, b: 36 },
@@ -130,7 +148,5 @@ Scene.prototype.dispose = function () {
   global.dispose("mesh", "box_m");
   global.dispose("mesh", "ground_m");
 };
-
-// agent: composer-2.5 | 2026-07-29 | physics lockstep scene js | c3e03d
-// agent: composer-2.5 | 2026-07-30 | lockstep physics sync note | e2ce57
-// agent: composer-2.5 | 2026-07-30 | physics sim flag note only | d4ecc2
+// agent: composer-2.5 | 2026-07-30 | physics js wasd impulse demo | 9e37b8
+// agent: composer-2.5 | 2026-07-30 | wasd torque rotate cube | 40bf8c
