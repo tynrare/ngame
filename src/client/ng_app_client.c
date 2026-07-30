@@ -175,12 +175,15 @@ void ng_app_client_frame(void) {
 
   ng_viewport_poll();
   ng_shader_poll();
-  mod_input_begin_frame();
   mod_net_poll_recv();
-  ng_mod_publish_tick(dt);
 
+  /* Raylib refreshes keys around Begin/EndDrawing; sample after BeginDrawing so
+   * IsKeyDown matches the console path, then fixed_step can read fresh buttons. */
+  // agent: composer-2.5 | 2026-07-30 | sample input after BeginDrawing | e28250
   BeginDrawing();
+  mod_input_begin_frame();
   mod_console_poll_input();
+  ng_mod_publish_tick(dt);
   ng_mod_publish_draw();
   EndDrawing();
 }
@@ -211,3 +214,4 @@ void ng_app_client_shutdown(void) {
 // agent: composer-2.5 | 2026-07-29 | scene init before net upstream | eda89a
 // agent: composer-2.5 | 2026-07-29 | expose launch mode text | c7835e
 // agent: composer-2.5 | 2026-07-30 | remote connect no freeze | c52f96
+// agent: composer-2.5 | 2026-07-30 | sample input after BeginDrawing | e28250

@@ -42,6 +42,10 @@ void mod_scene_view_apply_snapshot(const NgSnapshot *snap);
 void mod_scene_view_status_text(char *out, size_t cap);
 // agent: composer-2.5 | 2026-07-29 | view entity transform observe | 4d8e21
 void mod_scene_view_entities_text(char *out, size_t cap);
+// agent: composer-2.5 | 2026-07-30 | expose server entities text | f994f2
+void mod_scene_server_entities_text(char *out, size_t cap);
+void mod_scene_phys_debug_text(char *out, size_t cap);
+bool mod_scene_debug_apply_torque_key(const char *key, float tx, float ty, float tz);
 // agent: composer-2.5 | 2026-07-29 | shared raycast plane helper | 7c1d4a
 bool mod_scene_raycast_plane_y(float plane_y, float *out_x, float *out_y, float *out_z);
 void mod_scene_raycast_plane_y_text(float plane_y, char *out, size_t cap);

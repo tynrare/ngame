@@ -347,6 +347,7 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, const char 
                                         inst->scale);
 
   if (ctx && func_stash_idx >= 0) {
+    // agent: composer-2.5 | 2026-07-30 | fix graph spawn stash leak | cddf4f
     duk_push_global_stash(ctx);
     char func_key[48];
     snprintf(func_key, sizeof(func_key), "func_%s", desc_name);
@@ -360,7 +361,7 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, const char 
       duk_push_global_stash(ctx);
       duk_insert(ctx, -2);
       duk_put_prop_string(ctx, -2, inst_key);
-      duk_pop(ctx);
+      duk_pop_n(ctx, 2); /* stash2 + stash1 */
     } else {
       duk_pop_n(ctx, 2);
     }
@@ -866,3 +867,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-07-29 | stable spawn key order | 091bfd
 // agent: composer-2.5 | 2026-07-30 | push state sample ring | 19d0cd
 // agent: composer-2.5 | 2026-07-30 | ack baseline encode apply | 1a55f8
+// agent: composer-2.5 | 2026-07-30 | fix graph spawn stash leak | cddf4f

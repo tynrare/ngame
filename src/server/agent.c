@@ -304,6 +304,28 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
 #endif
   }
 
+  // agent: composer-2.5 | 2026-07-30 | agent input phys debug cmds | f9a0d6
+  if (strcmp(cmdline, "phys_debug") == 0) {
+    char text[1600];
+    mod_scene_phys_debug_text(text, sizeof(text));
+    char out[1800];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", text);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
+  if (strncmp(cmdline, "force_torque", 12) == 0) {
+    char key[32] = "box";
+    float tx = 0.0f, ty = 800.0f, tz = 0.0f;
+    sscanf(cmdline + 12, " %31s %f %f %f", key, &tx, &ty, &tz);
+    const bool ok = mod_scene_debug_apply_torque_key(key, tx, ty, tz);
+    char out[256];
+    snprintf(out, sizeof(out), "{\"ok\":%s,\"text\":\"torque %s %.1f,%.1f,%.1f\"}",
+             ok ? "true" : "false", key, tx, ty, tz);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
   // agent: composer-2.5 | 2026-07-29 | mcp raycast observe helper | 1a8c2e
   if (strncmp(cmdline, "raycast_plane_y", 15) == 0) {
     float plane_y = 0.0f;

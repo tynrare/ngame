@@ -113,14 +113,17 @@ static NgSceneInst *mod_scene_inst_from_handle(int handle) {
   return mod_scene_graph_inst_by_handle(handle);
 }
 
+// agent: composer-2.5 | 2026-07-30 | fix stash_func validity gate | 884396
 static int mod_scene_stash_func(duk_context *ctx, const char *name) {
+  /* Returns >=0 when func_<name> exists on the global stash. Callers only use
+   * the value as a presence gate; graph_spawn looks the function up by name. */
   duk_push_global_stash(ctx);
   char key[48];
   snprintf(key, sizeof(key), "func_%s", name);
   duk_get_prop_string(ctx, -1, key);
-  const int idx = duk_normalize_index(ctx, -1);
-  duk_pop(ctx);
-  return duk_is_function(ctx, idx) ? idx : -1;
+  const bool ok = duk_is_function(ctx, -1);
+  duk_pop_n(ctx, 2); /* func + stash */
+  return ok ? 1 : -1;
 }
 
 static void mod_scene_stash_put_func(duk_context *ctx, const char *name) {
@@ -405,6 +408,7 @@ static bool mod_scene_call_entity_method(ModSceneCtx *ctx, NgSceneInst *inst, co
   if (!ctx->ctx || !inst) {
     return false;
   }
+  // agent: composer-2.5 | 2026-07-30 | pop stash after entity method | 7856d9
   char key[48];
   snprintf(key, sizeof(key), "inst_%d", inst->handle);
   duk_push_global_stash(ctx->ctx);
@@ -421,10 +425,10 @@ static bool mod_scene_call_entity_method(ModSceneCtx *ctx, NgSceneInst *inst, co
   duk_insert(ctx->ctx, -2);
   if (duk_pcall_method(ctx->ctx, 0) != DUK_EXEC_SUCCESS) {
     NG_LOG_ERROR("entity.%s: %s", method, duk_safe_to_string(ctx->ctx, -1));
-    duk_pop(ctx->ctx);
+    duk_pop_n(ctx->ctx, 2); /* error + stash */
     return false;
   }
-  duk_pop(ctx->ctx);
+  duk_pop_n(ctx->ctx, 2); /* result + stash */
   return true;
 }
 
@@ -1147,6 +1151,9 @@ static bool mod_scene_call_method(ModSceneCtx *ctx, const char *method, int narg
   duk_remove(ctx->ctx, -2);
   if (!duk_is_object(ctx->ctx, -1)) {
     duk_pop(ctx->ctx);
+    if (nargs > 0) {
+      duk_pop_n(ctx->ctx, nargs);
+    }
     return false;
   }
   duk_get_prop_string(ctx->ctx, -1, method);
@@ -1293,10 +1300,12 @@ static void mod_scene_run_entity_steps(ModSceneCtx *ctx, float dt) {
     }
     duk_insert(ctx->ctx, -2);
     duk_push_number(ctx->ctx, dt);
+    // agent: composer-2.5 | 2026-07-30 | pop stash after entity step | e12822
     if (duk_pcall_method(ctx->ctx, 1) != DUK_EXEC_SUCCESS) {
       NG_LOG_ERROR("entity step: %s", duk_safe_to_string(ctx->ctx, -1));
     }
-    duk_pop(ctx->ctx);
+    duk_pop(ctx->ctx); /* result/error */
+    duk_pop(ctx->ctx); /* stash */
     mod_scene_drain_pending_change(ctx);
     if (on_server && inst->sync == NG_SYNC_SERVER) {
       mod_scene_pull_entity_phase(ctx, (NgSceneInst *)inst);
@@ -1360,10 +1369,12 @@ static void mod_scene_run_entity_fixed_steps(ModSceneCtx *ctx, float fixed_dt) {
     }
     duk_insert(ctx->ctx, -2);
     duk_push_number(ctx->ctx, fixed_dt);
+    // agent: composer-2.5 | 2026-07-30 | pop stash after fixed_step | 1a5c26
     if (duk_pcall_method(ctx->ctx, 1) != DUK_EXEC_SUCCESS) {
       NG_LOG_ERROR("entity fixed_step: %s", duk_safe_to_string(ctx->ctx, -1));
     }
-    duk_pop(ctx->ctx);
+    duk_pop(ctx->ctx); /* result/error */
+    duk_pop(ctx->ctx); /* stash */
     mod_scene_drain_pending_change(ctx);
   }
 }
@@ -1373,10 +1384,13 @@ static void mod_scene_fixed_step_ctx(ModSceneCtx *ctx, float fixed_dt) {
     return;
   }
   // agent: composer-2.5 | 2026-07-30 | skip view phys step lockstep | 890ea4
+  // agent: composer-2.5 | 2026-07-30 | guard duk stack on scene tick | 10fe96
   mod_scene_set_active_for(ctx);
+  const duk_idx_t stack_top = duk_get_top(ctx->ctx);
   duk_push_number(ctx->ctx, fixed_dt);
   mod_scene_call_method(ctx, "fixed_step", 1);
   mod_scene_run_entity_fixed_steps(ctx, fixed_dt);
+  duk_set_top(ctx->ctx, stack_top);
   const bool lockstep_view_skip =
       mod_scene_physics_is_lockstep() && ctx == &g_scene_view.scene &&
       g_scene_server.scene.loaded && g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP;
@@ -1837,10 +1851,13 @@ static bool mod_scene_tick_ctx(ModSceneCtx *ctx, float dt) {
     return true;
   }
 
+  // agent: composer-2.5 | 2026-07-30 | guard duk stack on scene tick | 10fe96
+  const duk_idx_t stack_top = duk_get_top(ctx->ctx);
   mod_input_begin_frame();
   duk_push_number(ctx->ctx, dt);
   mod_scene_call_method(ctx, "step", 1);
   mod_scene_run_entity_steps(ctx, dt);
+  duk_set_top(ctx->ctx, stack_top);
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   if (mod_scene_is_server()) {
     mod_scene_mirror_server(mod_sim_world());
@@ -1951,6 +1968,96 @@ void mod_scene_view_entities_text(char *out, size_t cap) {
   if (used == 0 && cap > 0) {
     out[0] = '\0';
   }
+}
+
+// agent: composer-2.5 | 2026-07-30 | server entities text helper | 529fd4
+static void mod_scene_entities_text_active(char *out, size_t cap) {
+  if (!out || cap == 0) {
+    return;
+  }
+  size_t used = 0;
+  const int n = mod_scene_graph_inst_count();
+  used += (size_t)snprintf(out + used, cap > used ? cap - used : 0, "entities=%d", n);
+  for (int i = 0; i < n && used + 1 < cap; i++) {
+    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+    if (!inst) {
+      continue;
+    }
+    used += (size_t)snprintf(
+        out + used, cap - used,
+        " | id=%u key=%s desc=%s body=%u proxy=%d pos=%.3f,%.3f,%.3f rot=%.3f,%.3f,%.3f",
+        inst->id, inst->key, inst->desc_name, inst->body_id_bits != 0 ? 1u : 0u,
+        inst->phys_proxy ? 1 : 0, inst->pos[0], inst->pos[1], inst->pos[2], inst->rot[0],
+        inst->rot[1], inst->rot[2]);
+  }
+  if (used == 0 && cap > 0) {
+    out[0] = '\0';
+  }
+}
+
+void mod_scene_server_entities_text(char *out, size_t cap) {
+  mod_scene_runtime_use_server();
+  mod_scene_entities_text_active(out, cap);
+}
+
+void mod_scene_phys_debug_text(char *out, size_t cap) {
+  if (!out || cap == 0) {
+    return;
+  }
+  char server[700];
+  char view[700];
+  mod_scene_server_entities_text(server, sizeof(server));
+  mod_scene_runtime_use_view();
+  mod_scene_entities_text_active(view, sizeof(view));
+  int scripts = 0;
+  int has_fs = 0;
+  mod_scene_runtime_use_server();
+  if (g_scene_server.scene.ctx) {
+    duk_context *dctx = g_scene_server.scene.ctx;
+    const int n = mod_scene_graph_inst_count();
+    for (int i = 0; i < n; i++) {
+      const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+      if (!inst) {
+        continue;
+      }
+      char key[48];
+      snprintf(key, sizeof(key), "inst_%d", inst->handle);
+      duk_push_global_stash(dctx);
+      duk_get_prop_string(dctx, -1, key);
+      if (duk_is_object(dctx, -1)) {
+        scripts++;
+        duk_get_prop_string(dctx, -1, "fixed_step");
+        if (duk_is_function(dctx, -1)) {
+          has_fs++;
+        }
+        duk_pop(dctx);
+      }
+      duk_pop_n(dctx, 2);
+    }
+  }
+  snprintf(out, cap,
+           "buttons=%d step_tick=%u peers=%d lock=%d srv_sim=%d view_sim=%d "
+           "scripts=%d fixed_step_fn=%d | server[%s] | view[%s]",
+           mod_input_buttons(), mod_lockstep_step_tick(), mod_lockstep_peer_count(),
+           mod_lockstep_active() ? 1 : 0, (int)g_scene_server.physics.sim_mode,
+           (int)g_scene_view.physics.sim_mode, scripts, has_fs, server, view);
+}
+
+bool mod_scene_debug_apply_torque_key(const char *key, float tx, float ty, float tz) {
+  if (!key || key[0] == '\0') {
+    return false;
+  }
+  /* Prefer phys owner: server when it owns lockstep, else view. */
+  if (g_scene_server.scene.loaded && g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP) {
+    mod_scene_runtime_use_server();
+  } else {
+    mod_scene_runtime_use_view();
+  }
+  NgSceneInst *inst = mod_scene_graph_inst_by_key(key);
+  if (!inst) {
+    return false;
+  }
+  return mod_scene_physics_apply_torque(inst->handle, tx, ty, tz);
 }
 
 bool mod_scene_view_graph_active(void) {
@@ -2327,3 +2434,4 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | apply force torque JS bindings | cd7a18
 // agent: composer-2.5 | 2026-07-30 | smoke single world input bits | 373a09
 // agent: composer-2.5 | 2026-07-30 | smoke next sim tick bits | e7550b
+// agent: composer-2.5 | 2026-07-30 | server entities text helper | 529fd4

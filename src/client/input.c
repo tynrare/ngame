@@ -51,7 +51,8 @@ static double mod_input_wire_deadline(int frames) {
   return GetTime() + secs;
 }
 
-void mod_input_begin_frame(void) {
+// agent: composer-2.5 | 2026-07-30 | input buttons include live wire | 2a23b1
+static int mod_input_sample_buttons(void) {
   int buttons = 0;
   // agent: codex-5.3 | 2026-07-29 | map W S keys | 26672c
   if (IsKeyDown(KEY_A)) {
@@ -66,10 +67,15 @@ void mod_input_begin_frame(void) {
   if (IsKeyDown(KEY_S)) {
     buttons |= NG_INPUT_S;
   }
-  if (GetTime() < g_input.wired_buttons_until) {
+  /* Wire must apply even if begin_frame has not run yet this frame. */
+  if (g_input.wired_buttons_until > 0.0 && GetTime() < g_input.wired_buttons_until) {
     buttons |= g_input.wired_buttons;
   }
-  g_input.buttons = buttons;
+  return buttons;
+}
+
+void mod_input_begin_frame(void) {
+  g_input.buttons = mod_input_sample_buttons();
 
   if (IsKeyDown(KEY_LEFT)) {
     g_input.yaw_accum -= 0.05f;
@@ -79,7 +85,11 @@ void mod_input_begin_frame(void) {
   }
 }
 
-int mod_input_buttons(void) { return g_input.buttons; }
+int mod_input_buttons(void) {
+  /* Always re-sample so fixed_step / get_input see wire + keys live. */
+  g_input.buttons = mod_input_sample_buttons();
+  return g_input.buttons;
+}
 
 float mod_input_take_yaw(void) {
   const float yaw = g_input.yaw_accum;
@@ -141,3 +151,4 @@ bool mod_input_mouse_pos(float *out_x, float *out_y) {
 // agent: composer-2.5 | 2026-07-29 | mcp wire input mouse state | a91c4d
 // agent: composer-2.5 | 2026-07-29 | time-based mcp wire holds | 3e9b5c
 // agent: composer-2.5 | 2026-07-29 | sticky mouse after wire | 28dc7b
+// agent: composer-2.5 | 2026-07-30 | input buttons include live wire | 2a23b1
