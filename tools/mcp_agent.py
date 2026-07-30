@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # agent: composer-2.5 | 2026-07-25 | MCP stdio agent bridge | d4e82a
 # agent: composer-2.5 | 2026-07-28 | mcp dual port render tool | 13f975
+# agent: composer-2.5 | 2026-07-30 | sync missing agent tools | 43558a
 """Minimal MCP stdio server forwarding tool calls to ngame gateway or ngame_server agent TCP."""
 
 from __future__ import annotations
@@ -94,6 +95,31 @@ TOOLS = [
             "required": ["line"],
         },
     },
+    # agent: composer-2.5 | 2026-07-30 | sync missing agent tools | 43558a
+    {
+        "name": "lockstep_hash",
+        "description": "Observe lockstep tick/hash and peer gate state.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "phys_debug",
+        "description": "Dump physics debug text from the active scene runtime.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "force_torque",
+        "description": "Apply debug torque to a named physics body key (default box).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Body key, e.g. box."},
+                "tx": {"type": "number"},
+                "ty": {"type": "number"},
+                "tz": {"type": "number"},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -149,6 +175,17 @@ def run_tool(name: str, arguments: dict[str, Any]) -> str:
     elif name == "command":
         line = arguments.get("line", "")
         resp = agent_request({"line": line})
+    # agent: composer-2.5 | 2026-07-30 | sync missing agent tools | 43558a
+    elif name == "lockstep_hash":
+        resp = agent_request({"cmd": "lockstep_hash"})
+    elif name == "phys_debug":
+        resp = agent_request({"line": "phys_debug"})
+    elif name == "force_torque":
+        key = str(arguments.get("key", "box") or "box")
+        tx = float(arguments.get("tx", 0.0) or 0.0)
+        ty = float(arguments.get("ty", 800.0) or 800.0)
+        tz = float(arguments.get("tz", 0.0) or 0.0)
+        resp = agent_request({"line": f"force_torque {key} {tx} {ty} {tz}"})
     else:
         return json.dumps({"ok": False, "error": f"unknown tool: {name}"})
 
@@ -255,3 +292,4 @@ if __name__ == "__main__":
 
 # agent: composer-2.5 | 2026-07-28 | mcp dual port render tool | 13f975
 # agent: composer-2.5 | 2026-07-29 | mcp wire input transform tools | 2f9c8a
+# agent: composer-2.5 | 2026-07-30 | sync missing agent tools | 43558a

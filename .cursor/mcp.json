@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "ngame": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/mcp_agent.py"],
+      "env": {
+        "NG_AGENT_PORT": "27100"
+      }
+    },
+    "ngame-view": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/mcp_agent.py"],
+      "env": {
+        "NG_AGENT_PORT": "27101"
+      }
+    }
+  }
+}

@@ -14,12 +14,12 @@ Box.prototype.fixed_step = function (dt) {
   var tx = 0;
   var ty = 0;
   var tz = 0;
-  if (global.get_input(global.KEY_A)) ty += 1;
-  if (global.get_input(global.KEY_D)) ty -= 1;
+  if (global.get_input(global.KEY_A)) tz += 1;
+  if (global.get_input(global.KEY_D)) tz -= 1;
   if (global.get_input(global.KEY_W)) tx += 1;
   if (global.get_input(global.KEY_S)) tx -= 1;
   if (tx !== 0 || ty !== 0 || tz !== 0) {
-    var s = 800.0;
+    var s = 200.0;
     global.apply_torque(this.handle, { x: tx * s, y: ty * s, z: tz * s });
   }
 };
