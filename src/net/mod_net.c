@@ -117,6 +117,11 @@ typedef struct ModNetCtx {
   uint32_t lock_roster_sent_tick;
   uint32_t lock_roster_pulse; /* wall-ish flush count for cold-start roster spam */
   uint32_t lock_last_sim_tick; /* detect lockstep clock restart (scene reload) */
+  /* Bumped on scene load; carried in SESSION.snap_tick when !syncing so clients
+   * force-reload same scene ids (solar→solar). */
+  // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
+  uint32_t scene_epoch;
+  uint32_t applied_scene_epoch;
   uint8_t *lock_phys_rx;
   int lock_phys_rx_size;
   int lock_phys_rx_got;
@@ -193,12 +198,17 @@ static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_
   if (mod_lockstep_syncing() || ctx->lock_join_pending) {
     session->syncing = 1u;
     session->snap_tick = mod_lockstep_sim_tick();
+  } else if (ctx->scene_epoch != 0u) {
+    /* Non-join SESSION: snap_tick carries scene_epoch for same-id reload. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
+    session->snap_tick = ctx->scene_epoch;
   }
 }
 
 
 static void mod_net_lock_free_peer_phys(NetPeerState *ps) {
   if (ps && ps->lock_phys_data) {
+    // agent: cursor-grok-4.5 | 2026-07-31 | phys joiner only no fanout | c01e05
     b3FreeSaveData(ps->lock_phys_data, ps->lock_phys_size);
     ps->lock_phys_data = NULL;
     ps->lock_phys_size = 0;
@@ -316,12 +326,20 @@ static void mod_net_lockstep_broadcast_roster(ModNetCtx *ctx, NgNet *net) {
 }
 
 static void mod_net_broadcast_session(ModNetCtx *ctx, NgNet *net) {
+  // agent: cursor-grok-4.5 | 2026-07-31 | throttle roster outside flush | 600f58
   if (!net) {
     return;
   }
   ng_net_foreach_peer(net, mod_net_send_session_peer, ctx);
   ng_net_flush(net);
-  mod_net_lockstep_broadcast_roster(ctx, net);
+  /* One roster pulse with SESSION is enough for cold mirrors. Skip during
+   * late-join pause (READY sends RESUME). Never spam reliable RESUME here. */
+  if (mod_lockstep_active() && mod_lockstep_is_clock_owner() && !ctx->lock_join_pending) {
+    mod_net_lockstep_broadcast_roster(ctx, net);
+    ctx->lock_roster_sent_tick = mod_lockstep_sim_tick() ? mod_lockstep_sim_tick() : 1u;
+    ctx->lock_roster_pulse = 1u;
+    ctx->lock_last_sim_tick = mod_lockstep_sim_tick();
+  }
 }
 
 static void mod_net_relay_state_update(NgNet *net, NgNetPeer *peer, void *vctx) {
@@ -1161,6 +1179,8 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
       break;
     }
     mod_lockstep_add_peer(pkt.peer_id);
+    /* Pin clock to join snap before RESUME so host cannot step past joiner. */
+    mod_lockstep_set_sim_tick(pkt.sim_tick);
     NG_LOG_INFO("lockstep: RESUME tick=%u peers local+%u", pkt.sim_tick, pkt.peer_id);
     NgLockResumePkt resume = {0};
     resume.sim_tick = pkt.sim_tick;
@@ -1187,6 +1207,7 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
       break;
     }
     ng_net_broadcast(net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+    ng_net_flush(net);
     mod_lockstep_end_sync();
     ctx->lock_join_pending = false;
     ctx->lock_joining_peer = 0;
@@ -1300,7 +1321,19 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     /* Lockstep peers load Box3D on the server slot. Leaving lockstep must tear that
      * world down and clear the fixed gate — otherwise cube STALLs forever. */
     if (session.lockstep) {
-      mod_scene_on_session(&session);
+      /* snap_tick as scene_epoch when !syncing → force same-id reload. */
+      // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
+      bool force = false;
+      if (!session.syncing && session.snap_tick != 0u &&
+          session.snap_tick != ctx->applied_scene_epoch) {
+        force = true;
+        ctx->applied_scene_epoch = session.snap_tick;
+      }
+      if (force) {
+        mod_scene_on_session_forced(&session);
+      } else {
+        mod_scene_on_session(&session);
+      }
     } else {
       mod_scene_clear_lockstep_server();
     }
@@ -1374,6 +1407,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     break;
   }
   case NG_PKT_LOCK_PHYS: {
+    // agent: cursor-grok-4.5 | 2026-07-31 | phys joiner only no fanout | c01e05
     NgLockPhysPkt pkt = {0};
     if (!ng_proto_decode_lock_phys(buf, &pkt)) {
       return;
@@ -1409,13 +1443,14 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       break;
     }
     mod_lockstep_set_sim_tick(pkt.sim_tick);
-    mod_lockstep_await_phys(false);
+    /* Keep await_phys until RESUME so joiner cannot step on in-flight tips. */
     {
       NgLockReadyPkt ready = {
           .peer_id = ctx->lock_peer_id ? ctx->lock_peer_id : (uint8_t)mod_lockstep_local_peer_id(),
           .sim_tick = pkt.sim_tick,
           .hash = mod_scene_physics_checksum(),
       };
+      /* Host accepts READY only from lock_joining_peer; mirror READY is ignored. */
       NG_LOG_INFO("lockstep: send READY peer=%u tick=%u hash=0x%08x", ready.peer_id, ready.sim_tick,
                   ready.hash);
       if (ng_proto_encode_lock_ready(&ctx->tx_buf, ++ctx->seq, &ready)) {
@@ -1435,19 +1470,16 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       return;
     }
     NG_LOG_INFO("lockstep: RESUME tick=%u peer_count=%u", pkt.sim_tick, pkt.peer_count);
-    for (uint8_t i = 0; i < pkt.peer_count; i++) {
-      NG_LOG_INFO("lockstep: resume add peer=%u", pkt.peer_ids[i]);
-      mod_lockstep_add_peer(pkt.peer_ids[i]);
-    }
-    // agent: composer-2.5 | 2026-07-30 | lockstep peer roster sync | ffd508
-    mod_lockstep_note_roster();
-    /* Roster-only RESUME must not wipe input rings; join sync still ends here. */
+    /* Authoritative roster — drop disconnect ghosts or all_have STALLs forever. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 3cc0b8
+    mod_lockstep_apply_roster(pkt.peer_ids, (int)pkt.peer_count);
+    /* Join/PAUSE ends on RESUME. Host skips roster pulses during join_pending,
+     * so await_phys here means PHYS imported and READY was sent. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | phys joiner only no fanout | c01e05
     if (mod_lockstep_syncing() || mod_lockstep_awaiting_phys()) {
       mod_lockstep_set_sim_tick(pkt.sim_tick);
       mod_lockstep_end_sync();
     }
-    /* Roster-only RESUME must not snap sim_tick — that desyncs worlds without PHYS. */
-    // agent: composer-2.5 | 2026-07-30 | no snap roster without phys | f942ca
     break;
   }
   default:
@@ -1486,6 +1518,9 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
                   mod_lockstep_needs_join_sync() ? 1 : 0);
     }
     if (mod_lockstep_needs_join_sync()) {
+      // agent: cursor-grok-4.5 | 2026-07-31 | phys joiner only no fanout | c01e05
+      /* Joiner-only Box3D dump. Existing peers already share the world at T —
+       * re-importing the save into them desyncs hashes (not Gaffer late-join). */
       mod_scene_runtime_use_server();
       const uint32_t tick = mod_lockstep_sim_tick();
       mod_lockstep_begin_sync(tick);
@@ -1504,7 +1539,8 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
         ps->lock_phys_tick = tick;
         ps->pending_lock_phys = true;
         ps->pending_connect_snap = false;
-        NG_LOG_INFO("lockstep: phys export ok peer=%u bytes=%d", ps->peer_id, phys_size);
+        NG_LOG_INFO("lockstep: phys export ok peer=%u bytes=%d (joiner only)", ps->peer_id,
+                    phys_size);
       } else {
         NG_LOG_ERROR("lockstep: phys export failed peer=%u", ps->peer_id);
         if (phys) {
@@ -1546,6 +1582,11 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
       ctx->controller_id = 0;
       ng_net_foreach_peer(net, mod_net_pick_controller, ctx);
       mod_net_broadcast_session(ctx, net);
+    }
+    /* Tell survivors the peer is gone — one reliable roster, not a spam loop. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | roster remove on disconnect | c9f9cd
+    if (mod_lockstep_active() && mod_lockstep_is_clock_owner()) {
+      mod_net_lockstep_broadcast_roster(ctx, net);
     }
   }
 }
@@ -2144,46 +2185,29 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
       mod_net_send_lock_tx(ctx);
     }
   }
-  /* Owner zero-fills missing peers at step time — broadcast those committed bits. */
+  /* Cold roster only (tick 0). No periodic reliable RESUME — every 300 ticks
+   * (~5s) starved UDP LOCK_INPUT and hard-froze peers (Gaffer anti-drift #4). */
+  // agent: cursor-grok-4.5 | 2026-07-31 | drop periodic roster pulses | 9fb282
+  // agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | 7bdd5e
   if (mod_lockstep_is_clock_owner()) {
-    NgLockSynth synth[NG_LOCK_SYNTH_MAX];
-    const int sn = mod_lockstep_drain_synth(synth, NG_LOCK_SYNTH_MAX);
-    for (int i = 0; i < sn; i++) {
-      NgLockInputPkt sp = {0};
-      sp.peer_id = (uint8_t)synth[i].peer_id;
-      sp.base_tick = synth[i].tick;
-      sp.count = 1;
-      sp.bits[0] = synth[i].bits;
-      if (ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &sp)) {
-        mod_net_send_lock_tx(ctx);
-      }
+    const uint32_t st = mod_lockstep_sim_tick();
+    if (st == 0u && ctx->lock_roster_sent_tick > 1u && ctx->lock_last_sim_tick > 0u) {
+      ctx->lock_roster_sent_tick = 0;
+      ctx->lock_roster_pulse = 0;
     }
-    /* Roster: enough for cold mirrors to leave BUFFER — never spam reliable RESUME
-     * while waiting for inputs (starves LOCK_INPUT → got_input never sets → freeze). */
-    // agent: composer-2.5 | 2026-07-30 | roster broadcast early often | 0dbf8a
-    // agent: composer-2.5 | 2026-07-31 | join abort end sync recover | 705ccc
-    {
-      const uint32_t st = mod_lockstep_sim_tick();
-      /* Scene reload restarts sim at 0 — re-arm cold roster (pulse must not stay spent). */
-      if (st == 0u && ctx->lock_roster_sent_tick > 1u && ctx->lock_last_sim_tick > 0u) {
-        ctx->lock_roster_sent_tick = 0;
-        ctx->lock_roster_pulse = 0;
-      }
-      ctx->lock_last_sim_tick = st;
-      ctx->lock_roster_pulse++;
-      const bool first = (ctx->lock_roster_sent_tick == 0);
-      /* While held at tick 0, rebroadcast a few times only (~1s apart), then stop. */
-      const bool cold_due =
-          (st == 0u) && (ctx->lock_roster_pulse <= 240u) && (ctx->lock_roster_pulse % 60u) == 0u;
-      const bool tick_due = (st > 0 && (st % 300u) == 0u && st != ctx->lock_roster_sent_tick);
-      if (first || cold_due || tick_due) {
-        ctx->lock_roster_sent_tick = st ? st : ctx->lock_roster_pulse;
+    ctx->lock_last_sim_tick = st;
+    ctx->lock_roster_pulse++;
+    const bool first = (ctx->lock_roster_sent_tick == 0);
+    const bool cold_due =
+        (st == 0u) && (ctx->lock_roster_pulse <= 180u) && (ctx->lock_roster_pulse % 60u) == 0u &&
+        (ctx->lock_roster_pulse / 60u) <= 3u;
+    if (!ctx->lock_join_pending && (first || cold_due)) {
+      ctx->lock_roster_sent_tick = st ? st : ctx->lock_roster_pulse;
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
-        if (ctx->net) {
-          mod_net_lockstep_broadcast_roster(ctx, ctx->net);
-        }
-#endif
+      if (ctx->net) {
+        mod_net_lockstep_broadcast_roster(ctx, ctx->net);
       }
+#endif
     }
   }
   NgLockAckPkt ack = {
@@ -2332,6 +2356,12 @@ void mod_net_root_mirror_text(char *out, size_t cap) {
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 void mod_net_broadcast_scene_session(void) {
   ModNetCtx *ctx = &g_net_ctx;
+  /* Each host scene load gets a new epoch so solar→solar reloads clients. */
+  // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
+  ctx->scene_epoch += 1u;
+  if (ctx->scene_epoch == 0u) {
+    ctx->scene_epoch = 1u;
+  }
   if (ctx->net) {
     mod_net_broadcast_session(ctx, ctx->net);
   }
@@ -2383,3 +2413,10 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-30 | no snap roster without phys | f942ca
 // agent: composer-2.5 | 2026-07-31 | join abort end sync recover | 705ccc
 // agent: composer-2.5 | 2026-07-31 | rearm roster on sim restart | b74259
+// agent: cursor-grok-4.5 | 2026-07-31 | throttle roster outside flush | 600f58
+// agent: cursor-grok-4.5 | 2026-07-31 | phys joiner only no fanout | c01e05
+// agent: cursor-grok-4.5 | 2026-07-31 | drop periodic roster pulses | 9fb282
+// agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | 7bdd5e
+// agent: cursor-grok-4.5 | 2026-07-31 | roster remove on disconnect | c9f9cd
+// agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 3cc0b8
+// agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08

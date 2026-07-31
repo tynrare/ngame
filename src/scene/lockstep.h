@@ -16,7 +16,7 @@
 #ifndef NG_LOCK_PEER_MAX
 #define NG_LOCK_PEER_MAX 8
 #endif
-#define NG_LOCK_SYNTH_MAX 256
+// agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | 2600bd
 
 // agent: composer-2.5 | 2026-07-30 | lockstep playout configurable | 9afea6
 void mod_lockstep_set_playout_ticks(uint32_t ticks);
@@ -26,12 +26,6 @@ typedef enum NgLockGate {
   NG_LOCK_GATE_BUFFER = 1, /* consume wall time for playout inputs only */
   NG_LOCK_GATE_STALL = 2,  /* keep accumulator; missing peer input / syncing */
 } NgLockGate;
-
-typedef struct NgLockSynth {
-  uint32_t peer_id;
-  uint32_t tick;
-  uint8_t bits;
-} NgLockSynth;
 
 void mod_lockstep_reset(void);
 void mod_lockstep_set_active(bool active);
@@ -46,6 +40,9 @@ void mod_lockstep_set_local_peer(uint32_t peer_id);
 void mod_lockstep_clear_peers(void);
 void mod_lockstep_add_peer(uint32_t peer_id);
 void mod_lockstep_remove_peer(uint32_t peer_id);
+/* RESUME roster is authoritative — drop peers not listed (disconnect). */
+// agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 6f64df
+void mod_lockstep_apply_roster(const uint8_t *peer_ids, int count);
 bool mod_lockstep_needs_join_sync(void);
 
 void mod_lockstep_begin_sync(uint32_t tick);
@@ -75,8 +72,6 @@ uint32_t mod_lockstep_last_hash_tick(void);
 uint32_t mod_lockstep_local_peer_id(void);
 
 int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits, int max_count);
-/* Drain owner-synthesized default inputs for broadcast (peer may be remote). */
-int mod_lockstep_drain_synth(NgLockSynth *out, int max_count);
 uint32_t mod_lockstep_highest_recv_contiguous(void);
 void mod_lockstep_debug(uint32_t *out_send, int *out_peers, int *out_started, uint32_t *out_peer);
 void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_started, uint32_t *out_peer,
@@ -94,3 +89,5 @@ void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_starte
 // agent: composer-2.5 | 2026-07-30 | clock owner APIs | a6571f
 // agent: composer-2.5 | 2026-07-30 | wait all_have before zero-fill | 24fa25
 // agent: composer-2.5 | 2026-07-31 | gaffer playout 6 ticks | 6e3db6
+// agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | 2600bd
+// agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 6f64df

@@ -89,6 +89,10 @@ static void ng_net_tune_peer(ENetPeer *peer) {
   peer->packetThrottleLimit = ENET_PEER_PACKET_THROTTLE_SCALE;
   peer->packetThrottleCounter = 0;
   enet_peer_ping_interval(peer, 50);
+  /* Default ENet min timeout is 5s — lockstep freezes that whole window on
+   * crash/kill. Detect dead peers faster; graceful close still uses DISCONNECT. */
+  // agent: cursor-grok-4.5 | 2026-07-31 | handle enet disconnect timeout | 5247a8
+  enet_peer_timeout(peer, 32, 1000, 5000);
   enet_peer_ping(peer);
 }
 
@@ -387,7 +391,11 @@ static void ng_net_dispatch(NgNet *n, NgNetPacketFn fn, void *ctx, ENetEvent *ev
     enet_packet_destroy(ev->packet);
     break;
   case ENET_EVENT_TYPE_DISCONNECT:
-    NG_LOG_INFO("net peer disconnected");
+  case ENET_EVENT_TYPE_DISCONNECT_TIMEOUT:
+    /* Timeout (kill -9 / crashed peer) must drop lockstep roster too. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | handle enet disconnect timeout | 5247a8
+    NG_LOG_INFO("net peer disconnected%s",
+                ev->type == ENET_EVENT_TYPE_DISCONNECT_TIMEOUT ? " (timeout)" : "");
     if (n->peer_fn) {
       n->peer_fn(n, &wrap, false, n->peer_ctx);
     }
@@ -407,7 +415,8 @@ static void ng_net_dispatch(NgNet *n, NgNetPacketFn fn, void *ctx, ENetEvent *ev
 
 static bool ng_net_user_event(const ENetEvent *ev) {
   return ev->type == ENET_EVENT_TYPE_RECEIVE || ev->type == ENET_EVENT_TYPE_CONNECT ||
-         ev->type == ENET_EVENT_TYPE_DISCONNECT;
+         ev->type == ENET_EVENT_TYPE_DISCONNECT ||
+         ev->type == ENET_EVENT_TYPE_DISCONNECT_TIMEOUT;
 }
 
 static void ng_net_service(NgNet *n, NgNetPacketFn fn, void *ctx, uint32_t timeout_ms) {
@@ -550,3 +559,4 @@ NgNet *ng_net_loopback_client(NgNetLoopbackPair *pair) {
   return pair ? pair->client : NULL;
 }
 #endif
+// agent: cursor-grok-4.5 | 2026-07-31 | handle enet disconnect timeout | 5247a8

@@ -208,14 +208,28 @@ Keep agents honest against this article — do **not** “optimize latency” by
 1. **Playout ≥ ~6 ticks @ 60 Hz** — Gaffer trades lag for smoothness. Cutting to 2 caused constant STALL underruns.
 2. **Mirrors never invent inputs** — `STALL` until `all_have(next_sim)`. **Owner also waits for real inputs** (no zero-fill race — that wraps the ring and freezes mirrors).
 3. **UDP-style redundant input window** — do not put critical inputs only on reliable/TCP-ordered paths; roster RESUME may use reliable but must not starve input flush.
-4. **Cold-start roster** — send a few RESUME pulses at tick 0, then stop. Do **not** spam reliable roster while waiting for `got_input` (starves UDP inputs → permanent freeze).
+4. **Cold-start roster only** — a few RESUME pulses at tick 0 (and SESSION/READY), then stop. Do **not** periodic reliable roster (e.g. every 300 ticks / ~5s) — that starves UDP `LOCK_INPUT` and hard-freezes peers.
 5. **Join abort must `end_sync`** — failed READY must not leave `syncing` forever (permanent freeze).
 6. **Catch-up ≤ 4 fixed steps / frame** — already `NG_MOD_FIXED_MAX_STEPS`.
 7. **Smooth ≠ lagless** — WASD feel comes after playout is healthy; do not re-break determinism for snappier keys.
 8. **Do not soft-cap owner on acks alone** — that deadlocks when acks are late; Gaffer waits for *inputs*, then everyone steps together.
 9. **Owner does not invent zeros to keep the clock moving** — hitch together (Gaffer) rather than race the ring.
-10. **No solo-GO on a transient 1-peer roster** — debounce ~1.5s so peer 2 can appear; early solo-race desyncs permanently.
-12. **Re-arm cold roster on sim restart** — scene reload sets `sim_tick=0`; spent roster pulse counters must reset or mirrors BUFFER forever.
+10. **Owner `peer_count==0` → BUFFER** — after scene restart the server clears peers; solo-GO races ahead of mirrors. Wait for real peers (no timed debounce, no timed post-join hold).
+11. **Re-arm cold roster on sim restart** — scene reload sets `sim_tick=0`; spent roster pulse counters must reset or mirrors BUFFER forever.
+12. **Late-join Box3D snap is joiner-only** — `b3World_Save`/`Restore` is deterministic for the joiner. Existing peers already share world at T; do **not** fanout PHYS (re-import desyncs hashes). PAUSE→PHYS(joiner)→READY→RESUME; `end_sync` wipes rings and everyone samples T+1 together.
+13. **Sample inputs while paused** — gate may STALL on syncing/await, but still `gen_local` so RESUME is not input-starved.
+14. **Tip ≤ sim + playout** — do not race send-ahead to RING/2 while STALLed (stale WASD + ring wrap).
+15. **Reduce, don’t band-aid** — no solo debounce, no post-sync clock hold, no ack lead-cap, no PHYS fanout. If it freezes, missing input *n* or divergent clocks — fix those.
+16. **Send window = newest ≤ INPUT_MAX** — redundant UDP window must end at the tip. Filling from tick 1 with `NG_LOCK_INPUT_MAX` (32) never reaches `send>32` → permanent STALL at tick 32. After `end_sync` wipe, skip leading holes or the window emits nothing.
+17. **No tip growth during PAUSE / resume_barrier** — sample `next_sim` only; growing playout while STALLed re-feeds a joiner the +playout race.
+18. **Joiner keeps `await_phys` until RESUME** — clearing await on PHYS lets the joiner step on in-flight tips before RESUME.
+19. **PHYS is joiner-only** — existing peers already share world at T; re-import desyncs hashes.
+20. **Disconnect drops peer from roster** — host removes + one reliable RESUME; mirrors treat RESUME as authoritative (drop ghosts). Otherwise `all_have` waits forever for a closed client.
+21. **Same-scene reload is a real reload** — host bumps scene epoch on load; clients force-reload server slot when epoch changes (solar→solar). Controller-only SESSION keeps the same epoch.
 
 <!-- agent: composer-2.5 | 2026-07-31 | Gaffer networked physics article notes | e2d8bd -->
 <!-- agent: composer-2.5 | 2026-07-31 | gaffer align notes in article | 4475e8 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | prune anti-drift band-aids | e33d0a -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | await until resume barrier | 159466 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer no periodic roster | c82153 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer drop peer on leave | 1fddf5 -->

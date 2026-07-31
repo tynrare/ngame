@@ -1288,9 +1288,8 @@ static void mod_scene_drain_pending_change(ModSceneCtx *ctx) {
   strncpy(next_scene, ctx->pending_scene_id, sizeof(next_scene) - 1);
   next_scene[sizeof(next_scene) - 1] = '\0';
   ctx->pending_scene_id[0] = '\0';
-  if (strcmp(next_scene, ctx->scene_id) == 0) {
-    return;
-  }
+  /* Same id must reload — solar→solar restarts the scene (not a no-op). */
+  // agent: cursor-grok-4.5 | 2026-07-31 | allow same scene reload | 4ee66e
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   char reply[256];
   if (mod_sim_load_scene) {
@@ -1835,8 +1834,10 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
     if (session->lockstep) {
       mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
     }
-    /* Late-join: defer body create until LOCK_PHYS import (syncing or snap_tick). */
-    const bool join_sync = session->lockstep && (session->syncing || session->snap_tick > 0);
+    /* Late-join only when host marks syncing — snap_tick alone false-triggers
+     * await_phys STALL on ordinary scene switches. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | join_sync requires syncing flag | 73e30a
+    const bool join_sync = session->lockstep && session->syncing;
     NG_LOG_INFO("lockstep: session start scene=%s your=%u ctrl=%u lock=%u syncing=%u snap=%u "
                 "join_sync=%d",
                 session->scene_id, session->your_id, session->controller_id, session->lockstep,
@@ -1853,17 +1854,26 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
     mod_scene_graph_foreach_unmatched_pending(mod_scene_materialize_pending_ud, ctx);
     // agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
     // agent: composer-2.5 | 2026-07-30 | view lockstep activate not restart | 7a6732
-    /* Fresh lockstep clock once per scene — server slot owns the restart.
-     * View SESSION must not reset again or peers diverge (A@8 vs B@129). */
-    if (ctx == &g_scene_server.scene) {
+    // agent: cursor-grok-4.5 | 2026-07-31 | view restart on scene change | abd7ca
+    /* Fresh lockstep clock on scene begin. Late-join keeps snap_tick via
+     * begin_sync after activate (do not wipe mid-join with a second restart). */
+    if (join_sync) {
+      mod_scene_lockstep_maybe_activate(session->your_id);
+      if (mod_lockstep_active()) {
+        mod_lockstep_begin_sync(session->snap_tick);
+        mod_lockstep_await_phys(true);
+        NG_LOG_INFO("lockstep: joiner waiting for phys snap tick=%u", session->snap_tick);
+      }
+    } else if (ctx == &g_scene_server.scene) {
       mod_scene_lockstep_maybe_restart(session->your_id);
     } else {
-      mod_scene_lockstep_maybe_activate(session->your_id);
-    }
-    if (join_sync && mod_lockstep_active()) {
-      mod_lockstep_begin_sync(session->snap_tick);
-      mod_lockstep_await_phys(true);
-      NG_LOG_INFO("lockstep: joiner waiting for phys snap tick=%u", session->snap_tick);
+      /* View cold load: align to tick 0 when server slot did not restart this
+       * process (pure view / scene switch). Keep-alive if already at 0. */
+      if (mod_lockstep_active() && mod_lockstep_sim_tick() == 0u) {
+        mod_scene_lockstep_maybe_activate(session->your_id);
+      } else {
+        mod_scene_lockstep_maybe_restart(session->your_id);
+      }
     }
   } else if ((session->lockstep || mod_scene_physics_is_lockstep()) &&
              !mod_lockstep_active()) {
@@ -1879,6 +1889,12 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
 void mod_scene_on_session(const NgSessionState *session) {
   mod_scene_runtime_use_server();
   mod_scene_on_session_ctx(mod_scene_runtime_scene(), session, false);
+}
+
+void mod_scene_on_session_forced(const NgSessionState *session) {
+  // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 0ca291
+  mod_scene_runtime_use_server();
+  mod_scene_on_session_ctx(mod_scene_runtime_scene(), session, true);
 }
 
 void mod_scene_view_on_session(const NgSessionState *session) {
@@ -2602,3 +2618,7 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | set lockstep clock owner | d24ebb
 // agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
 // agent: composer-2.5 | 2026-07-30 | get_input always lockstep slots | 861530
+// agent: cursor-grok-4.5 | 2026-07-31 | view restart on scene change | abd7ca
+// agent: cursor-grok-4.5 | 2026-07-31 | join_sync requires syncing flag | 73e30a
+// agent: cursor-grok-4.5 | 2026-07-31 | allow same scene reload | 4ee66e
+// agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 0ca291
