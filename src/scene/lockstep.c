@@ -26,7 +26,7 @@ static double mod_lockstep_wall_now(void) {
 
 typedef struct NgLockSlot {
   bool present;
-  bool predicted; /* Mode B: filled with last-input hold; confirm may correct */
+  bool predicted; /* last-input hold; confirm may correct */
   uint8_t bits;
   uint32_t tick; /* absolute tick; required so ring wrap cannot false-match */
 } NgLockSlot;
@@ -40,7 +40,7 @@ typedef struct NgLockPeer {
   uint32_t highest_recv;
   uint32_t ack_our; /* remote reports they have world inputs through this tick */
   double last_input_wall; /* monotonic; host prunes silent peers (left) */
-  uint8_t last_bits; /* Mode B prediction hold */
+  uint8_t last_bits; /* prediction hold */
 } NgLockPeer;
 
 typedef struct NgLockCtx {
@@ -56,7 +56,7 @@ typedef struct NgLockCtx {
   uint32_t step_tick;
   uint32_t local_send_tick;
   uint32_t playout_ticks;
-  uint32_t confirmed_tick; /* Mode B: highest host-confirmed tick */
+  uint32_t confirmed_tick; /* highest host-confirmed tick */
   double confirm_wait_start; /* wall when waiting on next confirm */
   NgLockConfirmPkt last_confirm;
   bool last_confirm_valid;
@@ -441,7 +441,8 @@ static void mod_lockstep_ensure_predict(uint32_t tick) {
 NgLockGate mod_lockstep_gate(void) {
   // agent: composer-2.5 | 2026-07-31 | host confirm zero fill gate | 0e6e01
   // agent: composer-2.5 | 2026-07-31 | predict fill gate rollback | 5c8d67
-  /* Mode B: confirmed GO, or mirror predict up to PREDICT_MAX with last-input. */
+  /* Confirmed GO, or mirror predict up to PREDICT_MAX with last-input. */
+  // agent: composer-2.5 | 2026-07-31 | drop mode b comments lock | 02a2b4
   if (!g_lock.active) {
     return NG_LOCK_GATE_GO;
   }
@@ -557,12 +558,12 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
     // agent: cursor-grok-4.5 | 2026-07-31 | no wire learn any side | b7c0ff
     return;
   }
-  /* Always heartbeat — late packets still prove the peer is alive (Mode B
-   * confirm may have already zero-filled this tick; do not silent-prune). */
+  /* Always heartbeat — late packets still prove the peer is alive
+   * (confirm may have already zero-filled this tick; do not silent-prune). */
   p->got_input = true;
   p->last_input_wall = mod_lockstep_wall_now();
   p->last_bits = bits;
-  /* Mode B: drop late inputs after host confirm (bits already committed). */
+  /* Drop late inputs after host confirm (bits already committed). */
   if (g_lock.confirmed_tick != 0 && tick <= g_lock.confirmed_tick) {
     return;
   }
@@ -1109,3 +1110,4 @@ int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers) {
 // agent: composer-2.5 | 2026-07-31 | mirrors never self confirm | 6b113e
 // agent: composer-2.5 | 2026-07-31 | confirm hist unsent bcast | 226e5b
 // agent: composer-2.5 | 2026-07-31 | predict save ring depth | 752810
+// agent: composer-2.5 | 2026-07-31 | drop mode b comments lock | 02a2b4

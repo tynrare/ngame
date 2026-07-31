@@ -34,8 +34,9 @@ void mod_scene_view_on_session(const NgSessionState *session);
 void mod_scene_clear_lockstep_server(void);
 void mod_scene_apply_remote(const NgStateUpdate *update);
 void mod_scene_view_apply_remote(const NgStateUpdate *update);
-/* Mode B: after CONFIRM mismatch, Restore+resim predicted tip (no draw). */
+/* After CONFIRM mismatch, Restore+resim predicted tip (no draw). */
 // agent: composer-2.5 | 2026-07-31 | lockstep resim after confirm | bdb5d7
+// agent: composer-2.5 | 2026-07-31 | drop mode b comment scene | 4b59ea
 void mod_scene_lockstep_pump_resim(void);
 bool mod_scene_take_flush(NgStateUpdate *out);
 bool mod_scene_graph_active(void);
@@ -65,3 +66,5 @@ bool mod_scene_is_native(void);
 // agent: composer-2.5 | 2026-07-29 | shared raycast plane helper | 7c1d4a
 // agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
 // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | a3917d
+// agent: composer-2.5 | 2026-07-31 | lockstep resim after confirm | bdb5d7
+// agent: composer-2.5 | 2026-07-31 | drop mode b comment scene | 4b59ea

@@ -16,13 +16,13 @@
 /* Host: peer missing next-sim input longer than this (wall) → treat as leave. */
 // agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
 #define NG_LOCK_SILENT_SEC 1.0
-/* Mode B: confirm next tick after this wait if any peer input still missing (zeros).
+/* Confirm next tick after this wait if any peer input still missing (zeros).
  * Must exceed playout+jitter; 100ms matched playout and zero-filled live peers → prune. */
 // agent: composer-2.5 | 2026-07-31 | confirm deadline playout | 7b5fce
 #define NG_LOCK_CONFIRM_SEC 0.35
-/* Mode B: peer ack/recv lag behind confirmed → PHYS catchup. */
+/* Peer ack/recv lag behind confirmed → PHYS catchup. */
 #define NG_LOCK_CATCHUP_TICKS 45
-/* Mode B: max local predict ticks past confirmed (Save ring). */
+/* Max local predict ticks past confirmed (Save ring). */
 #define NG_LOCK_PREDICT_MAX 8
 /* Host: consecutive LOCK_HASH mismatches → soft PHYS resync for that peer. */
 // agent: composer-2.5 | 2026-07-31 | desync streak phys APIs | 88dfc6
@@ -100,8 +100,9 @@ void mod_lockstep_debug(uint32_t *out_send, int *out_peers, int *out_started, ui
 void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_started, uint32_t *out_peer,
                              int *out_syncing, int *out_await, uint32_t *out_sim);
 
-/* Mode B: host-confirmed input timeline. */
+/* Host-confirmed input timeline. */
 // agent: composer-2.5 | 2026-07-31 | mode b confirm APIs | 17e3ab
+// agent: composer-2.5 | 2026-07-31 | drop mode b comments | e68fcc
 typedef struct NgLockConfirmPkt NgLockConfirmPkt;
 uint32_t mod_lockstep_confirmed_tick(void);
 void mod_lockstep_set_confirmed_tick(uint32_t tick);
@@ -139,6 +140,7 @@ void mod_lockstep_on_soft_phys(uint32_t tick);
 // agent: cursor-grok-4.5 | 2026-07-31 | lockstep net lost buffer | 939686
 // agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
 // agent: composer-2.5 | 2026-07-31 | mode b confirm APIs | 17e3ab
+// agent: composer-2.5 | 2026-07-31 | drop mode b comments | e68fcc
 // agent: composer-2.5 | 2026-07-31 | predict APIs | bb7d40
 // agent: composer-2.5 | 2026-07-31 | confirm deadline playout | 7b5fce
 // agent: composer-2.5 | 2026-07-31 | confirm hist APIs | b075d5

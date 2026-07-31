@@ -62,12 +62,10 @@ Every peer process runs the **same** body path: capture/share tick inputs → `f
 <!-- agent: composer-2.5 | 2026-07-30 | docs bandwidth lockstep playout | 563455 -->
 **Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`.
 
-<!-- agent: composer-2.5 | 2026-07-31 | Mode B lockstep confirm | 8a5fc9 -->
-<!-- agent: composer-2.5 | 2026-07-31 | scenes mode b resync note | 4588c4 -->
-<!-- agent: composer-2.5 | 2026-07-31 | scenes mode b resync note | 4588c4 -->
-**Mode B (default multi-peer):** host broadcasts reliable `LOCK_CONFIRM` (+ hist) for each tick (real inputs or zeros after `NG_LOCK_CONFIRM_SEC`). Peers step on confirmed ticks; mirrors may predict ≤ `NG_LOCK_PREDICT_MAX` with last-input hold and local Save-ring rollback. Late inputs after confirm are dropped (heartbeat kept). Lag ≥ `NG_LOCK_CATCHUP_TICKS` or repeated `LOCK_HASH` mismatch → soft `LOCK_PHYS` to **that peer only** (hash-verified). Classic STALL remains for join/`await_phys`/empty roster — not permanent hash freeze. See `docs/article_gaffer_networking.md` recovery ladder.
+<!-- agent: composer-2.5 | 2026-07-31 | drop mode b scenes note | 885a6c -->
+**Lockstep (multi-peer):** host broadcasts reliable `LOCK_CONFIRM` (+ hist) for each tick (real inputs or zeros after `NG_LOCK_CONFIRM_SEC`). Peers step on confirmed ticks; mirrors may predict ≤ `NG_LOCK_PREDICT_MAX` with last-input hold and local Save-ring rollback. Late inputs after confirm are dropped (heartbeat kept). Lag ≥ `NG_LOCK_CATCHUP_TICKS` or repeated `LOCK_HASH` mismatch → soft `LOCK_PHYS` to **that peer only** (hash-verified). Gate STALL remains for join/`await_phys`/empty roster — not permanent hash freeze. See `docs/article_gaffer_networking.md` recovery ladder.
 
-**Playout / Mode A note:** Missing peer input before confirm still waits up to the confirm deadline (short hitch), then zero-fills.
+**Playout note:** Missing peer input before confirm still waits up to the confirm deadline (short hitch), then zero-fills.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
@@ -153,6 +151,5 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep input consumers | 0ecb5e -->
 <!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
-<!-- agent: composer-2.5 | 2026-07-31 | Mode B lockstep confirm | 8a5fc9 -->
-<!-- agent: composer-2.5 | 2026-07-31 | scenes mode b resync note | 4588c4 -->
+<!-- agent: composer-2.5 | 2026-07-31 | drop mode b scenes note | 885a6c -->
 

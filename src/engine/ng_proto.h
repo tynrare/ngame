@@ -91,8 +91,9 @@ typedef struct NgLockResumePkt {
   uint8_t peer_ids[NG_LOCK_PEER_MAX];
 } NgLockResumePkt;
 
-/* Host-authoritative input vector for one sim tick (Mode B). */
+/* Host-authoritative input vector for one sim tick. */
 // agent: composer-2.5 | 2026-07-31 | lock confirm packet | 4cf5ef
+// agent: composer-2.5 | 2026-07-31 | drop mode b comment proto | 9e123b
 typedef struct NgLockConfirmPkt {
   uint32_t tick;
   uint8_t peer_count;
@@ -182,11 +183,9 @@ bool ng_proto_decode_lock_resume(NgProtoBuf *b, NgLockResumePkt *pkt);
 // agent: composer-2.5 | 2026-07-31 | lock confirm packet | 4cf5ef
 bool ng_proto_encode_lock_confirm(NgProtoBuf *b, uint16_t seq, const NgLockConfirmPkt *pkt);
 bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
-// agent: composer-2.5 | 2026-07-31 | lock confirm packet | 4cf5ef
-bool ng_proto_encode_lock_confirm(NgProtoBuf *b, uint16_t seq, const NgLockConfirmPkt *pkt);
-bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
 
 #endif
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa
 // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | c2b274
 // agent: composer-2.5 | 2026-07-31 | phys pkt expect hash | 2fd4e1
+// agent: composer-2.5 | 2026-07-31 | drop mode b comment proto | 9e123b
