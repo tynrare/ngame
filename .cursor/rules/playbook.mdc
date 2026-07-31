@@ -1,0 +1,27 @@
+---
+alwaysApply: false
+description: "Playbook: gateway per execution pattern + numbered flow in code"
+---
+For **complex, multi-step logic**, keep **one canonical execution story per pattern** in code—not scattered narration.
+
+**Terms:** **Scope** = bounded feature area. **Pattern** = multi-step flow with distinct triggers, actors, or state. **Gateway** = file that owns that pattern's playbook.
+
+**Decide:** (1) ≥3 coordinated steps, multiple actors, async/handshake, or branch matrix → playbook; else skip. (2) Different triggers/actors/state → separate gateways; shared ordering → one gateway. (3) ≥2 peer gateways or cross-pattern touchpoints → **scope index** required.
+
+**Gateway:**
+- One gateway per pattern; never two canonical playbooks for one flow.
+- Tightly coupled short flows may share one gateway; split when sections evolve independently.
+- No owner → thin gateway for that pattern only.
+- Header (before imports): purpose, scope in/out, `Flow id`, related files, tag line, playbook block.
+- Tag line: `Gateway role: index|pattern|nested | Scope id: … | Flow id: …` (+ `Upstream gateway`, `Downstream gateways`, `Related gateways` when linked).
+- Scope index: pattern list, gateway paths, touchpoints, shared invariants—no step duplication.
+- Other files: `// <flow-id> step N` only.
+
+**Linking:** peer gateways note touchpoints in scope index; nested gateways declare upstream + covered step IDs. Step IDs stable within each gateway; index resolves cross-pattern order. Index wins on touchpoint order; pattern gateway wins on its own steps.
+
+**Playbook block (gateway only):**
+- `// <Flow id> flow:` then numbered steps `// 1) actor → action → outcome` (`4b)` insertions).
+- Roles, events/messages, state transitions; **Branches / invariants** when non-obvious.
+- Update on behavior change—stale playbooks are bugs.
+
+**Avoid:** mega-gateway of unrelated flows; orphan playbooks in helpers; duplicate flows; cross-pattern refs without flow id.
