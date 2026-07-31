@@ -225,7 +225,9 @@ Keep agents honest against this article — do **not** “optimize latency” by
 18. **Joiner keeps `await_phys` until RESUME** — clearing await on PHYS lets the joiner step on in-flight tips before RESUME.
 19. **PHYS is joiner-only** — existing peers already share world at T; re-import desyncs hashes.
 20. **Disconnect drops peer from roster** — host removes + one reliable RESUME; mirrors treat RESUME as authoritative (drop ghosts). Otherwise `all_have` waits forever for a closed client.
-21. **Same-scene reload** — non-join lockstep SESSION force-reloads the client server slot (solar→solar). `snap_tick` is **join pause tick only** — never an epoch; scenes must use `session.syncing` for late-join (not `snap_tick > 0`).
+21. **Same-scene reload** — only `broadcast_scene_session` carries `scene_gen` in `snap_tick` when `!syncing`. Controller SESSION leaves `snap_tick=0` (no tear-down). Scenes use `session.syncing` for late-join, never `snap_tick > 0`.
+22. **ENet timeout ≥ ~5s** — sub-second timeouts drop live peers during late-join PHYS/SESSION reliable bursts. Prefer graceful DISCONNECT; timeout is for crashes.
+23. **Empty lobby clears join stall** — when ENet live peers hit 0, wipe lockstep peers + `lock_join_pending` / `syncing` so the next remote is not stuck waiting on ghosts.
 
 <!-- agent: composer-2.5 | 2026-07-31 | Gaffer networked physics article notes | e2d8bd -->
 <!-- agent: composer-2.5 | 2026-07-31 | gaffer align notes in article | 4475e8 -->
@@ -234,3 +236,5 @@ Keep agents honest against this article — do **not** “optimize latency” by
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer no periodic roster | c82153 -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer drop peer on leave | 1fddf5 -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer snap_tick join only | 84d395 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer timeout scene gen | dbad49 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer empty lobby prune | 17172b -->

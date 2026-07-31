@@ -117,6 +117,12 @@ typedef struct ModNetCtx {
   uint32_t lock_roster_sent_tick;
   uint32_t lock_roster_pulse; /* wall-ish flush count for cold-start roster spam */
   uint32_t lock_last_sim_tick; /* detect lockstep clock restart (scene reload) */
+  /* Bumped only in broadcast_scene_session; carried in snap_tick when !syncing
+   * so clients force-reload same scene ids. Controller SESSION leaves snap=0. */
+  // agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
+  uint32_t scene_gen;
+  uint32_t applied_scene_gen;
+  bool session_carry_gen;
   uint8_t *lock_phys_rx;
   int lock_phys_rx_size;
   int lock_phys_rx_got;
@@ -193,6 +199,10 @@ static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_
   if (mod_lockstep_syncing() || ctx->lock_join_pending) {
     session->syncing = 1u;
     session->snap_tick = mod_lockstep_sim_tick();
+  } else if (ctx->session_carry_gen && ctx->scene_gen != 0u) {
+    /* Scene load only — solar uses session.syncing for join, not snap_tick. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
+    session->snap_tick = ctx->scene_gen;
   }
 }
 
@@ -286,6 +296,15 @@ static void mod_net_roster_acc_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
     }
   }
   resume->peer_ids[resume->peer_count++] = (uint8_t)ps->peer_id;
+}
+
+static void mod_net_count_peers_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
+  (void)net;
+  (void)peer;
+  int *n = (int *)vctx;
+  if (n) {
+    (*n)++;
+  }
 }
 
 /* Clock owner: register every connected net peer and broadcast the roster. */
@@ -586,14 +605,16 @@ static void mod_net_send_connect_snapshot(NgNet *net, NgNetPeer *peer, void *vct
 #endif
   mod_scene_runtime_use_server();
   if (!mod_scene_is_loaded()) {
-    NG_LOG_INFO("lockstep: connect defer peer=%u (scene not loaded)", ps->peer_id);
+    // agent: cursor-grok-4.5 | 2026-07-31 | net connect log rename | af466e
+    NG_LOG_INFO("net: connect defer peer=%u (scene not loaded)", ps->peer_id);
     return;
   }
   if (ps->pending_connect_session) {
     ps->pending_connect_session = false;
-    NG_LOG_INFO("lockstep: send SESSION peer=%u join_pending=%d syncing=%d tick=%u",
+    // agent: cursor-grok-4.5 | 2026-07-31 | net connect log rename | af466e
+    NG_LOG_INFO("net: send SESSION peer=%u join_pending=%d syncing=%d tick=%u lock=%d",
                 ps->peer_id, ctx->lock_join_pending ? 1 : 0, mod_lockstep_syncing() ? 1 : 0,
-                mod_lockstep_sim_tick());
+                mod_lockstep_sim_tick(), mod_lockstep_active() ? 1 : 0);
     mod_net_send_session_peer(net, peer, ctx);
   }
   if (ps->pending_lock_phys) {
@@ -1312,13 +1333,16 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     /* Lockstep peers load Box3D on the server slot. Leaving lockstep must tear that
      * world down and clear the fixed gate — otherwise cube STALLs forever. */
     if (session.lockstep) {
-      /* Non-join SESSION always reloads server slot (solar→solar). Join keeps
-       * snap_tick as pause tick only — never overload it as an epoch. */
-      // agent: cursor-grok-4.5 | 2026-07-31 | force reload without epoch | c1e2dc
+      /* Force reload only when scene_gen changes (real scene load). Controller
+       * SESSION has snap_tick=0 — must not tear down a live lockstep world. */
+      // agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
       if (session.syncing) {
         mod_scene_on_session(&session);
-      } else {
+      } else if (session.snap_tick != 0u && session.snap_tick != ctx->applied_scene_gen) {
+        ctx->applied_scene_gen = session.snap_tick;
         mod_scene_on_session_forced(&session);
+      } else {
+        mod_scene_on_session(&session);
       }
     } else {
       mod_scene_clear_lockstep_server();
@@ -1541,7 +1565,9 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
       ng_net_flush(net);
     } else {
       // agent: composer-2.5 | 2026-07-30 | solo lockstep one peer | a8feaa
-      NG_LOG_INFO("lockstep: cold connect peer=%u (no mid-sim sync)", ps->peer_id);
+      // agent: cursor-grok-4.5 | 2026-07-31 | net connect log rename | af466e
+      NG_LOG_INFO("net: cold connect peer=%u (mid_sim=%d lock=%d)", ps->peer_id,
+                  mod_lockstep_needs_join_sync() ? 1 : 0, mod_lockstep_active() ? 1 : 0);
       mod_net_fill_snapshot_buf(ctx);
       ps->pending_connect_snap = true;
       ps->pending_connect_session = true;
@@ -1564,6 +1590,20 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
     }
     free(ps);
     ng_net_peer_set_data(peer, NULL);
+    /* Count still-connected ENet peers (this peer already detached). */
+    // agent: cursor-grok-4.5 | 2026-07-31 | prune peers when lobby empty | 5390c4
+    int live = 0;
+    ng_net_foreach_peer(net, mod_net_count_peers_cb, &live);
+    if (mod_lockstep_active() && live == 0) {
+      /* Hard-kill can leave lockstep ghosts until timeout — wipe lobby now. */
+      mod_lockstep_clear_peers();
+      ctx->lock_join_pending = false;
+      ctx->lock_joining_peer = 0;
+      if (mod_lockstep_syncing() || mod_lockstep_awaiting_phys()) {
+        mod_lockstep_end_sync();
+      }
+      NG_LOG_INFO("lockstep: empty lobby — cleared peers/join");
+    }
     if (was_controller) {
       ctx->controller_id = 0;
       ng_net_foreach_peer(net, mod_net_pick_controller, ctx);
@@ -1571,7 +1611,7 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
     }
     /* Tell survivors the peer is gone — one reliable roster, not a spam loop. */
     // agent: cursor-grok-4.5 | 2026-07-31 | roster remove on disconnect | c9f9cd
-    if (mod_lockstep_active() && mod_lockstep_is_clock_owner()) {
+    if (mod_lockstep_active() && mod_lockstep_is_clock_owner() && live > 0) {
       mod_net_lockstep_broadcast_roster(ctx, net);
     }
   }
@@ -2342,9 +2382,17 @@ void mod_net_root_mirror_text(char *out, size_t cap) {
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 void mod_net_broadcast_scene_session(void) {
   ModNetCtx *ctx = &g_net_ctx;
+  /* Scene load only — bumps gen so clients force-reload (solar→solar). */
+  // agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
+  ctx->scene_gen += 1u;
+  if (ctx->scene_gen == 0u) {
+    ctx->scene_gen = 1u;
+  }
+  ctx->session_carry_gen = true;
   if (ctx->net) {
     mod_net_broadcast_session(ctx, ctx->net);
   }
+  ctx->session_carry_gen = false;
 }
 #endif
 
@@ -2401,3 +2449,7 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 3cc0b8
 // agent: cursor-grok-4.5 | 2026-07-31 | drop scene epoch snap hack | 1bda0d
 // agent: cursor-grok-4.5 | 2026-07-31 | force reload without epoch | c1e2dc
+// agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
+// agent: cursor-grok-4.5 | 2026-07-31 | net connect log rename | af466e
+// agent: cursor-grok-4.5 | 2026-07-31 | reset lockstep empty lobby | 2dafd8
+// agent: cursor-grok-4.5 | 2026-07-31 | prune peers when lobby empty | 5390c4

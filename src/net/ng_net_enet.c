@@ -89,10 +89,10 @@ static void ng_net_tune_peer(ENetPeer *peer) {
   peer->packetThrottleLimit = ENET_PEER_PACKET_THROTTLE_SCALE;
   peer->packetThrottleCounter = 0;
   enet_peer_ping_interval(peer, 50);
-  /* Default ENet min timeout is 5s — lockstep freezes that whole window on
-   * crash/kill. Detect dead peers faster; graceful close still uses DISCONNECT. */
-  // agent: cursor-grok-4.5 | 2026-07-31 | handle enet disconnect timeout | 5247a8
-  enet_peer_timeout(peer, 32, 1000, 5000);
+  /* Keep near ENet defaults. 1s min killed live peers during late-join PHYS
+   * reliable bursts (looked like server crash). Graceful close still DISCONNECT. */
+  // agent: cursor-grok-4.5 | 2026-07-31 | enet timeout join safe | 0fe3f5
+  enet_peer_timeout(peer, 32, 5000, 15000);
   enet_peer_ping(peer);
 }
 
@@ -560,3 +560,4 @@ NgNet *ng_net_loopback_client(NgNetLoopbackPair *pair) {
 }
 #endif
 // agent: cursor-grok-4.5 | 2026-07-31 | handle enet disconnect timeout | 5247a8
+// agent: cursor-grok-4.5 | 2026-07-31 | enet timeout join safe | 0fe3f5
