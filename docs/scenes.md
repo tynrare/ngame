@@ -46,7 +46,8 @@ A lockstep physics scene may also host bodiless `shared` / `owner` props; those 
 ### Lockstep sim (`sim: "lockstep"`)
 
 <!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
-Background / Gaffer series notes: [`docs/article_gaffer_networking.md`](article_gaffer_networking.md).
+<!-- agent: composer-2.5 | 2026-07-31 | phase1 lockstep scenes note | 11c570 -->
+Phase 1: small-peer host-confirmed lockstep (`NG_LOCK_PEER_MAX` 8). Goals, knobs, recovery ladder, further steps: [`docs/article_gaffer_networking.md`](article_gaffer_networking.md).
 
 ```javascript
 global.describe("scene", "view", { sim: "lockstep", bg: {...}, camera: {...} });
@@ -63,7 +64,8 @@ Every peer process runs the **same** body path: capture/share tick inputs → `f
 **Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`.
 
 <!-- agent: composer-2.5 | 2026-07-31 | drop mode b scenes note | 885a6c -->
-**Lockstep (multi-peer):** host broadcasts reliable `LOCK_CONFIRM` (+ hist) for each tick (real inputs or zeros after `NG_LOCK_CONFIRM_SEC`). Peers step on confirmed ticks; mirrors may predict ≤ `NG_LOCK_PREDICT_MAX` with last-input hold and local Save-ring rollback. Late inputs after confirm are dropped (heartbeat kept). Lag ≥ `NG_LOCK_CATCHUP_TICKS` or repeated `LOCK_HASH` mismatch → soft `LOCK_PHYS` to **that peer only** (hash-verified). Gate STALL remains for join/`await_phys`/empty roster — not permanent hash freeze. See `docs/article_gaffer_networking.md` recovery ladder.
+<!-- agent: composer-2.5 | 2026-07-31 | phase1 lockstep scenes note | 11c570 -->
+**Lockstep (multi-peer, Phase 1):** host broadcasts reliable `LOCK_CONFIRM` (+ hist) for each tick (real inputs or zeros after `NG_LOCK_CONFIRM_SEC`). Peers step on confirmed ticks; mirrors may predict ≤ `NG_LOCK_PREDICT_MAX` with last-input hold and local Save-ring rollback. Late inputs after confirm are dropped (heartbeat kept). Lag ≥ `NG_LOCK_CATCHUP_TICKS` or repeated `LOCK_HASH` mismatch → soft `LOCK_PHYS` to **that peer only** (hash-verified). Gate STALL remains for join/`await_phys`/empty roster — not permanent hash freeze. Small-peer bar for now; see article Phase 1 / further steps.
 
 **Playout note:** Missing peer input before confirm still waits up to the confirm deadline (short hitch), then zero-fills.
 
@@ -152,4 +154,5 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep input consumers | 0ecb5e -->
 <!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
 <!-- agent: composer-2.5 | 2026-07-31 | drop mode b scenes note | 885a6c -->
+<!-- agent: composer-2.5 | 2026-07-31 | phase1 lockstep scenes note | 11c570 -->
 
