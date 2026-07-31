@@ -225,7 +225,7 @@ Keep agents honest against this article — do **not** “optimize latency” by
 18. **Joiner keeps `await_phys` until RESUME** — clearing await on PHYS lets the joiner step on in-flight tips before RESUME.
 19. **PHYS is joiner-only** — existing peers already share world at T; re-import desyncs hashes.
 20. **Disconnect drops peer from roster** — host removes + one reliable RESUME; mirrors treat RESUME as authoritative (drop ghosts). Otherwise `all_have` waits forever for a closed client.
-21. **Same-scene reload is a real reload** — host bumps scene epoch on load; clients force-reload server slot when epoch changes (solar→solar). Controller-only SESSION keeps the same epoch.
+21. **Same-scene reload** — non-join lockstep SESSION force-reloads the client server slot (solar→solar). `snap_tick` is **join pause tick only** — never an epoch; scenes must use `session.syncing` for late-join (not `snap_tick > 0`).
 
 <!-- agent: composer-2.5 | 2026-07-31 | Gaffer networked physics article notes | e2d8bd -->
 <!-- agent: composer-2.5 | 2026-07-31 | gaffer align notes in article | 4475e8 -->
@@ -233,3 +233,4 @@ Keep agents honest against this article — do **not** “optimize latency” by
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | await until resume barrier | 159466 -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer no periodic roster | c82153 -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer drop peer on leave | 1fddf5 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer snap_tick join only | 84d395 -->

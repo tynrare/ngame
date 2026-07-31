@@ -217,9 +217,9 @@ Scene.prototype.start = function (session) {
     position: { x: 0, y: 0, z: 0 },
     scale: 1,
   });
-  // Late-join: bodies deferred until LOCK_PHYS import — never invent ICs here.
-  // Fresh start: seed once when bodies exist on the phys owner.
-  var joining = session && (session.syncing || (session.snap_tick && session.snap_tick > 0));
+  // Late-join: only session.syncing (snap_tick is pause tick, not a join flag).
+  // agent: cursor-grok-4.5 | 2026-07-31 | solar join uses syncing only | 889c3d
+  var joining = session && session.syncing;
   if (joining) {
     this.seeded = true;
   } else if (global.get_mass(this.sun) > 0) {
@@ -337,3 +337,4 @@ Scene.prototype.dispose = function () {
 // agent: composer-2.5 | 2026-07-30 | solar n-body lockstep scene | 2e5f34
 // agent: composer-2.5 | 2026-07-30 | solar spheres sync fix | fe8964
 // agent: composer-2.5 | 2026-07-30 | solar fixed camera | a37b4e
+// agent: cursor-grok-4.5 | 2026-07-31 | solar join uses syncing only | 889c3d

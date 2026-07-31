@@ -117,11 +117,6 @@ typedef struct ModNetCtx {
   uint32_t lock_roster_sent_tick;
   uint32_t lock_roster_pulse; /* wall-ish flush count for cold-start roster spam */
   uint32_t lock_last_sim_tick; /* detect lockstep clock restart (scene reload) */
-  /* Bumped on scene load; carried in SESSION.snap_tick when !syncing so clients
-   * force-reload same scene ids (solar→solar). */
-  // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
-  uint32_t scene_epoch;
-  uint32_t applied_scene_epoch;
   uint8_t *lock_phys_rx;
   int lock_phys_rx_size;
   int lock_phys_rx_got;
@@ -198,10 +193,6 @@ static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_
   if (mod_lockstep_syncing() || ctx->lock_join_pending) {
     session->syncing = 1u;
     session->snap_tick = mod_lockstep_sim_tick();
-  } else if (ctx->scene_epoch != 0u) {
-    /* Non-join SESSION: snap_tick carries scene_epoch for same-id reload. */
-    // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
-    session->snap_tick = ctx->scene_epoch;
   }
 }
 
@@ -1321,18 +1312,13 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     /* Lockstep peers load Box3D on the server slot. Leaving lockstep must tear that
      * world down and clear the fixed gate — otherwise cube STALLs forever. */
     if (session.lockstep) {
-      /* snap_tick as scene_epoch when !syncing → force same-id reload. */
-      // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
-      bool force = false;
-      if (!session.syncing && session.snap_tick != 0u &&
-          session.snap_tick != ctx->applied_scene_epoch) {
-        force = true;
-        ctx->applied_scene_epoch = session.snap_tick;
-      }
-      if (force) {
-        mod_scene_on_session_forced(&session);
-      } else {
+      /* Non-join SESSION always reloads server slot (solar→solar). Join keeps
+       * snap_tick as pause tick only — never overload it as an epoch. */
+      // agent: cursor-grok-4.5 | 2026-07-31 | force reload without epoch | c1e2dc
+      if (session.syncing) {
         mod_scene_on_session(&session);
+      } else {
+        mod_scene_on_session_forced(&session);
       }
     } else {
       mod_scene_clear_lockstep_server();
@@ -2356,12 +2342,6 @@ void mod_net_root_mirror_text(char *out, size_t cap) {
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 void mod_net_broadcast_scene_session(void) {
   ModNetCtx *ctx = &g_net_ctx;
-  /* Each host scene load gets a new epoch so solar→solar reloads clients. */
-  // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
-  ctx->scene_epoch += 1u;
-  if (ctx->scene_epoch == 0u) {
-    ctx->scene_epoch = 1u;
-  }
   if (ctx->net) {
     mod_net_broadcast_session(ctx, ctx->net);
   }
@@ -2419,4 +2399,5 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | 7bdd5e
 // agent: cursor-grok-4.5 | 2026-07-31 | roster remove on disconnect | c9f9cd
 // agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 3cc0b8
-// agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 7ece08
+// agent: cursor-grok-4.5 | 2026-07-31 | drop scene epoch snap hack | 1bda0d
+// agent: cursor-grok-4.5 | 2026-07-31 | force reload without epoch | c1e2dc

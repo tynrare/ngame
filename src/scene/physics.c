@@ -594,11 +594,20 @@ void mod_scene_physics_fixed_step(float fixed_dt, bool on_server, bool is_contro
     if (pose_changed) {
       mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
     }
-    if (lockstep) {
-      continue;
-    }
     const float lin_spd2 = lvx * lvx + lvy * lvy + lvz * lvz;
     const float ang_spd2 = avx * avx + avy * avy + avz * avz;
+    if (lockstep) {
+      /* Quiesce contact-solver noise (resting cube jitter on flat ground). */
+      // agent: cursor-grok-4.5 | 2026-07-31 | lockstep rest velocity sleep | 5f26b0
+      if (lin_spd2 < (sleep_lin * sleep_lin) && ang_spd2 < (sleep_ang * sleep_ang)) {
+        const b3Vec3 zero = {0.0f, 0.0f, 0.0f};
+        b3Body_SetLinearVelocity(id, zero);
+        b3Body_SetAngularVelocity(id, zero);
+        inst->lin_vel[0] = inst->lin_vel[1] = inst->lin_vel[2] = 0.0f;
+        inst->ang_vel[0] = inst->ang_vel[1] = inst->ang_vel[2] = 0.0f;
+      }
+      continue;
+    }
     const bool at_rest =
         !pose_changed && lin_spd2 < (sleep_lin * sleep_lin) && ang_spd2 < (sleep_ang * sleep_ang);
     if (at_rest) {
@@ -725,3 +734,4 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 // agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
 // agent: composer-2.5 | 2026-07-30 | sphere shape attach | ebc7a0
 // agent: composer-2.5 | 2026-07-30 | rebind after import sensors | e3b692
+// agent: cursor-grok-4.5 | 2026-07-31 | lockstep rest velocity sleep | 5f26b0
