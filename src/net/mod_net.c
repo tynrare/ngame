@@ -40,6 +40,42 @@
 #include <unistd.h>
 #endif
 
+#if defined(NG_SERVER)
+/* CI soak: drop % of unreliable LOCK_INPUT (env NG_LOCK_SIM_DROP=0..100). */
+// agent: composer-2.5 | 2026-07-31 | lock sim drop input hook | 6098a8
+static int g_lock_sim_drop_pct = -1;
+
+static int mod_net_lock_sim_drop_pct(void) {
+  if (g_lock_sim_drop_pct < 0) {
+    const char *e = getenv("NG_LOCK_SIM_DROP");
+    int pct = e ? atoi(e) : 0;
+    if (pct < 0) {
+      pct = 0;
+    }
+    if (pct > 100) {
+      pct = 100;
+    }
+    g_lock_sim_drop_pct = pct;
+    if (pct > 0) {
+      srand(1u);
+      NG_LOG_INFO("lockstep: sim drop=%d%%", pct);
+    }
+  }
+  return g_lock_sim_drop_pct;
+}
+
+static bool mod_net_lock_sim_should_drop_input(uint8_t channel) {
+  if (channel == NG_CH_RELIABLE) {
+    return false;
+  }
+  const int pct = mod_net_lock_sim_drop_pct();
+  if (pct <= 0) {
+    return false;
+  }
+  return (rand() % 100) < pct;
+}
+#endif
+
 
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 typedef struct NetPeerState {
@@ -1301,6 +1337,12 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
   }
   // agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
   case NG_PKT_LOCK_INPUT: {
+#if defined(NG_SERVER)
+    // agent: composer-2.5 | 2026-07-31 | lock sim drop input hook | 6098a8
+    if (mod_net_lock_sim_should_drop_input(channel)) {
+      return;
+    }
+#endif
     NgLockInputPkt pkt = {0};
     if (!ng_proto_decode_lock_input(buf, &pkt)) {
       return;
@@ -1352,7 +1394,9 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
         }
         if (ps->hash_mismatch_streak >= (uint8_t)NG_LOCK_DESYNC_PHYS_STREAK) {
           ps->force_phys_resync = true;
-          NG_LOG_WARN("lockstep: hash streak peer=%u → force PHYS", ps->peer_id);
+          // agent: composer-2.5 | 2026-07-31 | hash phys confirm sim logs | cfe240
+          NG_LOG_WARN("lockstep: hash streak peer=%u → force PHYS confirmed=%u sim=%u",
+                      ps->peer_id, mod_lockstep_confirmed_tick(), mod_lockstep_sim_tick());
         }
       } else {
         ps->hash_mismatch_streak = 0;
@@ -1664,8 +1708,11 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     }
     const uint32_t got_hash = mod_scene_physics_checksum();
     if (ctx->lock_phys_expect_hash != 0u && got_hash != ctx->lock_phys_expect_hash) {
-      NG_LOG_ERROR("lockstep: PHYS hash mismatch tick=%u got=0x%08x want=0x%08x — await retry",
-                   pkt.sim_tick, got_hash, ctx->lock_phys_expect_hash);
+      // agent: composer-2.5 | 2026-07-31 | hash phys confirm sim logs | cfe240
+      NG_LOG_ERROR(
+          "lockstep: PHYS hash mismatch tick=%u got=0x%08x want=0x%08x confirmed=%u sim=%u — await retry",
+          pkt.sim_tick, got_hash, ctx->lock_phys_expect_hash, mod_lockstep_confirmed_tick(),
+          mod_lockstep_sim_tick());
       mod_lockstep_await_phys(true);
       mod_net_lock_free_rx(ctx);
       ctx->lock_phys_expect_hash = 0;
@@ -1675,7 +1722,9 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     // agent: composer-2.5 | 2026-07-31 | broadcast confirm drop late | 0623bf
     if (!mod_lockstep_syncing()) {
       mod_lockstep_on_soft_phys(pkt.sim_tick);
-      NG_LOG_INFO("lockstep: soft PHYS ok tick=%u hash=0x%08x", pkt.sim_tick, got_hash);
+      // agent: composer-2.5 | 2026-07-31 | hash phys confirm sim logs | cfe240
+      NG_LOG_INFO("lockstep: soft PHYS ok tick=%u hash=0x%08x confirmed=%u sim=%u", pkt.sim_tick,
+                  got_hash, mod_lockstep_confirmed_tick(), mod_lockstep_sim_tick());
       mod_net_lock_free_rx(ctx);
       ctx->lock_phys_expect_hash = 0;
       break;
@@ -2729,3 +2778,5 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-31 | catchup phys cooldown | 0d4a11
 // agent: composer-2.5 | 2026-07-31 | bcast all unsent confirms | 9ea2ac
 // agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46
+// agent: composer-2.5 | 2026-07-31 | hash phys confirm sim logs | cfe240
+// agent: composer-2.5 | 2026-07-31 | lock sim drop input hook | 6098a8

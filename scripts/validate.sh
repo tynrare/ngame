@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # agent: composer-2.5 | 2026-07-25 | full server validation suite | f6a04e
 # agent: composer-2.5 | 2026-07-25 | single server validate | 51bd3a
+# agent: composer-2.5 | 2026-07-31 | validate phys save smoke | e1a45a
+# agent: composer-2.5 | 2026-07-31 | validate lockstep loss soak | 8d3df1
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
@@ -13,7 +15,7 @@ done
 sleep 0.3
 
 cd "$BUILD"
-cmake --build . --target ngame ngame_server ng_test_net ng_two_client_smoke ng_cmd_bandwidth ng_cmd_latency ng_cmd_loopback_latency ng_embed_smoke ng_scene_js_smoke 2>&1 | tail -3
+cmake --build . --target ngame ngame_server ng_test_net ng_two_client_smoke ng_cmd_bandwidth ng_cmd_latency ng_cmd_loopback_latency ng_embed_smoke ng_scene_js_smoke ng_phys_save_smoke 2>&1 | tail -3
 
 start_server() {
   ./ngame_server > /tmp/ngame_validate.log 2>&1 &
@@ -70,6 +72,10 @@ grep -q 'SESSION scene=cube' /tmp/ngame_net.out
 echo "== scene js smoke =="
 ./ng_scene_js_smoke
 
+# agent: composer-2.5 | 2026-07-31 | validate phys save smoke | e1a45a
+echo "== phys save restore smoke =="
+./ng_phys_save_smoke
+
 echo "== two client session =="
 ./ng_two_client_smoke 127.0.0.1 27015
 
@@ -98,6 +104,11 @@ echo "$EMBED_OUT"
 echo "$EMBED_OUT" | grep -q 'EMBED_SNAPSHOT scene=cube'
 
 stop_server
+
+# agent: composer-2.5 | 2026-07-31 | validate lockstep loss soak | 8d3df1
+echo "== lockstep loss soak (2 remotes, sim drop) =="
+NG_LOCK_SIM_DROP=15 NG_LOCK_SOAK_SEC=10 NG_LOCK_SOAK_MIN_CONFIRMED=30 \
+  "$ROOT/scripts/lockstep_loss_soak.sh"
 
 echo "== gateway solo smoke =="
 ./ngame --solo > /tmp/ngame_solo.log 2>&1 &
@@ -187,3 +198,5 @@ echo "ALL OK"
 # agent: composer-2.5 | 2026-07-29 | boot smoke entity expectations | 2c818e
 # agent: composer-2.5 | 2026-07-29 | boot routes startup validate | f998b8
 # agent: composer-2.5 | 2026-07-29 | boot snap expects sphere route | 1ac81b
+# agent: composer-2.5 | 2026-07-31 | validate phys save smoke | e1a45a
+# agent: composer-2.5 | 2026-07-31 | validate lockstep loss soak | 8d3df1

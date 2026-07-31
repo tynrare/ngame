@@ -1,4 +1,6 @@
 <!-- agent: composer-2.5 | 2026-07-31 | phase frame article rewrite | 7e8046 -->
+<!-- agent: composer-2.5 | 2026-07-31 | synctest lite backlog note | 69e975 -->
+<!-- agent: composer-2.5 | 2026-07-31 | loss soak backlog note | ddf401 -->
 # Networked physics & lockstep (ngame notes)
 
 Pair with [`docs/scenes.md`](scenes.md), `src/scene/lockstep.c`, `src/net/mod_net.c`.
@@ -125,12 +127,14 @@ FPS toolkits (Gambetta / Valve / Bernier) = state prediction / lag-comp — cont
 
 | Order | Step | Cue |
 |-------|------|-----|
-| 1 | SyncTest / hash desync dumps; loss+jitter stress @ 2–8 peers | GGPO SyncTest; Factorio desync wiki |
-| 2 | Adaptive or per-peer latency (still one confirm authority) | Factorio FFF-147; SnapNet delay mix |
+| 1 | SyncTest-lite (`ng_phys_save_smoke`) + **2-peer loss soak** (`scripts/lockstep_loss_soak.sh`, `NG_LOCK_SIM_DROP`) | GGPO SyncTest; Gaffer UDP-under-loss |
+| 2 | Adaptive or per-peer latency / jitter buffer (still one confirm authority) | Factorio FFF-147; SnapNet delay mix |
 | 3 | Deeper predict and/or Factorio-style latency-state for feel | GGPO; FFF-83 |
 | 4 | Raise peer cap; PHYS cost under large worlds | SnapNet 3+; mas-bandwidth |
 | 5 | Gaffer #2/#3 as primary only if a scene leaves lockstep | Snapshot / compression series |
 
+<!-- agent: composer-2.5 | 2026-07-31 | synctest lite backlog note | 69e975 -->
+<!-- agent: composer-2.5 | 2026-07-31 | loss soak backlog note | ddf401 -->
 Do not “optimize latency” by undoing Phase 1 anti-drift below.
 
 ---
@@ -212,3 +216,5 @@ Skim: Box3D → lockstep core → auth → predict/recover → FPS contrast.
 | State synchronization | Inputs + sparse state | Approximate |
 
 <!-- agent: composer-2.5 | 2026-07-31 | phase frame article rewrite | 7e8046 -->
+<!-- agent: composer-2.5 | 2026-07-31 | synctest lite backlog note | 69e975 -->
+<!-- agent: composer-2.5 | 2026-07-31 | loss soak backlog note | ddf401 -->

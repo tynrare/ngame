@@ -182,6 +182,15 @@ if(NOT EMSCRIPTEN)
     COMMENT "Copy res/ and tests/ next to ng_scene_js_smoke binary")
   target_link_libraries(ng_scene_js_smoke PRIVATE m box3d)
 
+  # agent: composer-2.5 | 2026-07-31 | phys save smoke cmake | 33f75f
+  add_executable(ng_phys_save_smoke EXCLUDE_FROM_ALL tools/phys_save_smoke.c ${NG_SCENE_SOURCES}
+                 src/client/input.c src/engine/ng_session.c src/engine/ng_sync.c
+                 src/engine/ng_mod.c src/engine/ng_bus.c
+                 src/world/ng_world.c ${NG_VENDOR_SOURCES})
+  target_include_directories(ng_phys_save_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
+  target_compile_definitions(ng_phys_save_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
+  target_link_libraries(ng_phys_save_smoke PRIVATE m box3d)
+
   add_executable(ng_cmd_loopback_latency EXCLUDE_FROM_ALL tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
@@ -204,3 +213,4 @@ endif()
 # agent: composer-2.5 | 2026-07-29 | lockstep ffp contract cmake | 78f312
 # agent: composer-2.5 | 2026-07-30 | default build ngame only | 061ecb
 # agent: composer-2.5 | 2026-07-30 | link agent stubs on web | 1fca96
+# agent: composer-2.5 | 2026-07-31 | phys save smoke cmake | 33f75f
