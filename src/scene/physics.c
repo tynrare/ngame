@@ -320,8 +320,10 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
   shapeDef.density = want_proxy ? 0.0f : sdesc->density;
   shapeDef.baseMaterial.friction = sdesc->friction;
   if (sdesc->sensor) {
+    // agent: composer-2.5 | 2026-07-30 | rebind after import sensors | e3b692
+    /* isSensor skips solid contacts. Do not zero maskBits — OverlapAABB rebind
+     * after LOCK_PHYS import requires (shape.mask & query.category) != 0. */
     shapeDef.isSensor = true;
-    shapeDef.filter.maskBits = 0;
   }
   if (sdesc->type == NG_PHYS_SHAPE_SPHERE) {
     b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, sdesc->radius > 0.0f ? sdesc->radius : 0.5f};
@@ -722,3 +724,4 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 // agent: composer-2.5 | 2026-07-30 | apply force and torque helpers | fc5a41
 // agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
 // agent: composer-2.5 | 2026-07-30 | sphere shape attach | ebc7a0
+// agent: composer-2.5 | 2026-07-30 | rebind after import sensors | e3b692

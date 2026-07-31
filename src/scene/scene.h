@@ -27,6 +27,8 @@ bool mod_scene_is_controller(void);
 bool mod_scene_can_author(NgSyncMode sync);
 void mod_scene_on_session(const NgSessionState *session);
 void mod_scene_view_on_session(const NgSessionState *session);
+/* Tear down server lockstep world + fixed gate when SESSION has lockstep=0. */
+void mod_scene_clear_lockstep_server(void);
 void mod_scene_apply_remote(const NgStateUpdate *update);
 void mod_scene_view_apply_remote(const NgStateUpdate *update);
 bool mod_scene_take_flush(NgStateUpdate *out);
@@ -55,3 +57,4 @@ bool mod_scene_is_native(void);
 // agent: codex-5.3 | 2026-07-29 | add scene W S keycodes | c2be81
 // agent: composer-2.5 | 2026-07-29 | view entity transform observe | 4d8e21
 // agent: composer-2.5 | 2026-07-29 | shared raycast plane helper | 7c1d4a
+// agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e

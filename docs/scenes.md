@@ -45,6 +45,9 @@ A lockstep physics scene may also host bodiless `shared` / `owner` props; those 
 
 ### Lockstep sim (`sim: "lockstep"`)
 
+<!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
+Background / Gaffer series notes: [`docs/article_gaffer_networking.md`](article_gaffer_networking.md).
+
 ```javascript
 global.describe("scene", "view", { sim: "lockstep", bg: {...}, camera: {...} });
 ```
@@ -142,3 +145,5 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep input consumers | 0ecb5e -->
+<!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
+

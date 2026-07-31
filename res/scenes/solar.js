@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-30 | solar n-body lockstep scene | 2e5f34
 // agent: composer-2.5 | 2026-07-30 | solar spheres sync fix | fe8964
+// agent: composer-2.5 | 2026-07-30 | solar fixed camera | a37b4e
 // Softened Newtonian n-body (Plummer): F = G m_i m_j r / (r^2 + eps^2)^(3/2)
 // Circular ICs use the softened central force; COM momentum cancelled; sensor spheres.
 
@@ -103,14 +104,15 @@ Scene.prototype.init = function () {
   global.describe("body", "p3_body", { type: "dynamic", shape: "p3_shape" });
   global.describe("body", "p4_body", { type: "dynamic", shape: "p4_shape" });
 
+  // agent: composer-2.5 | 2026-07-30 | solar fixed camera | a37b4e
   global.describe("scene", "view", {
     sim: "lockstep",
     gravity: { x: 0, y: 0, z: 0 },
     bg: { r: 4, g: 6, b: 16 },
     camera: {
-      mode: "orbit",
+      mode: "fixed",
+      position: { x: 0, y: 22, z: 48 },
       target: { x: 0, y: 0, z: 0 },
-      orbit: { radius: 48, speed: 0.12, height: 22 },
       fovy: 45,
     },
   });
@@ -334,3 +336,4 @@ Scene.prototype.dispose = function () {
 };
 // agent: composer-2.5 | 2026-07-30 | solar n-body lockstep scene | 2e5f34
 // agent: composer-2.5 | 2026-07-30 | solar spheres sync fix | fe8964
+// agent: composer-2.5 | 2026-07-30 | solar fixed camera | a37b4e

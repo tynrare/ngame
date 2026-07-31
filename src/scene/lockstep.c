@@ -7,6 +7,7 @@
 // agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
 // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | 98511c
 // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | abbc70
+// agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
 #include "lockstep.h"
 #include "client/input.h"
 #include "engine/ng_log.h"
@@ -21,6 +22,8 @@ typedef struct NgLockSlot {
 
 typedef struct NgLockPeer {
   bool alive;
+  bool got_ack;   /* remote has sent at least one LOCK_ACK */
+  bool got_input; /* remote has sent at least one LOCK_INPUT (scene live) */
   uint32_t peer_id;
   NgLockSlot slots[NG_LOCK_RING];
   uint32_t highest_recv;
@@ -29,6 +32,8 @@ typedef struct NgLockPeer {
 
 typedef struct NgLockCtx {
   bool active;
+  bool clock_owner; /* dedicated server / authoritative host owns sim clock */
+  bool roster_ok;   /* mirror received host roster RESUME at least once */
   bool sim_started;
   bool syncing;
   bool await_phys;
@@ -42,6 +47,12 @@ typedef struct NgLockCtx {
   uint32_t last_hash;
   uint32_t last_hash_tick;
   uint32_t local_ack;
+  // agent: composer-2.5 | 2026-07-30 | owner wait then zero-fill | 81642f
+  uint32_t owner_wait_tick;   /* next_sim currently waiting for inputs */
+  uint32_t owner_wait_frames; /* STALL frames spent on owner_wait_tick */
+  uint32_t solo_debounce_frames; /* mirror: wait for 2nd peer before solo-GO */
+  NgLockSynth synth[NG_LOCK_SYNTH_MAX];
+  int synth_count;
 } NgLockCtx;
 
 static NgLockCtx g_lock;
@@ -94,10 +105,37 @@ static void mod_lockstep_advance_contiguous(NgLockPeer *p) {
   mod_lockstep_recompute_ack();
 }
 
+static void mod_lockstep_queue_synth(uint32_t peer_id, uint32_t tick, uint8_t bits) {
+  if (g_lock.synth_count >= NG_LOCK_SYNTH_MAX) {
+    return;
+  }
+  NgLockSynth *s = &g_lock.synth[g_lock.synth_count++];
+  s->peer_id = peer_id;
+  s->tick = tick;
+  s->bits = bits;
+}
+
+static void mod_lockstep_commit_slot(NgLockPeer *p, uint32_t tick, uint8_t bits, bool synth_tx) {
+  if (!p || tick == 0) {
+    return;
+  }
+  NgLockSlot *s = &p->slots[tick % NG_LOCK_RING];
+  if (s->present && s->tick == tick) {
+    return;
+  }
+  s->present = true;
+  s->bits = bits;
+  s->tick = tick;
+  mod_lockstep_advance_contiguous(p);
+  if (synth_tx) {
+    mod_lockstep_queue_synth(p->peer_id, tick, bits);
+  }
+}
+
 static void mod_lockstep_gen_local(uint32_t tick) {
   // agent: composer-2.5 | 2026-07-30 | capture buttons into lock slots | 60a1ec
   // agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
-  if (tick == 0) {
+  if (tick == 0 || g_lock.local_peer_id == 0) {
     return;
   }
   NgLockPeer *self = mod_lockstep_find_peer(g_lock.local_peer_id);
@@ -111,7 +149,7 @@ static void mod_lockstep_gen_local(uint32_t tick) {
   NgLockSlot *s = &self->slots[tick % NG_LOCK_RING];
   const uint8_t bits = (uint8_t)(mod_input_buttons() & 0xff);
   if (s->present && s->tick == tick) {
-    /* Already committed for this tick — do not change bits. */
+    /* Already committed for this tick — do not change bits (determinism). */
     if (tick > g_lock.local_send_tick) {
       g_lock.local_send_tick = tick;
     }
@@ -126,24 +164,135 @@ static void mod_lockstep_gen_local(uint32_t tick) {
   mod_lockstep_advance_contiguous(self);
 }
 
+// agent: composer-2.5 | 2026-07-30 | wait all_have before zero-fill | 24fa25
 static bool mod_lockstep_all_have(uint32_t tick) {
   if (tick == 0) {
     return true;
   }
-  if (g_lock.peer_count <= 1) {
+  int checked = 0;
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive) {
+      continue;
+    }
+    checked++;
+    if (!mod_lockstep_slot_has(p, tick)) {
+      return false;
+    }
+  }
+  if (checked == 0) {
+    /* Solo player process: require local slot. Clock owner with no remotes: ok. */
+    if (g_lock.local_peer_id == 0) {
+      return true;
+    }
     NgLockPeer *self = mod_lockstep_find_peer(g_lock.local_peer_id);
     return self && mod_lockstep_slot_has(self, tick);
+  }
+  return true;
+}
+
+/* Clock owner: commit zeros for any peer missing this tick; queue synth for wire. */
+static void mod_lockstep_owner_fill_defaults(uint32_t tick) {
+  if (tick == 0 || !g_lock.clock_owner) {
+    return;
   }
   for (int i = 0; i < g_lock.peer_count; i++) {
     NgLockPeer *p = &g_lock.peers[i];
     if (!p->alive) {
       continue;
     }
-    if (!mod_lockstep_slot_has(p, tick)) {
+    if (mod_lockstep_slot_has(p, tick)) {
+      continue;
+    }
+    /* Local peer should already be filled by gen_local; still default if not. */
+    mod_lockstep_commit_slot(p, tick, 0, p->peer_id != g_lock.local_peer_id);
+  }
+}
+
+static uint32_t mod_lockstep_min_remote_ack(bool *out_any) {
+  uint32_t min_ack = UINT32_MAX;
+  bool any = false;
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || !p->got_ack) {
+      continue;
+    }
+    any = true;
+    if (p->ack_our < min_ack) {
+      min_ack = p->ack_our;
+    }
+  }
+  if (out_any) {
+    *out_any = any;
+  }
+  return any ? min_ack : 0;
+}
+
+bool mod_lockstep_all_peers_live(void) {
+  // agent: composer-2.5 | 2026-07-30 | peer got_input longer grace | da9ef2
+  if (g_lock.peer_count == 0) {
+    return true;
+  }
+  int live = 0;
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive) {
+      continue;
+    }
+    live++;
+    if (!p->got_input) {
       return false;
     }
   }
-  return true;
+  return live > 0;
+}
+
+/* Rexmit committed inputs starting at the hole the slowest peer still needs. */
+static void mod_lockstep_owner_rexmit(uint32_t from_tick, uint32_t to_tick);
+
+static void mod_lockstep_owner_rexmit_from_acks(uint32_t next_sim) {
+  // agent: composer-2.5 | 2026-07-30 | rexmit from tick one | 3f0b6e
+  bool any_ack = false;
+  const uint32_t min_ack = mod_lockstep_min_remote_ack(&any_ack);
+  if (!any_ack) {
+    /* No acks yet but tip moved — refill from tick 1 so cold mirrors can start. */
+    if (g_lock.sim_tick >= 1u && next_sim > 1u) {
+      mod_lockstep_owner_rexmit(1u, next_sim);
+    }
+    return;
+  }
+  const uint32_t from = (min_ack == 0u) ? 1u : (min_ack + 1u);
+  if (from + 4u < next_sim || min_ack == 0u) {
+    mod_lockstep_owner_rexmit(from, next_sim);
+  }
+}
+
+/* Re-queue committed bits so mirrors that lagged can refill within the ring. */
+static void mod_lockstep_owner_rexmit(uint32_t from_tick, uint32_t to_tick) {
+  if (!g_lock.clock_owner || from_tick == 0 || from_tick > to_tick) {
+    return;
+  }
+  /* Cap burst so flush stays bounded — always starts at from_tick (the hole). */
+  // agent: composer-2.5 | 2026-07-30 | rexmit full ring window | fd5738
+  // agent: composer-2.5 | 2026-07-31 | gaffer gate playout stall | 48ee28
+  if (to_tick < from_tick) {
+    return;
+  }
+  if (to_tick - from_tick > 24u) {
+    to_tick = from_tick + 24u;
+  }
+  for (uint32_t t = from_tick; t <= to_tick; t++) {
+    for (int i = 0; i < g_lock.peer_count; i++) {
+      if (g_lock.synth_count >= NG_LOCK_SYNTH_MAX) {
+        return; /* Preserve earlier next_sim commits already queued. */
+      }
+      NgLockPeer *p = &g_lock.peers[i];
+      if (!p->alive || !mod_lockstep_slot_has(p, t)) {
+        continue;
+      }
+      mod_lockstep_queue_synth(p->peer_id, t, p->slots[t % NG_LOCK_RING].bits);
+    }
+  }
 }
 
 void mod_lockstep_reset(void) {
@@ -177,6 +326,7 @@ void mod_lockstep_set_active(bool active) {
       g_lock.local_send_tick = 0;
       g_lock.last_hash = 0;
       g_lock.last_hash_tick = 0;
+      g_lock.synth_count = 0;
     }
   }
   g_lock.active = active;
@@ -184,9 +334,32 @@ void mod_lockstep_set_active(bool active) {
 
 bool mod_lockstep_active(void) { return g_lock.active; }
 
+void mod_lockstep_set_clock_owner(bool owner) {
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
+  g_lock.clock_owner = owner;
+  if (owner) {
+    g_lock.roster_ok = true;
+  }
+}
+
+bool mod_lockstep_is_clock_owner(void) { return g_lock.clock_owner; }
+
+void mod_lockstep_note_roster(void) {
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
+  // agent: composer-2.5 | 2026-07-31 | gaffer gate playout stall | 48ee28
+  g_lock.roster_ok = true;
+  g_lock.solo_debounce_frames = 0; /* new roster — re-check for peer 2 */
+}
+
+bool mod_lockstep_roster_ok(void) { return g_lock.roster_ok || g_lock.clock_owner; }
+
 void mod_lockstep_set_local_peer(uint32_t peer_id) {
-  g_lock.local_peer_id = peer_id ? peer_id : 1u;
-  mod_lockstep_add_peer(g_lock.local_peer_id);
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
+  /* peer_id 0 = clock owner with no local player slot (dedicated server). */
+  g_lock.local_peer_id = peer_id;
+  if (peer_id != 0) {
+    mod_lockstep_add_peer(g_lock.local_peer_id);
+  }
 }
 
 uint32_t mod_lockstep_local_peer_id(void) { return g_lock.local_peer_id; }
@@ -198,6 +371,7 @@ void mod_lockstep_clear_peers(void) {
 }
 
 void mod_lockstep_add_peer(uint32_t peer_id) {
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
   if (peer_id == 0 || mod_lockstep_find_peer(peer_id)) {
     return;
   }
@@ -210,6 +384,15 @@ void mod_lockstep_add_peer(uint32_t peer_id) {
   p->peer_id = peer_id;
   p->highest_recv = 0;
   p->ack_our = 0;
+  /* Mid-sim roster join: backfill only committed history (<= sim_tick).
+   * Do not pre-fill the future window — that zero-commits ticks before real inputs arrive,
+   * and the owner then ignores the real bits as "late". */
+  // agent: composer-2.5 | 2026-07-30 | wait all_have before zero-fill | 24fa25
+  if (g_lock.sim_tick > 0) {
+    for (uint32_t t = 1; t <= g_lock.sim_tick; t++) {
+      mod_lockstep_commit_slot(p, t, 0, g_lock.clock_owner);
+    }
+  }
 }
 
 void mod_lockstep_remove_peer(uint32_t peer_id) {
@@ -243,11 +426,17 @@ void mod_lockstep_begin_sync(uint32_t tick) {
 }
 
 void mod_lockstep_end_sync(void) {
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
+  // agent: composer-2.5 | 2026-07-30 | end sync skip replayout | 7fd5fa
   g_lock.syncing = false;
   g_lock.await_phys = false;
+  /* Mid-sim PAUSE/RESUME must not re-enter playout BUFFER — host keeps stepping
+   * and a 16-tick rexmit window cannot refill the gap (permanent STALL). */
   g_lock.sim_started = true;
-  /* Align send clock so next inputs continue from sim_tick. */
   g_lock.local_send_tick = g_lock.sim_tick;
+  g_lock.owner_wait_tick = 0;
+  g_lock.owner_wait_frames = 0;
+  g_lock.synth_count = 0;
   for (int i = 0; i < g_lock.peer_count; i++) {
     if (g_lock.peers[i].alive) {
       g_lock.peers[i].highest_recv = g_lock.sim_tick;
@@ -275,40 +464,112 @@ void mod_lockstep_note_desync(void) {
 NgLockGate mod_lockstep_gate(void) {
   // agent: composer-2.5 | 2026-07-30 | solo lockstep always go | 4950ad
   // agent: composer-2.5 | 2026-07-30 | gate capture next sim tick | ba4520
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
   if (!g_lock.active) {
     return NG_LOCK_GATE_GO;
   }
   if (g_lock.syncing || g_lock.await_phys) {
     return NG_LOCK_GATE_STALL;
   }
-  if (g_lock.local_peer_id == 0) {
+  /* Dedicated server clock owner may have local_peer_id==0 (no player slot). */
+  if (g_lock.local_peer_id == 0 && !g_lock.clock_owner) {
     mod_lockstep_set_local_peer(1);
   }
 
   const uint32_t next_sim = g_lock.sim_tick + 1u;
-  /* Always sample/commit bits for the tick about to step. */
+  /* Sample local player bits when this process has a player peer. */
   mod_lockstep_gen_local(next_sim);
 
-  /* Solo lockstep: one peer never waits. */
-  if (g_lock.peer_count <= 1) {
+  /* Gaffer playout: grow send-ahead gradually (one tip sample per gate call).
+   * Filling the whole window in one call freezes current keys into future ticks
+   * (WASD never appears — slots already committed as zero). */
+  // agent: composer-2.5 | 2026-07-30 | send ahead while sim stalled | e20a8c
+  // agent: composer-2.5 | 2026-07-31 | gaffer gate playout stall | 48ee28
+  // agent: composer-2.5 | 2026-07-31 | gaffer tip sample sendahead | 2e5e49
+  const uint32_t playout = mod_lockstep_playout_ticks();
+  if (g_lock.local_peer_id != 0) {
+    const uint32_t send_target = g_lock.sim_tick + playout;
+    if (g_lock.local_send_tick < send_target) {
+      mod_lockstep_gen_local(g_lock.local_send_tick + 1u);
+    } else if (g_lock.sim_started && !mod_lockstep_all_have(next_sim) &&
+               g_lock.local_send_tick < g_lock.sim_tick + playout + 4u) {
+      /* While waiting on remotes, keep sampling the tip so keys stay fresh. */
+      mod_lockstep_gen_local(g_lock.local_send_tick + 1u);
+    }
+  }
+
+  /* Clock owner = commit broadcaster.
+   * Gaffer Deterministic Lockstep: cannot step frame n without input n.
+   * Owner does NOT invent zeros to race ahead (that wraps the ring and freezes
+   * mirrors). Wait for real inputs; redundant UDP window covers loss. */
+  // agent: composer-2.5 | 2026-07-30 | owner wait then zero-fill | 81642f
+  // agent: composer-2.5 | 2026-07-30 | owner broadcast commit each step | f0bb9b
+  // agent: composer-2.5 | 2026-07-31 | gaffer gate playout stall | 48ee28
+  if (g_lock.clock_owner) {
     g_lock.sim_started = true;
+    if (g_lock.peer_count == 0) {
+      return NG_LOCK_GATE_GO;
+    }
+    if (!mod_lockstep_all_have(next_sim)) {
+      if (g_lock.owner_wait_tick != next_sim) {
+        g_lock.owner_wait_tick = next_sim;
+        g_lock.owner_wait_frames = 0;
+      }
+      g_lock.owner_wait_frames++;
+      /* Deliver whatever slots we already have; rexmit history for cold mirrors. */
+      for (int i = 0; i < g_lock.peer_count; i++) {
+        NgLockPeer *p = &g_lock.peers[i];
+        if (!p->alive || !mod_lockstep_slot_has(p, next_sim)) {
+          continue;
+        }
+        mod_lockstep_queue_synth(p->peer_id, next_sim, p->slots[next_sim % NG_LOCK_RING].bits);
+      }
+      mod_lockstep_owner_rexmit_from_acks(next_sim);
+      return NG_LOCK_GATE_STALL;
+    }
+    g_lock.owner_wait_tick = 0;
+    g_lock.owner_wait_frames = 0;
+    /* Commit broadcast for next_sim first (mirrors STALL until all_have). */
+    for (int i = 0; i < g_lock.peer_count; i++) {
+      NgLockPeer *p = &g_lock.peers[i];
+      if (!p->alive || !mod_lockstep_slot_has(p, next_sim)) {
+        continue;
+      }
+      mod_lockstep_queue_synth(p->peer_id, next_sim, p->slots[next_sim % NG_LOCK_RING].bits);
+    }
+    mod_lockstep_owner_rexmit_from_acks(next_sim);
     return NG_LOCK_GATE_GO;
   }
 
-  /* Multi-peer: fill send-ahead for playout without changing next_sim. */
-  const uint32_t playout = mod_lockstep_playout_ticks();
-  const uint32_t send_target = g_lock.sim_tick + playout;
-  while (g_lock.local_send_tick < send_target) {
-    mod_lockstep_gen_local(g_lock.local_send_tick + 1u);
+  /* Mirrors wait for host roster so they don't race solo then stall on new peers. */
+  if (!g_lock.roster_ok) {
+    return NG_LOCK_GATE_BUFFER;
   }
 
+  /* Solo only after roster — and debounce so a 1-peer RESUME before peer 2
+   * connects cannot solo-race (Gaffer: start together; race wraps the ring). */
+  // agent: composer-2.5 | 2026-07-30 | solo only after roster ok | a7c3e1
+  // agent: composer-2.5 | 2026-07-31 | gaffer gate playout stall | 48ee28
+  if (g_lock.peer_count <= 1) {
+    if (g_lock.solo_debounce_frames < 90u) {
+      g_lock.solo_debounce_frames++;
+      return NG_LOCK_GATE_BUFFER;
+    }
+    g_lock.sim_started = true;
+    return NG_LOCK_GATE_GO;
+  }
+  g_lock.solo_debounce_frames = 0;
+
+  /* Gaffer playout: buffer send-ahead once, then dequeue at 60Hz. */
   if (!g_lock.sim_started) {
-    if (g_lock.local_send_tick < playout) {
+    if (g_lock.local_send_tick < g_lock.sim_tick + playout) {
       return NG_LOCK_GATE_BUFFER;
     }
     g_lock.sim_started = true;
   }
 
+  /* Gaffer: cannot step frame n without input n — never invent peer inputs on mirrors. */
+  // agent: composer-2.5 | 2026-07-30 | mirror stall until all_have | 98fe6a
   if (!mod_lockstep_all_have(next_sim)) {
     return NG_LOCK_GATE_STALL;
   }
@@ -329,19 +590,44 @@ void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash) {
 void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits) {
   // agent: composer-2.5 | 2026-07-30 | solo lockstep always go | 4950ad
   // agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
   if (tick == 0 || peer_id == 0) {
     return;
   }
   NgLockPeer *p = mod_lockstep_find_peer(peer_id);
   if (!p) {
+    /* Learn peers from the wire (cold multi-client / host synth). */
+    mod_lockstep_add_peer(peer_id);
+    p = mod_lockstep_find_peer(peer_id);
+  }
+  if (!p) {
     return;
   }
+  p->got_input = true;
   NgLockSlot *s = &p->slots[tick % NG_LOCK_RING];
   if (s->present && s->tick == tick) {
     if (s->bits != bits) {
-      NG_LOG_ERROR("lockstep: input conflict peer=%u tick=%u got=%u have=%u", peer_id, tick,
-                   (unsigned)bits, (unsigned)s->bits);
-      mod_lockstep_note_desync();
+      if (g_lock.clock_owner) {
+        /* Replace pre-step zero-fill with real bits; ignore only after step. */
+        // agent: composer-2.5 | 2026-07-30 | wait all_have before zero-fill | 24fa25
+        if (tick > g_lock.sim_tick && s->bits == 0) {
+          s->bits = bits;
+          return;
+        }
+        NG_LOG_WARN("lockstep: ignore late input peer=%u tick=%u got=%u have=%u", peer_id, tick,
+                    (unsigned)bits, (unsigned)s->bits);
+        return;
+      }
+      /* Mirror: host/peer wire is commit authority — always adopt before step. */
+      // agent: composer-2.5 | 2026-07-30 | host commit overwrites local | 2da677
+      if (tick > g_lock.sim_tick) {
+        s->bits = bits;
+        return;
+      }
+      NG_LOG_WARN("lockstep: adopt remote bits peer=%u tick=%u was=%u now=%u", peer_id, tick,
+                  (unsigned)s->bits, (unsigned)bits);
+      s->bits = bits;
+      return;
     }
     return;
   }
@@ -360,6 +646,7 @@ void mod_lockstep_store_ack(uint32_t peer_id, uint32_t ack_tick) {
   if (!p) {
     return;
   }
+  p->got_ack = true;
   if (ack_tick > p->ack_our) {
     p->ack_our = ack_tick;
   }
@@ -385,6 +672,22 @@ uint8_t mod_lockstep_bits_for(uint32_t peer_id, uint32_t tick) {
   return p->slots[tick % NG_LOCK_RING].bits;
 }
 
+// agent: composer-2.5 | 2026-07-30 | wait all_have before zero-fill | 24fa25
+uint8_t mod_lockstep_bits_or(uint32_t tick) {
+  uint8_t bits = 0;
+  if (tick == 0) {
+    return 0;
+  }
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || !mod_lockstep_slot_has(p, tick)) {
+      continue;
+    }
+    bits |= p->slots[tick % NG_LOCK_RING].bits;
+  }
+  return bits;
+}
+
 bool mod_lockstep_have_input(uint32_t peer_id, uint32_t tick) {
   // agent: composer-2.5 | 2026-07-30 | peer count accessor | ea5827
   if (tick == 0 || peer_id == 0) {
@@ -405,6 +708,7 @@ uint32_t mod_lockstep_last_hash_tick(void) { return g_lock.last_hash_tick; }
 
 int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits, int max_count) {
   // agent: composer-2.5 | 2026-07-30 | ack trims send window | 0bb3f0
+  // agent: composer-2.5 | 2026-07-30 | wait all_have before zero-fill | 24fa25
   if (!out_base_tick || !out_bits || max_count <= 0 || g_lock.local_send_tick == 0) {
     return 0;
   }
@@ -412,25 +716,15 @@ int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits, in
   if (!self) {
     return 0;
   }
-  uint32_t start = g_lock.local_send_tick > 8u ? (g_lock.local_send_tick - 7u) : 1u;
-  if (g_lock.local_ack + 1u > start) {
-    start = g_lock.local_ack + 1u;
-  }
-  /* Trim using remotes' ack of world inputs (includes our stream). */
-  uint32_t min_remote_ack = UINT32_MAX;
-  bool any_remote = false;
-  for (int i = 0; i < g_lock.peer_count; i++) {
-    NgLockPeer *p = &g_lock.peers[i];
-    if (!p->alive || p->peer_id == g_lock.local_peer_id) {
-      continue;
-    }
-    any_remote = true;
-    if (p->ack_our < min_remote_ack) {
-      min_remote_ack = p->ack_our;
-    }
-  }
-  if (any_remote && min_remote_ack + 1u > start) {
-    start = min_remote_ack + 1u;
+  /* Always retransmit a trailing window wide enough to cover playout + loss.
+   * Do not trim by remote acks — an ahead mirror can ack past ticks the clock
+   * owner never received, which starved resends and permanently stalled all_have. */
+  /* Retransmit from near sim_tick through local_send so behind peers can catch
+   * up — not only the tip of the send buffer (which races ahead and starves). */
+  const uint32_t span = 24u;
+  uint32_t start = g_lock.local_send_tick > span ? (g_lock.local_send_tick - (span - 1u)) : 1u;
+  if (g_lock.sim_tick > 0 && start > g_lock.sim_tick) {
+    start = g_lock.sim_tick > 8u ? (g_lock.sim_tick - 8u) : 1u;
   }
   if (start > g_lock.local_send_tick) {
     return 0;
@@ -438,8 +732,29 @@ int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits, in
   *out_base_tick = start;
   int n = 0;
   for (uint32_t t = start; t <= g_lock.local_send_tick && n < max_count; t++) {
+    if (!mod_lockstep_slot_has(self, t)) {
+      break;
+    }
     out_bits[n++] = self->slots[t % NG_LOCK_RING].bits;
   }
+  return n;
+}
+
+int mod_lockstep_drain_synth(NgLockSynth *out, int max_count) {
+  // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
+  if (!out || max_count <= 0 || g_lock.synth_count <= 0) {
+    return 0;
+  }
+  int n = g_lock.synth_count;
+  if (n > max_count) {
+    n = max_count;
+  }
+  memcpy(out, g_lock.synth, (size_t)n * sizeof(NgLockSynth));
+  if (n < g_lock.synth_count) {
+    memmove(g_lock.synth, g_lock.synth + n,
+            (size_t)(g_lock.synth_count - n) * sizeof(NgLockSynth));
+  }
+  g_lock.synth_count -= n;
   return n;
 }
 
@@ -490,3 +805,12 @@ void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_starte
 // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | abbc70
 // agent: composer-2.5 | 2026-07-30 | gate capture next sim tick | ba4520
 // agent: composer-2.5 | 2026-07-30 | peer count accessor | ea5827
+// agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
+// agent: composer-2.5 | 2026-07-30 | wait all_have before zero-fill | 24fa25
+// agent: composer-2.5 | 2026-07-30 | owner broadcast commit each step | f0bb9b
+// agent: composer-2.5 | 2026-07-30 | send ahead while sim stalled | e20a8c
+// agent: composer-2.5 | 2026-07-30 | owner wait then zero-fill | 81642f
+// agent: composer-2.5 | 2026-07-30 | mirror stall until all_have | 98fe6a
+// agent: composer-2.5 | 2026-07-30 | host commit overwrites local | 2da677
+// agent: composer-2.5 | 2026-07-31 | gaffer gate playout stall | 48ee28
+// agent: composer-2.5 | 2026-07-31 | gaffer tip sample sendahead | 2e5e49

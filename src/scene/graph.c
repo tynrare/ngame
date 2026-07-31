@@ -505,18 +505,26 @@ void mod_scene_graph_apply_update(const NgStateUpdate *update) {
   }
   NgSceneInst *inst = mod_scene_graph_inst_by_id(update->entity_id);
   // agent: composer-2.5 | 2026-07-29 | drop last_sent echo filter | e1c9a2
+  // agent: composer-2.5 | 2026-07-30 | shared apply ignores stale seq | 975e95
   if (inst) {
-    if (inst->last_applied_seq != 0 &&
-        (uint16_t)(update->seq - inst->last_applied_seq) > 0x8000u) {
+    const bool is_delta = (update->comp_mask & NG_COMP_FLAGS) != 0;
+    if (is_delta) {
+      /* Deltas need ordering; drop wrap-old retransmits. */
+      if (inst->last_applied_seq != 0 &&
+          (uint16_t)(update->seq - inst->last_applied_seq) > 0x8000u) {
+        return;
+      }
+    }
+    /* Absolute shared updates: only skip exact seq dup (multi-author must not
+     * get stuck if a high client seq was ever applied as last_applied). */
+    if (update->seq != 0 && update->seq == inst->last_applied_seq) {
       return;
     }
-    if (update->seq == inst->last_applied_seq) {
-      return;
+    if (update->seq != 0) {
+      inst->last_applied_seq = update->seq;
     }
-    inst->last_applied_seq = update->seq;
     // agent: composer-2.5 | 2026-07-30 | take dirty apply vel | 22b8f6
     // agent: composer-2.5 | 2026-07-30 | ack baseline encode apply | 1a55f8
-    const bool is_delta = (update->comp_mask & NG_COMP_FLAGS) != 0;
     if (update->comp_mask & NG_COMP_POS) {
       if (is_delta) {
         inst->pos[0] += update->pos[0];
@@ -784,38 +792,11 @@ bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout
   if (!inst || !inout) {
     return false;
   }
-  /* Absolute if no ack baseline; else FLAGS marks delta from ack. */
-  if (!inst->have_wire_ack) {
-    inout->comp_mask = (uint8_t)(inout->comp_mask & (uint8_t)~NG_COMP_FLAGS);
-    return true;
-  }
-  const uint8_t mask = inout->comp_mask;
-  NgStateUpdate d = *inout;
-  d.comp_mask = (uint8_t)(mask | NG_COMP_FLAGS);
-  if (mask & NG_COMP_POS) {
-    d.pos[0] = inst->pos[0] - inst->ack_pos[0];
-    d.pos[1] = inst->pos[1] - inst->ack_pos[1];
-    d.pos[2] = inst->pos[2] - inst->ack_pos[2];
-  }
-  if (mask & NG_COMP_ROT) {
-    d.rot[0] = inst->rot[0] - inst->ack_rot[0];
-    d.rot[1] = inst->rot[1] - inst->ack_rot[1];
-    d.rot[2] = inst->rot[2] - inst->ack_rot[2];
-  }
-  if (mask & NG_COMP_SCALE) {
-    d.scale = inst->scale - inst->ack_scale;
-  }
-  if (mask & NG_COMP_LIN_VEL) {
-    d.lin_vel[0] = inst->lin_vel[0] - inst->ack_lin_vel[0];
-    d.lin_vel[1] = inst->lin_vel[1] - inst->ack_lin_vel[1];
-    d.lin_vel[2] = inst->lin_vel[2] - inst->ack_lin_vel[2];
-  }
-  if (mask & NG_COMP_ANG_VEL) {
-    d.ang_vel[0] = inst->ang_vel[0] - inst->ack_ang_vel[0];
-    d.ang_vel[1] = inst->ang_vel[1] - inst->ack_ang_vel[1];
-    d.ang_vel[2] = inst->ang_vel[2] - inst->ack_ang_vel[2];
-  }
-  *inout = d;
+  // agent: composer-2.5 | 2026-07-30 | shared apply ignores stale seq | 975e95
+  /* Always absolute on the wire. Delta baselines mix host/client seq namespaces and
+   * break multi-author shared entities (second client stops updating the first). */
+  (void)inst;
+  inout->comp_mask = (uint8_t)(inout->comp_mask & (uint8_t)~NG_COMP_FLAGS);
   return true;
 }
 
@@ -868,3 +849,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-07-30 | push state sample ring | 19d0cd
 // agent: composer-2.5 | 2026-07-30 | ack baseline encode apply | 1a55f8
 // agent: composer-2.5 | 2026-07-30 | fix graph spawn stash leak | cddf4f
+// agent: composer-2.5 | 2026-07-30 | shared apply ignores stale seq | 975e95

@@ -6,6 +6,8 @@
 // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | cbe0b7
 // agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c
 // agent: composer-2.5 | 2026-07-30 | lockstep session server load | f8de1b
+// agent: composer-2.5 | 2026-07-30 | broadcast synth lock inputs | 96e06d
+// agent: composer-2.5 | 2026-07-30 | lockstep peer roster sync | ffd508
 #include "mod_net.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -112,6 +114,9 @@ typedef struct ModNetCtx {
   bool cmd_inflight;
   uint8_t lock_peer_id;
   uint32_t lock_hash_sent_tick;
+  uint32_t lock_roster_sent_tick;
+  uint32_t lock_roster_pulse; /* wall-ish flush count for cold-start roster spam */
+  uint32_t lock_last_sim_tick; /* detect lockstep clock restart (scene reload) */
   uint8_t *lock_phys_rx;
   int lock_phys_rx_size;
   int lock_phys_rx_got;
@@ -257,12 +262,66 @@ static void mod_net_send_session_peer(NgNet *net, NgNetPeer *peer, void *vctx) {
   ng_net_send_to(net, peer, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
 }
 
+// agent: composer-2.5 | 2026-07-30 | lockstep peer roster sync | ffd508
+static void mod_net_lockstep_add_peer_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
+  (void)net;
+  (void)vctx;
+  NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+  if (ps && ps->peer_id != 0) {
+    mod_lockstep_add_peer(ps->peer_id);
+  }
+}
+
+static void mod_net_roster_acc_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
+  (void)net;
+  NgLockResumePkt *resume = (NgLockResumePkt *)vctx;
+  NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+  if (!ps || ps->peer_id == 0 || resume->peer_count >= NG_LOCK_PEER_MAX) {
+    return;
+  }
+  for (uint8_t i = 0; i < resume->peer_count; i++) {
+    if (resume->peer_ids[i] == (uint8_t)ps->peer_id) {
+      return;
+    }
+  }
+  resume->peer_ids[resume->peer_count++] = (uint8_t)ps->peer_id;
+}
+
+/* Clock owner: register every connected net peer and broadcast the roster. */
+static void mod_net_lockstep_broadcast_roster(ModNetCtx *ctx, NgNet *net) {
+  if (!ctx || !net || !mod_lockstep_active() || !mod_lockstep_is_clock_owner()) {
+    return;
+  }
+  if (mod_lockstep_syncing() || ctx->lock_join_pending) {
+    return;
+  }
+  ng_net_foreach_peer(net, mod_net_lockstep_add_peer_cb, ctx);
+  NgLockResumePkt resume = {0};
+  resume.sim_tick = mod_lockstep_sim_tick();
+  resume.peer_count = 0;
+  uint32_t local = mod_lockstep_local_peer_id();
+  if (local) {
+    resume.peer_ids[resume.peer_count++] = (uint8_t)local;
+  }
+  ng_net_foreach_peer(net, mod_net_roster_acc_cb, &resume);
+  if (resume.peer_count == 0) {
+    return;
+  }
+  if (!ng_proto_encode_lock_resume(&ctx->tx_buf, ++ctx->seq, &resume)) {
+    return;
+  }
+  NG_LOG_INFO("lockstep: roster RESUME tick=%u peers=%u", resume.sim_tick, resume.peer_count);
+  ng_net_broadcast(net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+  ng_net_flush(net);
+}
+
 static void mod_net_broadcast_session(ModNetCtx *ctx, NgNet *net) {
   if (!net) {
     return;
   }
   ng_net_foreach_peer(net, mod_net_send_session_peer, ctx);
   ng_net_flush(net);
+  mod_net_lockstep_broadcast_roster(ctx, net);
 }
 
 static void mod_net_relay_state_update(NgNet *net, NgNetPeer *peer, void *vctx) {
@@ -952,6 +1011,9 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (!ng_proto_decode_state_update(buf, &update)) {
       return;
     }
+    // agent: composer-2.5 | 2026-07-30 | STATE sync uses server graph | ef6ea6
+    /* Tick/fixed_step leave the view runtime active; shared registry lives on server. */
+    mod_scene_runtime_use_server();
     const NgSyncMode sync = mod_scene_graph_sync_for_entity(update.entity_id);
     if (sync == NG_SYNC_OWNER) {
       NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
@@ -980,6 +1042,8 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (!ng_proto_decode_state_batch(buf, updates, 16, &count)) {
       return;
     }
+    // agent: composer-2.5 | 2026-07-30 | STATE sync uses server graph | ef6ea6
+    mod_scene_runtime_use_server();
     int kept = 0;
     for (int i = 0; i < count; i++) {
       updates[i].tick = h.tick;
@@ -1061,9 +1125,10 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (pkt.peer_id != 0 && pkt.peer_id != (uint8_t)mod_lockstep_local_peer_id() &&
         pkt.tick != 0 && pkt.tick == mod_lockstep_last_hash_tick() &&
         pkt.hash != mod_lockstep_last_hash()) {
-      NG_LOG_ERROR("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x", pkt.peer_id,
-                   pkt.tick, pkt.hash, mod_lockstep_last_hash());
-      mod_lockstep_note_desync();
+      // agent: composer-2.5 | 2026-07-30 | broadcast synth lock inputs | 96e06d
+      /* Log only — permanent note_desync freezes the clock owner and all mirrors. */
+      NG_LOG_WARN("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x", pkt.peer_id,
+                  pkt.tick, pkt.hash, mod_lockstep_last_hash());
     }
     if (!ng_proto_encode_lock_hash(&ctx->tx_buf, ++ctx->seq, &pkt)) {
       return;
@@ -1085,11 +1150,14 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     }
     if (pkt.hash != ctx->lock_join_hash) {
       // agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c
+      // agent: composer-2.5 | 2026-07-31 | join abort end sync recover | 705ccc
       NG_LOG_ERROR("lockstep: join hash mismatch peer=%u got=0x%08x want=0x%08x — abort join",
                    pkt.peer_id, pkt.hash, ctx->lock_join_hash);
       ctx->lock_join_pending = false;
       ctx->lock_joining_peer = 0;
-      /* Stay paused (syncing); do not RESUME with a bad world. */
+      /* Do not leave the session permanently paused (syncing STALL forever). */
+      mod_lockstep_end_sync();
+      mod_net_lockstep_broadcast_roster(ctx, net);
       break;
     }
     mod_lockstep_add_peer(pkt.peer_id);
@@ -1101,7 +1169,20 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (local) {
       resume.peer_ids[resume.peer_count++] = (uint8_t)local;
     }
-    resume.peer_ids[resume.peer_count++] = pkt.peer_id;
+    /* Include all connected net peers so mirrors share one roster. */
+    ng_net_foreach_peer(net, mod_net_roster_acc_cb, &resume);
+    if (pkt.peer_id != 0) {
+      bool have = false;
+      for (uint8_t i = 0; i < resume.peer_count; i++) {
+        if (resume.peer_ids[i] == pkt.peer_id) {
+          have = true;
+          break;
+        }
+      }
+      if (!have && resume.peer_count < NG_LOCK_PEER_MAX) {
+        resume.peer_ids[resume.peer_count++] = pkt.peer_id;
+      }
+    }
     if (!ng_proto_encode_lock_resume(&ctx->tx_buf, ++ctx->seq, &resume)) {
       break;
     }
@@ -1215,9 +1296,13 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
                 session.your_id, session.lockstep, session.syncing, session.snap_tick);
     mod_net_update_root_mirror_session(&session);
     // agent: composer-2.5 | 2026-07-30 | lockstep session server load | f8de1b
-    /* Lockstep peers must load the scene on the server slot (Box3D owner) before view. */
+    // agent: composer-2.5 | 2026-07-30 | leave lockstep on scene switch | 4b3adf
+    /* Lockstep peers load Box3D on the server slot. Leaving lockstep must tear that
+     * world down and clear the fixed gate — otherwise cube STALLs forever. */
     if (session.lockstep) {
       mod_scene_on_session(&session);
+    } else {
+      mod_scene_clear_lockstep_server();
     }
     mod_scene_view_on_session(&session);
     break;
@@ -1272,9 +1357,10 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     if (pkt.peer_id != 0 && pkt.peer_id != (uint8_t)mod_lockstep_local_peer_id() &&
         pkt.tick != 0 && pkt.tick == mod_lockstep_last_hash_tick() &&
         pkt.hash != mod_lockstep_last_hash()) {
-      NG_LOG_ERROR("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x", pkt.peer_id,
-                   pkt.tick, pkt.hash, mod_lockstep_last_hash());
-      mod_lockstep_note_desync();
+      // agent: composer-2.5 | 2026-07-30 | broadcast synth lock inputs | 96e06d
+      /* Log only — permanent note_desync freezes the clock owner and all mirrors. */
+      NG_LOG_WARN("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x", pkt.peer_id,
+                  pkt.tick, pkt.hash, mod_lockstep_last_hash());
     }
     break;
   }
@@ -1353,8 +1439,15 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       NG_LOG_INFO("lockstep: resume add peer=%u", pkt.peer_ids[i]);
       mod_lockstep_add_peer(pkt.peer_ids[i]);
     }
-    mod_lockstep_set_sim_tick(pkt.sim_tick);
-    mod_lockstep_end_sync();
+    // agent: composer-2.5 | 2026-07-30 | lockstep peer roster sync | ffd508
+    mod_lockstep_note_roster();
+    /* Roster-only RESUME must not wipe input rings; join sync still ends here. */
+    if (mod_lockstep_syncing() || mod_lockstep_awaiting_phys()) {
+      mod_lockstep_set_sim_tick(pkt.sim_tick);
+      mod_lockstep_end_sync();
+    }
+    /* Roster-only RESUME must not snap sim_tick — that desyncs worlds without PHYS. */
+    // agent: composer-2.5 | 2026-07-30 | no snap roster without phys | f942ca
     break;
   }
   default:
@@ -1987,6 +2080,37 @@ static void mod_net_send_state_peer(NgNet *net, NgNetPeer *peer, void *vctx) {
 #endif
 
 // agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
+// agent: composer-2.5 | 2026-07-30 | broadcast synth lock inputs | 96e06d
+static void mod_net_send_lock_tx(ModNetCtx *ctx) {
+  if (!ctx || ctx->tx_buf.len == 0) {
+    return;
+  }
+#if defined(NG_SERVER)
+  if (ctx->net) {
+    ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+    ng_net_flush(ctx->net);
+  }
+#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+#if defined(NG_HAS_EMBEDDED)
+  if (ctx->gateway && ctx->net) {
+    ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+    ng_net_flush(ctx->net);
+  }
+  if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
+    ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+    ng_net_flush(ctx->net_upstream);
+    return;
+  }
+#endif
+  {
+    NgNet *link = mod_net_client_link(ctx);
+    if (ng_net_connected(link)) {
+      ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+    }
+  }
+#endif
+}
+
 static void mod_net_flush_lockstep(ModNetCtx *ctx) {
   if (!ctx || !mod_lockstep_active()) {
     return;
@@ -2006,9 +2130,9 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
   uint32_t local_id = mod_lockstep_local_peer_id();
   if (ctx->lock_peer_id != 0) {
     local_id = ctx->lock_peer_id;
-    /* Adopt id without growing peer_count past the local clock peer. */
+    // agent: composer-2.5 | 2026-07-30 | no clear peers on adopt id | dfad8e
+    /* Adopt SESSION your_id without wiping the peer roster (that broke all_have). */
     if (mod_lockstep_local_peer_id() != local_id) {
-      mod_lockstep_clear_peers();
       mod_lockstep_set_local_peer(local_id);
     }
   }
@@ -2017,30 +2141,49 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
   if (n > 0) {
     inp.count = (uint8_t)n;
     if (ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &inp)) {
-#if defined(NG_SERVER)
-      if (ctx->net) {
-        ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
-        ng_net_flush(ctx->net);
+      mod_net_send_lock_tx(ctx);
+    }
+  }
+  /* Owner zero-fills missing peers at step time — broadcast those committed bits. */
+  if (mod_lockstep_is_clock_owner()) {
+    NgLockSynth synth[NG_LOCK_SYNTH_MAX];
+    const int sn = mod_lockstep_drain_synth(synth, NG_LOCK_SYNTH_MAX);
+    for (int i = 0; i < sn; i++) {
+      NgLockInputPkt sp = {0};
+      sp.peer_id = (uint8_t)synth[i].peer_id;
+      sp.base_tick = synth[i].tick;
+      sp.count = 1;
+      sp.bits[0] = synth[i].bits;
+      if (ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &sp)) {
+        mod_net_send_lock_tx(ctx);
       }
-#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
-#if defined(NG_HAS_EMBEDDED)
-      if (ctx->gateway && ctx->net) {
-        ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
-        ng_net_flush(ctx->net);
+    }
+    /* Roster: enough for cold mirrors to leave BUFFER — never spam reliable RESUME
+     * while waiting for inputs (starves LOCK_INPUT → got_input never sets → freeze). */
+    // agent: composer-2.5 | 2026-07-30 | roster broadcast early often | 0dbf8a
+    // agent: composer-2.5 | 2026-07-31 | join abort end sync recover | 705ccc
+    {
+      const uint32_t st = mod_lockstep_sim_tick();
+      /* Scene reload restarts sim at 0 — re-arm cold roster (pulse must not stay spent). */
+      if (st == 0u && ctx->lock_roster_sent_tick > 1u && ctx->lock_last_sim_tick > 0u) {
+        ctx->lock_roster_sent_tick = 0;
+        ctx->lock_roster_pulse = 0;
       }
-      if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
-        ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE,
-                    false);
-        ng_net_flush(ctx->net_upstream);
-      } else
-#endif
-      {
-        NgNet *link = mod_net_client_link(ctx);
-        if (ng_net_connected(link)) {
-          ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+      ctx->lock_last_sim_tick = st;
+      ctx->lock_roster_pulse++;
+      const bool first = (ctx->lock_roster_sent_tick == 0);
+      /* While held at tick 0, rebroadcast a few times only (~1s apart), then stop. */
+      const bool cold_due =
+          (st == 0u) && (ctx->lock_roster_pulse <= 240u) && (ctx->lock_roster_pulse % 60u) == 0u;
+      const bool tick_due = (st > 0 && (st % 300u) == 0u && st != ctx->lock_roster_sent_tick);
+      if (first || cold_due || tick_due) {
+        ctx->lock_roster_sent_tick = st ? st : ctx->lock_roster_pulse;
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+        if (ctx->net) {
+          mod_net_lockstep_broadcast_roster(ctx, ctx->net);
         }
-      }
 #endif
+      }
     }
   }
   NgLockAckPkt ack = {
@@ -2048,25 +2191,7 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
       .ack_tick = mod_lockstep_highest_recv_contiguous(),
   };
   if (ng_proto_encode_lock_ack(&ctx->tx_buf, ++ctx->seq, &ack)) {
-#if defined(NG_SERVER)
-    if (ctx->net) {
-      ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
-      ng_net_flush(ctx->net);
-    }
-#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
-#if defined(NG_HAS_EMBEDDED)
-    if (ctx->gateway && ctx->net) {
-      ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
-      ng_net_flush(ctx->net);
-    }
-#endif
-    {
-      NgNet *link = mod_net_client_link(ctx);
-      if (ng_net_connected(link)) {
-        ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
-      }
-    }
-#endif
+    mod_net_send_lock_tx(ctx);
   }
   const uint32_t ht = mod_lockstep_last_hash_tick();
   if (ht != 0 && ht != ctx->lock_hash_sent_tick) {
@@ -2077,17 +2202,7 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
     };
     if (ng_proto_encode_lock_hash(&ctx->tx_buf, ++ctx->seq, &hp)) {
       ctx->lock_hash_sent_tick = ht;
-#if defined(NG_SERVER)
-      if (ctx->net) {
-        ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
-        ng_net_flush(ctx->net);
-      }
-#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
-      NgNet *link = mod_net_client_link(ctx);
-      if (ng_net_connected(link)) {
-        ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
-      }
-#endif
+      mod_net_send_lock_tx(ctx);
     }
   }
 }
@@ -2099,7 +2214,9 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
   if (mod_lockstep_active()) {
     mod_net_flush_lockstep(ctx);
   }
-  if (!mod_scene_is_loaded()) {
+  // agent: composer-2.5 | 2026-07-30 | flush when view scene loaded | 44b0e0
+  /* Remotes author shared entities on the view graph; server slot may be empty. */
+  if (!mod_scene_is_loaded() && !mod_scene_view_is_loaded()) {
     return;
   }
   NgStateUpdate cand[64];
@@ -2256,3 +2373,13 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | cbe0b7
 // agent: composer-2.5 | 2026-07-30 | join ready mismatch aborts | 32918c
 // agent: composer-2.5 | 2026-07-30 | lockstep session server load | f8de1b
+// agent: composer-2.5 | 2026-07-30 | broadcast synth lock inputs | 96e06d
+// agent: composer-2.5 | 2026-07-30 | lockstep peer roster sync | ffd508
+// agent: composer-2.5 | 2026-07-30 | leave lockstep on scene switch | 4b3adf
+// agent: composer-2.5 | 2026-07-30 | STATE sync uses server graph | ef6ea6
+// agent: composer-2.5 | 2026-07-30 | flush when view scene loaded | 44b0e0
+// agent: composer-2.5 | 2026-07-30 | no clear peers on adopt id | dfad8e
+// agent: composer-2.5 | 2026-07-30 | roster broadcast early often | 0dbf8a
+// agent: composer-2.5 | 2026-07-30 | no snap roster without phys | f942ca
+// agent: composer-2.5 | 2026-07-31 | join abort end sync recover | 705ccc
+// agent: composer-2.5 | 2026-07-31 | rearm roster on sim restart | b74259

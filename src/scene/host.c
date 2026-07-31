@@ -59,29 +59,60 @@ static NgFixedGate mod_scene_lockstep_fixed_gate(void) {
   return NG_FIXED_GATE_GO;
 }
 
+static void mod_scene_lockstep_set_owner_role(void) {
+  // agent: composer-2.5 | 2026-07-30 | set lockstep clock owner | d24ebb
+  /* Dedicated server always owns the clock. Clients mirror unless solo/auth gateway. */
+#if defined(NG_SERVER)
+  mod_lockstep_set_clock_owner(true);
+#elif defined(NG_HAS_EMBEDDED)
+  mod_lockstep_set_clock_owner(mod_net_is_authoritative());
+#else
+  mod_lockstep_set_clock_owner(false);
+#endif
+}
+
 static void mod_scene_lockstep_activate(uint32_t local_peer) {
   // agent: composer-2.5 | 2026-07-30 | lockstep ignore entity sync | ae273c
   // agent: composer-2.5 | 2026-07-30 | lockstep activate no wipe | bb830d
   // agent: composer-2.5 | 2026-07-30 | lockstep restart on load | 0de823
   // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 486633
+  // agent: composer-2.5 | 2026-07-30 | set lockstep clock owner | d24ebb
   /* Mid-session re-activate: keep rings. Scene load calls restart instead. */
   if (mod_lockstep_active()) {
+#if defined(NG_SERVER)
+    /* Dedicated server is clock owner with no player peer slot. */
+    (void)local_peer;
+    if (mod_lockstep_local_peer_id() != 0) {
+      /* keep existing; restart path clears */
+    }
+#else
     if (mod_lockstep_local_peer_id() == 0) {
       mod_lockstep_set_local_peer(local_peer ? local_peer : 1u);
     }
+#endif
+    mod_scene_lockstep_set_owner_role();
     ng_mod_set_fixed_gate(mod_scene_lockstep_fixed_gate);
-    NG_LOG_INFO("lockstep: activate keep-alive peer=%u syncing=%d await=%d tick=%u",
-                mod_lockstep_local_peer_id(), mod_lockstep_syncing() ? 1 : 0,
-                mod_lockstep_awaiting_phys() ? 1 : 0, mod_lockstep_sim_tick());
+    NG_LOG_INFO("lockstep: activate keep-alive peer=%u owner=%d syncing=%d await=%d tick=%u",
+                mod_lockstep_local_peer_id(), mod_lockstep_is_clock_owner() ? 1 : 0,
+                mod_lockstep_syncing() ? 1 : 0, mod_lockstep_awaiting_phys() ? 1 : 0,
+                mod_lockstep_sim_tick());
     return;
   }
   mod_lockstep_set_active(true);
   mod_lockstep_clear_peers();
+#if defined(NG_SERVER)
+  /* No local player peer — clients own peer ids from SESSION.your_id. */
+  (void)local_peer;
+  mod_lockstep_set_local_peer(0);
+#else
   mod_lockstep_set_local_peer(local_peer ? local_peer : 1u);
+#endif
+  mod_scene_lockstep_set_owner_role();
   ng_mod_set_fixed_gate(mod_scene_lockstep_fixed_gate);
-  NG_LOG_INFO("lockstep: activate new peer=%u syncing=%d await=%d tick=%u",
-              mod_lockstep_local_peer_id(), mod_lockstep_syncing() ? 1 : 0,
-              mod_lockstep_awaiting_phys() ? 1 : 0, mod_lockstep_sim_tick());
+  NG_LOG_INFO("lockstep: activate new peer=%u owner=%d syncing=%d await=%d tick=%u",
+              mod_lockstep_local_peer_id(), mod_lockstep_is_clock_owner() ? 1 : 0,
+              mod_lockstep_syncing() ? 1 : 0, mod_lockstep_awaiting_phys() ? 1 : 0,
+              mod_lockstep_sim_tick());
 }
 
 static void mod_scene_lockstep_restart(uint32_t local_peer) {
@@ -678,17 +709,16 @@ static duk_ret_t bind_get_input(duk_context *ctx) {
   // agent: codex-5.3 | 2026-07-29 | expose W S input keys | a3a058
   // agent: composer-2.5 | 2026-07-30 | get_input uses lockstep bits | 47960c
   // agent: composer-2.5 | 2026-07-30 | get_input solo live fallback | 523e81
+  // agent: composer-2.5 | 2026-07-30 | get_input ORs all lockstep peers | b41de9
   int buttons = mod_input_buttons();
   if (mod_lockstep_active()) {
-    const uint32_t peer = mod_lockstep_local_peer_id();
     const uint32_t tick = mod_lockstep_step_tick();
-    if (mod_lockstep_peer_count() <= 1) {
-      /* Solo / embedded: live keys (slots still filled for wire when peers join). */
-      buttons = mod_input_buttons();
-    } else if (mod_lockstep_have_input(peer, tick)) {
-      buttons = (int)mod_lockstep_bits_for(peer, tick);
-    } else {
-      buttons = 0;
+    // agent: composer-2.5 | 2026-07-30 | get_input always lockstep slots | 861530
+    /* Always read committed lockstep slots while active — live keys desync when
+     * peer_count flickers to 1 during roster adopt. */
+    if (mod_lockstep_have_input(mod_lockstep_local_peer_id(), tick) ||
+        mod_lockstep_peer_count() > 1) {
+      buttons = (int)mod_lockstep_bits_or(tick);
     }
   }
   if (key == NG_SCENE_KEY_A) {
@@ -1611,13 +1641,18 @@ static void mod_scene_unload(ModSceneCtx *ctx) {
   mod_scene_graph_reset();
   mod_scene_assets_reset();
   // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
+  // agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
   {
+    const bool was_lock =
+        mod_scene_physics_is_lockstep() || (mod_lockstep_active() && ctx->loaded);
     const bool other_lock =
         (ctx == &g_scene_server.scene)
             ? (g_scene_view.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP)
             : (g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP);
     mod_scene_physics_reset();
-    if (!other_lock) {
+    /* Drop the gate whenever this was the last lockstep runtime — otherwise cube
+     * (lockstep=0) keeps STALLing after solar/physics. */
+    if (was_lock && !other_lock) {
       mod_lockstep_reset();
       ng_mod_set_fixed_gate(NULL);
     }
@@ -1629,6 +1664,19 @@ static void mod_scene_unload(ModSceneCtx *ctx) {
   ctx->is_controller = false;
   ctx->is_server_host = false;
   ctx->scene_id[0] = '\0';
+}
+
+void mod_scene_clear_lockstep_server(void) {
+  // agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
+  mod_scene_runtime_use_server();
+  ModSceneCtx *ctx = mod_scene_runtime_scene();
+  if (ctx && ctx->loaded) {
+    mod_scene_unload(ctx);
+  }
+  if (mod_lockstep_active()) {
+    mod_lockstep_reset();
+    ng_mod_set_fixed_gate(NULL);
+  }
 }
 
 static bool mod_scene_begin(const char *scene_id, bool server_host, bool is_controller) {
@@ -1803,7 +1851,15 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
     mod_scene_drain_pending_change(ctx);
     ctx->started = true;
     mod_scene_graph_foreach_unmatched_pending(mod_scene_materialize_pending_ud, ctx);
-    mod_scene_lockstep_maybe_activate(session->your_id);
+    // agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
+    // agent: composer-2.5 | 2026-07-30 | view lockstep activate not restart | 7a6732
+    /* Fresh lockstep clock once per scene — server slot owns the restart.
+     * View SESSION must not reset again or peers diverge (A@8 vs B@129). */
+    if (ctx == &g_scene_server.scene) {
+      mod_scene_lockstep_maybe_restart(session->your_id);
+    } else {
+      mod_scene_lockstep_maybe_activate(session->your_id);
+    }
     if (join_sync && mod_lockstep_active()) {
       mod_lockstep_begin_sync(session->snap_tick);
       mod_lockstep_await_phys(true);
@@ -1900,15 +1956,24 @@ static bool mod_scene_take_flush_active(NgStateUpdate *out) {
 }
 
 bool mod_scene_take_flush(NgStateUpdate *out) {
-#if !defined(NG_SERVER)
+#if defined(NG_SERVER)
+  mod_scene_runtime_use_server();
+  return mod_scene_take_flush_active(out);
+#else
   // Shared/owner transforms are authored on the view graph.
+  // agent: composer-2.5 | 2026-07-30 | shared apply ignores stale seq | 975e95
   mod_scene_runtime_use_view();
   if (mod_scene_take_flush_active(out)) {
     return true;
   }
-#endif
+  /* Remote clients must not drain boot/server graph ids onto the wire — they
+   * collide with view shared entities (both often allocate from id=1). */
+  if (mod_net_upstream_connected()) {
+    return false;
+  }
   mod_scene_runtime_use_server();
   return mod_scene_take_flush_active(out);
+#endif
 }
 
 static bool mod_scene_tick_ctx(ModSceneCtx *ctx, float dt) {
@@ -2342,6 +2407,11 @@ static bool mod_scene_lockstep_hash_smoke(void) {
 
   mod_lockstep_reset();
   mod_scene_lockstep_restart(0);
+  // agent: composer-2.5 | 2026-07-30 | set lockstep clock owner | d24ebb
+  /* Smoke exercises input slots; dedicated-server activate uses peer 0 (no player). */
+  mod_lockstep_set_local_peer(1);
+  mod_lockstep_set_clock_owner(true);
+  mod_lockstep_note_roster();
 
   // agent: composer-2.5 | 2026-07-30 | smoke next sim tick bits | e7550b
   /* Gate must commit bits for sim_tick+1; step_tick must match. */
@@ -2361,13 +2431,16 @@ static bool mod_scene_lockstep_hash_smoke(void) {
     }
   }
 
-  /* Capture non-zero bits into a later slot (store_remote; server input stub is 0). */
+  /* Capture non-zero bits into a later slot (store_remote overwrites after gen_local). */
+  mod_lockstep_set_clock_owner(false);
   mod_lockstep_store_remote_input(mod_lockstep_local_peer_id(), 2u, (uint8_t)(NG_INPUT_A | NG_INPUT_W));
   if (mod_lockstep_bits_for(mod_lockstep_local_peer_id(), 2u) != (uint8_t)(NG_INPUT_A | NG_INPUT_W)) {
     mod_scene_runtime_use_server();
     mod_scene_unload(mod_scene_runtime_scene());
     return false;
   }
+  mod_lockstep_set_clock_owner(true);
+  mod_lockstep_note_roster();
 
   bool ok = true;
   uint32_t sim_tick = 0;
@@ -2517,6 +2590,8 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | push lockstep poses to view | 25fe35
 // agent: composer-2.5 | 2026-07-30 | get_input uses lockstep bits | 47960c
 // agent: composer-2.5 | 2026-07-30 | get_input solo live fallback | 523e81
+// agent: composer-2.5 | 2026-07-30 | get_input ORs all lockstep peers | b41de9
+// agent: composer-2.5 | 2026-07-30 | shared apply ignores stale seq | 975e95
 // agent: composer-2.5 | 2026-07-30 | apply_impulse JS binding | b980ed
 // agent: composer-2.5 | 2026-07-30 | apply force torque JS bindings | cd7a18
 // agent: composer-2.5 | 2026-07-30 | smoke single world input bits | 373a09
@@ -2524,3 +2599,6 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-07-30 | server entities text helper | 529fd4
 // agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
 // agent: composer-2.5 | 2026-07-30 | sphere describe parse | 741115
+// agent: composer-2.5 | 2026-07-30 | set lockstep clock owner | d24ebb
+// agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
+// agent: composer-2.5 | 2026-07-30 | get_input always lockstep slots | 861530
