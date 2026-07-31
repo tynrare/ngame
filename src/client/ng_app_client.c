@@ -2,6 +2,7 @@
 // agent: composer-2.5 | 2026-07-28 | gateway client orchestrator | 0e2e03
 // agent: composer-2.5 | 2026-07-29 | console early register order | 935cbc
 // agent: composer-2.5 | 2026-07-29 | poll console after BeginDrawing | a4b5c6
+// agent: cursor-grok-4.5 | 2026-07-31 | wall clock gateway sim pump | e39666
 #include "ng_app_client.h"
 #include "engine/ng_bus.h"
 #include "engine/ng_launch.h"
@@ -27,10 +28,15 @@
 #include <emscripten/emscripten.h>
 #endif
 
+#define NG_CLIENT_FRAME_DT NG_MOD_FIXED_DT
+#define NG_CLIENT_PUMP_MAX 60 /* 1s wall catch-up for tip/LOCK_INPUT */
+
 static bool g_ready = false;
 static NgLaunchConfig g_launch = {0};
 // agent: composer-2.5 | 2026-07-29 | verbose init failure reporting | c3d179
 static char g_init_error[256] = {0};
+static double g_last_wall = 0.0;
+static bool g_last_wall_set = false;
 
 static bool ng_app_client_bootstrap(void) {
   const double deadline = GetTime() + 8.0;
@@ -77,7 +83,9 @@ void ng_app_client_init(int argc, char **argv) {
 
   InitWindow(800, 450, "ngame");
   SetWindowState(FLAG_WINDOW_RESIZABLE);
-  SetTargetFPS(60);
+  /* Sim/net use wall clock; do not let EndDrawing WaitTime own the gateway. */
+  // agent: cursor-grok-4.5 | 2026-07-31 | wall clock gateway sim pump | e39666
+  SetTargetFPS(0);
 
 #if defined(__EMSCRIPTEN__)
   EM_ASM(window.dispatchEvent(new Event('resize')););
@@ -133,6 +141,8 @@ void ng_app_client_init(int argc, char **argv) {
   mod_net_gateway_resync();
   ng_server_runtime_init();
   g_ready = true;
+  g_last_wall = GetTime();
+  g_last_wall_set = true;
   // agent: composer-2.5 | 2026-07-29 | log actual agent listen | cce4f2
   const uint16_t listen_port = mod_agent_listening_port();
 #if defined(NG_HAS_EMBEDDED)
@@ -167,25 +177,63 @@ void ng_app_client_frame(void) {
     return;
   }
 
-  const float dt = GetFrameTime();
+  const double frame_t0 = GetTime();
+  if (!g_last_wall_set) {
+    g_last_wall = frame_t0;
+    g_last_wall_set = true;
+  }
+  double wall_dt = frame_t0 - g_last_wall;
+  if (wall_dt < 0.0) {
+    wall_dt = 0.0;
+  }
+  /* Cap catch-up to 1s of slices (NG_CLIENT_PUMP_MAX). */
+  if (wall_dt > (double)NG_CLIENT_PUMP_MAX * (double)NG_CLIENT_FRAME_DT) {
+    wall_dt = (double)NG_CLIENT_PUMP_MAX * (double)NG_CLIENT_FRAME_DT;
+  }
+  g_last_wall = frame_t0;
 
+  /* Short pre-draw drain so connect/register progress even if draw stalls later. */
   ng_server_runtime_poll_net();
   ng_server_runtime_poll_agent();
-  ng_server_runtime_frame(dt);
-
   ng_viewport_poll();
   ng_shader_poll();
   mod_net_poll_recv();
 
   /* Raylib refreshes keys around Begin/EndDrawing; sample after BeginDrawing so
-   * IsKeyDown matches the console path, then fixed_step can read fresh buttons. */
+   * IsKeyDown matches the console path, then wall-clock pump sees fresh buttons. */
   // agent: composer-2.5 | 2026-07-30 | sample input after BeginDrawing | e28250
+  // agent: cursor-grok-4.5 | 2026-07-31 | wall clock gateway sim pump | e39666
   BeginDrawing();
   mod_input_begin_frame();
   mod_console_poll_input();
-  ng_mod_publish_tick(dt);
+
+  int slices = (int)(wall_dt / (double)NG_CLIENT_FRAME_DT);
+  if (slices < 1) {
+    slices = 1;
+  }
+  if (slices > NG_CLIENT_PUMP_MAX) {
+    slices = NG_CLIENT_PUMP_MAX;
+  }
+  /* Host poll once/frame (above). Per-slice: upstream recv + tip/LOCK flush.
+   * Re-polling connect snapshots every slice only spam-logs when deferred. */
+  for (int i = 0; i < slices; i++) {
+    mod_net_poll_recv();
+    ng_server_runtime_frame(NG_CLIENT_FRAME_DT);
+    ng_mod_publish_tick(NG_CLIENT_FRAME_DT);
+  }
+
   ng_mod_publish_draw();
   EndDrawing();
+
+#if !defined(__EMSCRIPTEN__)
+  /* Pad to ~60Hz wall when the frame was fast. After a slow swap/unfocus stall,
+   * spent already exceeds the budget — skip wait and catch up next frame. */
+  const double spent = GetTime() - frame_t0;
+  const double target = (double)NG_CLIENT_FRAME_DT;
+  if (spent < target) {
+    WaitTime(target - spent);
+  }
+#endif
 }
 
 void ng_app_client_shutdown(void) {
@@ -204,6 +252,7 @@ void ng_app_client_shutdown(void) {
     ng_launch_stop_server();
   }
   g_ready = false;
+  g_last_wall_set = false;
 }
 
 // agent: composer-2.5 | 2026-07-28 | gateway client orchestrator | 0e2e03
@@ -215,3 +264,4 @@ void ng_app_client_shutdown(void) {
 // agent: composer-2.5 | 2026-07-29 | expose launch mode text | c7835e
 // agent: composer-2.5 | 2026-07-30 | remote connect no freeze | c52f96
 // agent: composer-2.5 | 2026-07-30 | sample input after BeginDrawing | e28250
+// agent: cursor-grok-4.5 | 2026-07-31 | wall clock gateway sim pump | e39666

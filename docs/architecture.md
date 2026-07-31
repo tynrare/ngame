@@ -45,10 +45,14 @@ Remote `ngame_server` uses the same server module stack (`ng_server_runtime`).
 
 `boot.js` / `scenes/*.js` → `src/scene/` → local server → wire → `src/client/render`
 
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gateway sim wall clock note | 64a891 -->
+**Scheduling:** gateway sim/net is **wall-clock paced** (≈60 Hz slices, catch-up when a frame is late). Render is a thin present after the pump — `SetTargetFPS` / swap must not own lockstep input production. An unfocused window must not freeze other peers.
+
 See [scenes.md](scenes.md).
 Agent execution checklist: [agent-runbook.md](agent-runbook.md).
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs architecture sim sync layers | 65f300 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gateway sim wall clock note | 64a891 -->
 ## Physics sim vs entity sync
 
 Two independent channels (see [scenes.md](scenes.md#sim-vs-sync-two-layers)):
@@ -62,3 +66,4 @@ Net flush runs both when lockstep is active: lockstep inputs/acks/hashes, plus `
 <!-- agent: composer-2.5 | 2026-07-29 | dual runtime register ports | d7e8f9 -->
 <!-- agent: composer-2.5 | 2026-07-29 | document physics body fixed_step | 98abb7 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs architecture sim sync layers | 65f300 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gateway sim wall clock note | 64a891 -->

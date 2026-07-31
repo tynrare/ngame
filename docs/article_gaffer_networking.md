@@ -229,6 +229,7 @@ Keep agents honest against this article — do **not** “optimize latency” by
 22. **ENet timeout ≥ ~5s** — sub-second timeouts drop live peers during late-join PHYS/SESSION reliable bursts. Prefer graceful DISCONNECT; timeout is for crashes.
 23. **Empty lobby clears join stall** — when ENet live peers hit 0, wipe lockstep peers + `lock_join_pending` / `syncing` so the next remote is not stuck waiting on ghosts.
 24. **No lockstep entity SNAP fanout on scene load** — bodies ignore transform sync; skip unreliable/reliable entity snaps when lockstep is active (SESSION+roster only).
+25. **Client input is wall-clock paced** — gateway pumps tip/`LOCK_INPUT` from wall time (not render swap). Unfocused/throttled windows must not starve peers; `NG_MOD_FIXED_MAX_STEPS` still caps phys catch-up (Gaffer spiral).
 
 <!-- agent: composer-2.5 | 2026-07-31 | Gaffer networked physics article notes | e2d8bd -->
 <!-- agent: composer-2.5 | 2026-07-31 | gaffer align notes in article | 4475e8 -->
@@ -240,3 +241,4 @@ Keep agents honest against this article — do **not** “optimize latency” by
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer timeout scene gen | dbad49 -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer empty lobby prune | 17172b -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer udp channels not tcp | 4ae659 -->
+<!-- agent: cursor-grok-4.5 | 2026-07-31 | gaffer wall clock client input | 33c419 -->

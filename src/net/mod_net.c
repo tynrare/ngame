@@ -193,13 +193,13 @@ static void mod_net_fill_session(ModNetCtx *ctx, NgSessionState *session, uint8_
   if (session->spawn_count > 0) {
     session->scene_sync = session->spawns[0].sync;
   }
-  if (mod_lockstep_syncing() || ctx->lock_join_pending) {
+  // agent: cursor-grok-4.5 | 2026-07-31 | scene gen beats join sync | 1151a3
+  /* Scene epoch must force-reload even if a late-join flag was still set. */
+  if (ctx->session_carry_gen && ctx->scene_gen != 0u) {
+    session->snap_tick = ctx->scene_gen;
+  } else if (mod_lockstep_syncing() || ctx->lock_join_pending) {
     session->syncing = 1u;
     session->snap_tick = mod_lockstep_sim_tick();
-  } else if (ctx->session_carry_gen && ctx->scene_gen != 0u) {
-    /* Scene load only — solar uses session.syncing for join, not snap_tick. */
-    // agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
-    session->snap_tick = ctx->scene_gen;
   }
 }
 
@@ -604,8 +604,16 @@ static void mod_net_send_connect_snapshot(NgNet *net, NgNetPeer *peer, void *vct
 #endif
   mod_scene_runtime_use_server();
   if (!mod_scene_is_loaded()) {
-    // agent: cursor-grok-4.5 | 2026-07-31 | net connect log rename | af466e
-    NG_LOG_INFO("net: connect defer peer=%u (scene not loaded)", ps->peer_id);
+    /* Solo/gateway: view may already own the scene while server slot is empty.
+     * Do not retry-spam reliable connect snaps forever. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | clear connect when view ready | 280874
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+    if (mod_scene_view_is_loaded()) {
+      ps->pending_connect_session = false;
+      ps->pending_connect_snap = false;
+      return;
+    }
+#endif
     return;
   }
   if (ps->pending_connect_session) {
@@ -1570,6 +1578,14 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
       mod_net_fill_snapshot_buf(ctx);
       ps->pending_connect_snap = true;
       ps->pending_connect_session = true;
+      /* Tick 0 lockstep: SESSION alone left the new mirror without RESUME
+       * (roster_ok=false BUFFER) while the first peer stayed solo-GO. */
+      // agent: cursor-grok-4.5 | 2026-07-31 | cold connect broadcasts roster | 997aa2
+      mod_net_send_connect_snapshot(net, peer, ctx);
+      ng_net_flush(net);
+      if (mod_lockstep_active() && mod_lockstep_is_clock_owner() && !ctx->lock_join_pending) {
+        mod_net_lockstep_broadcast_roster(ctx, net);
+      }
     }
   } else {
     NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
@@ -2356,6 +2372,12 @@ void mod_net_root_mirror_text(char *out, size_t cap) {
 #endif
 
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+static void mod_net_lock_free_phys_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
+  (void)net;
+  (void)vctx;
+  mod_net_lock_free_peer_phys((NetPeerState *)ng_net_peer_data(peer));
+}
+
 void mod_net_broadcast_scene_session(void) {
   ModNetCtx *ctx = &g_net_ctx;
   /* Scene load only — bumps gen so clients force-reload (solar→solar). */
@@ -2363,6 +2385,22 @@ void mod_net_broadcast_scene_session(void) {
   ctx->scene_gen += 1u;
   if (ctx->scene_gen == 0u) {
     ctx->scene_gen = 1u;
+  }
+  /* join_pending survived scene restart and blocked roster → owner peers=0
+   * BUFFER; mirrors then asymmetric solo-GO vs all_have STALL. */
+  // agent: cursor-grok-4.5 | 2026-07-31 | abort join on scene epoch | b096e1
+  if (ctx->lock_join_pending || mod_lockstep_syncing() || mod_lockstep_awaiting_phys()) {
+    NG_LOG_INFO("lockstep: scene epoch — abort join_pending=%d syncing=%d await=%d",
+                ctx->lock_join_pending ? 1 : 0, mod_lockstep_syncing() ? 1 : 0,
+                mod_lockstep_awaiting_phys() ? 1 : 0);
+  }
+  ctx->lock_join_pending = false;
+  ctx->lock_joining_peer = 0;
+  if (ctx->net) {
+    ng_net_foreach_peer(ctx->net, mod_net_lock_free_phys_cb, ctx);
+  }
+  if (mod_lockstep_syncing() || mod_lockstep_awaiting_phys()) {
+    mod_lockstep_end_sync();
   }
   ctx->session_carry_gen = true;
   if (ctx->net) {
@@ -2431,3 +2469,7 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: cursor-grok-4.5 | 2026-07-31 | prune peers when lobby empty | 5390c4
 // agent: cursor-grok-4.5 | 2026-07-31 | dedupe scene fanout snaps | 4ace4d
 // agent: cursor-grok-4.5 | 2026-07-31 | collapse cold roster pulses | b0daf6
+// agent: cursor-grok-4.5 | 2026-07-31 | clear connect when view ready | 280874
+// agent: cursor-grok-4.5 | 2026-07-31 | scene gen beats join sync | 1151a3
+// agent: cursor-grok-4.5 | 2026-07-31 | abort join on scene epoch | b096e1
+// agent: cursor-grok-4.5 | 2026-07-31 | cold connect broadcasts roster | 997aa2

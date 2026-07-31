@@ -480,7 +480,12 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
   }
   NgLockPeer *p = mod_lockstep_find_peer(peer_id);
   if (!p) {
-    /* Learn peers from the wire (cold multi-client / host synth). */
+    /* Owner may learn from wire before RESUME; mirrors must not — that inflated
+     * all_have (peers=2 vs peers=1) and froze one client permanently. */
+    // agent: cursor-grok-4.5 | 2026-07-31 | no mirror wire-learn peers | 55aad6
+    if (!g_lock.clock_owner) {
+      return;
+    }
     mod_lockstep_add_peer(peer_id);
     p = mod_lockstep_find_peer(peer_id);
   }
@@ -684,3 +689,4 @@ void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_starte
 // agent: cursor-grok-4.5 | 2026-07-31 | drop owner go rebroadcast | b2dafa
 // agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | f2b236
 // agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 6eea5d
+// agent: cursor-grok-4.5 | 2026-07-31 | no mirror wire-learn peers | 55aad6
