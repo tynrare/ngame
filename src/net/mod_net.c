@@ -114,9 +114,6 @@ typedef struct ModNetCtx {
   bool cmd_inflight;
   uint8_t lock_peer_id;
   uint32_t lock_hash_sent_tick;
-  uint32_t lock_roster_sent_tick;
-  uint32_t lock_roster_pulse; /* wall-ish flush count for cold-start roster spam */
-  uint32_t lock_last_sim_tick; /* detect lockstep clock restart (scene reload) */
   /* Bumped only in broadcast_scene_session; carried in snap_tick when !syncing
    * so clients force-reload same scene ids. Controller SESSION leaves snap=0. */
   // agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
@@ -342,13 +339,11 @@ static void mod_net_broadcast_session(ModNetCtx *ctx, NgNet *net) {
   }
   ng_net_foreach_peer(net, mod_net_send_session_peer, ctx);
   ng_net_flush(net);
-  /* One roster pulse with SESSION is enough for cold mirrors. Skip during
-   * late-join pause (READY sends RESUME). Never spam reliable RESUME here. */
+  /* One reliable roster with SESSION. Skip during late-join (READY sends RESUME).
+   * No flush-time pulses — those starve UDP LOCK_INPUT (Gaffer anti-drift). */
+  // agent: cursor-grok-4.5 | 2026-07-31 | collapse cold roster pulses | b0daf6
   if (mod_lockstep_active() && mod_lockstep_is_clock_owner() && !ctx->lock_join_pending) {
     mod_net_lockstep_broadcast_roster(ctx, net);
-    ctx->lock_roster_sent_tick = mod_lockstep_sim_tick() ? mod_lockstep_sim_tick() : 1u;
-    ctx->lock_roster_pulse = 1u;
-    ctx->lock_last_sim_tick = mod_lockstep_sim_tick();
   }
 }
 
@@ -506,8 +501,12 @@ static void mod_net_exec_host_cmd(ModNetCtx *ctx, NgNet *net, NgNetPeer *peer,
         result.state = ctx->snapshot_buf;
       }
       mod_net_send_action_result(ctx, net, peer, &result);
-      if (strncmp(line, "scene ", 6) == 0) {
-        mod_net_broadcast_session(ctx, net);
+      /* SESSION+roster already from mod_sim_load → broadcast_scene_session.
+       * Do not double reliable SESSION (starves LOCK_INPUT). Non-lockstep gets
+       * one unreliable entity snap; lockstep peers ignore body transforms. */
+      // agent: cursor-grok-4.5 | 2026-07-31 | dedupe scene fanout snaps | 4ace4d
+      if (strncmp(line, "scene ", 6) == 0 && !mod_lockstep_active()) {
+        mod_net_fill_snapshot_buf(ctx);
         ng_net_foreach_peer(net, mod_net_send_snapshot_peer, ctx);
       }
       ng_net_flush(net);
@@ -2211,31 +2210,8 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
       mod_net_send_lock_tx(ctx);
     }
   }
-  /* Cold roster only (tick 0). No periodic reliable RESUME — every 300 ticks
-   * (~5s) starved UDP LOCK_INPUT and hard-froze peers (Gaffer anti-drift #4). */
-  // agent: cursor-grok-4.5 | 2026-07-31 | drop periodic roster pulses | 9fb282
-  // agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | 7bdd5e
-  if (mod_lockstep_is_clock_owner()) {
-    const uint32_t st = mod_lockstep_sim_tick();
-    if (st == 0u && ctx->lock_roster_sent_tick > 1u && ctx->lock_last_sim_tick > 0u) {
-      ctx->lock_roster_sent_tick = 0;
-      ctx->lock_roster_pulse = 0;
-    }
-    ctx->lock_last_sim_tick = st;
-    ctx->lock_roster_pulse++;
-    const bool first = (ctx->lock_roster_sent_tick == 0);
-    const bool cold_due =
-        (st == 0u) && (ctx->lock_roster_pulse <= 180u) && (ctx->lock_roster_pulse % 60u) == 0u &&
-        (ctx->lock_roster_pulse / 60u) <= 3u;
-    if (!ctx->lock_join_pending && (first || cold_due)) {
-      ctx->lock_roster_sent_tick = st ? st : ctx->lock_roster_pulse;
-#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
-      if (ctx->net) {
-        mod_net_lockstep_broadcast_roster(ctx, ctx->net);
-      }
-#endif
-    }
-  }
+  /* Roster is SESSION / READY / disconnect only — never from the flush path. */
+  // agent: cursor-grok-4.5 | 2026-07-31 | collapse cold roster pulses | b0daf6
   NgLockAckPkt ack = {
       .peer_id = (uint8_t)mod_lockstep_local_peer_id(),
       .ack_tick = mod_lockstep_highest_recv_contiguous(),
@@ -2453,3 +2429,5 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: cursor-grok-4.5 | 2026-07-31 | net connect log rename | af466e
 // agent: cursor-grok-4.5 | 2026-07-31 | reset lockstep empty lobby | 2dafd8
 // agent: cursor-grok-4.5 | 2026-07-31 | prune peers when lobby empty | 5390c4
+// agent: cursor-grok-4.5 | 2026-07-31 | dedupe scene fanout snaps | 4ace4d
+// agent: cursor-grok-4.5 | 2026-07-31 | collapse cold roster pulses | b0daf6
