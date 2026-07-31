@@ -211,6 +211,15 @@ void ng_net_peer_set_data(NgNetPeer *peer, void *data) {
   peer->u.peer->data = data;
 }
 
+void ng_net_disconnect_peer(NgNet *n, NgNetPeer *peer) {
+  // agent: cursor-grok-4.5 | 2026-07-31 | enet disconnect by peer id | 6aeeb9
+  (void)n;
+  if (!peer || peer->lb || !peer->u.peer) {
+    return;
+  }
+  enet_peer_disconnect(peer->u.peer, 0);
+}
+
 // agent: composer-2.5 | 2026-07-25 | verify client peer state | 24b873
 bool ng_net_connected(NgNet *n) {
   if (!n) {
@@ -561,3 +570,4 @@ NgNet *ng_net_loopback_client(NgNetLoopbackPair *pair) {
 #endif
 // agent: cursor-grok-4.5 | 2026-07-31 | handle enet disconnect timeout | 5247a8
 // agent: cursor-grok-4.5 | 2026-07-31 | enet timeout join safe | 0fe3f5
+// agent: cursor-grok-4.5 | 2026-07-31 | enet disconnect by peer id | 6aeeb9

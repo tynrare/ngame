@@ -39,6 +39,7 @@ bool ng_net_send_to(NgNet *n, NgNetPeer *peer, const uint8_t *data, size_t len,
                     uint8_t channel, bool reliable);
 void ng_net_broadcast(NgNet *n, const uint8_t *data, size_t len, uint8_t channel,
                       bool reliable);
+void ng_net_disconnect_peer(NgNet *n, NgNetPeer *peer);
 void ng_net_poll(NgNet *n, NgNetPacketFn fn, void *ctx);
 void ng_net_poll_wait(NgNet *n, NgNetPacketFn fn, void *ctx, uint32_t timeout_ms);
 void ng_net_foreach_peer(NgNet *n, NgNetPeerIterFn fn, void *ctx);

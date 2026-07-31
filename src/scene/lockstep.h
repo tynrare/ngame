@@ -13,6 +13,24 @@
 /* Gaffer Deterministic Lockstep: ~100ms playout @ 60Hz hides jitter; too small → hitch/STALL. */
 // agent: composer-2.5 | 2026-07-31 | gaffer playout 6 ticks | 6e3db6
 #define NG_LOCK_PLAYOUT_TICKS 6
+/* Host: peer missing next-sim input longer than this (wall) → treat as leave. */
+// agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
+#define NG_LOCK_SILENT_SEC 1.0
+/* Mode B: confirm next tick after this wait if any peer input still missing (zeros).
+ * Must exceed playout+jitter; 100ms matched playout and zero-filled live peers → prune. */
+// agent: composer-2.5 | 2026-07-31 | confirm deadline playout | 7b5fce
+#define NG_LOCK_CONFIRM_SEC 0.35
+/* Mode B: peer ack/recv lag behind confirmed → PHYS catchup. */
+#define NG_LOCK_CATCHUP_TICKS 45
+/* Mode B: max local predict ticks past confirmed (Save ring). */
+#define NG_LOCK_PREDICT_MAX 8
+/* Host: consecutive LOCK_HASH mismatches → soft PHYS resync for that peer. */
+// agent: composer-2.5 | 2026-07-31 | desync streak phys APIs | 88dfc6
+#define NG_LOCK_DESYNC_PHYS_STREAK 2
+/* Host keeps recent confirms so flush can send every tick (gate used to
+ * confirm silently; only last was resent → clients permanently gapped). */
+// agent: composer-2.5 | 2026-07-31 | confirm hist APIs | b075d5
+#define NG_LOCK_CONFIRM_HIST 48
 #ifndef NG_LOCK_PEER_MAX
 #define NG_LOCK_PEER_MAX 8
 #endif
@@ -44,6 +62,11 @@ void mod_lockstep_remove_peer(uint32_t peer_id);
 // agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 6f64df
 void mod_lockstep_apply_roster(const uint8_t *peer_ids, int count);
 bool mod_lockstep_needs_join_sync(void);
+/* Mirror: upstream lost — clear roster, BUFFER until new SESSION/RESUME. */
+// agent: cursor-grok-4.5 | 2026-07-31 | lockstep net lost buffer | 939686
+void mod_lockstep_on_net_lost(void);
+/* Clock owner: drop peers silent through stall grace; returns count dropped. */
+int mod_lockstep_prune_silent_peers(uint32_t *out_dropped, int max_dropped);
 
 void mod_lockstep_begin_sync(uint32_t tick);
 void mod_lockstep_end_sync(void);
@@ -77,6 +100,28 @@ void mod_lockstep_debug(uint32_t *out_send, int *out_peers, int *out_started, ui
 void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_started, uint32_t *out_peer,
                              int *out_syncing, int *out_await, uint32_t *out_sim);
 
+/* Mode B: host-confirmed input timeline. */
+// agent: composer-2.5 | 2026-07-31 | mode b confirm APIs | 17e3ab
+typedef struct NgLockConfirmPkt NgLockConfirmPkt;
+uint32_t mod_lockstep_confirmed_tick(void);
+void mod_lockstep_set_confirmed_tick(uint32_t tick);
+bool mod_lockstep_apply_confirm(const NgLockConfirmPkt *pkt);
+/* Clock owner: produce next confirm (all_have or deadline zero-fill). */
+bool mod_lockstep_host_try_confirm(NgLockConfirmPkt *out);
+/* Last known bits for peer (prediction hold); 0 if never seen. */
+uint8_t mod_lockstep_last_bits(uint32_t peer_id);
+/* Peers whose contiguous recv lags confirmed by CATCHUP_TICKS. */
+int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers);
+bool mod_lockstep_copy_last_confirm(NgLockConfirmPkt *out);
+/* Host net: next confirm not yet marked sent (tick == bcast+1). */
+bool mod_lockstep_next_unsent_confirm(NgLockConfirmPkt *out);
+void mod_lockstep_mark_confirm_sent(uint32_t tick);
+uint32_t mod_lockstep_resim_to(void);
+void mod_lockstep_clear_resim(void);
+/* Soft PHYS snap: set sim+confirmed, wipe future input slots, clear save ring. */
+// agent: composer-2.5 | 2026-07-31 | desync streak phys APIs | 88dfc6
+void mod_lockstep_on_soft_phys(uint32_t tick);
+
 #endif
 // agent: composer-2.5 | 2026-07-29 | lockstep clock module | a8bff9
 // agent: composer-2.5 | 2026-07-30 | lockstep gate diag | b71030
@@ -91,3 +136,10 @@ void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_starte
 // agent: composer-2.5 | 2026-07-31 | gaffer playout 6 ticks | 6e3db6
 // agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | 2600bd
 // agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 6f64df
+// agent: cursor-grok-4.5 | 2026-07-31 | lockstep net lost buffer | 939686
+// agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
+// agent: composer-2.5 | 2026-07-31 | mode b confirm APIs | 17e3ab
+// agent: composer-2.5 | 2026-07-31 | predict APIs | bb7d40
+// agent: composer-2.5 | 2026-07-31 | confirm deadline playout | 7b5fce
+// agent: composer-2.5 | 2026-07-31 | confirm hist APIs | b075d5
+// agent: composer-2.5 | 2026-07-31 | desync streak phys APIs | 88dfc6

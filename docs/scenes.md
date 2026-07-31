@@ -60,11 +60,18 @@ Every peer process runs the **same** body path: capture/share tick inputs → `f
 **Inputs:** each gate samples buttons into the slot for `sim_tick+1` (the tick about to step). Peers exchange `LOCK_INPUT` / `LOCK_ACK` / `LOCK_HASH`. Under lockstep, `get_input` reads those slots (solo/`peer_count<=1` may use live keys). Body scripts on the phys owner apply torque/force from that. Conflicting bits for the same peer/tick stall the gate.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs bandwidth lockstep playout | 563455 -->
-**Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`. Missing peer input **stalls** the gate (no short phys rewind in this build).
+**Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`.
+
+<!-- agent: composer-2.5 | 2026-07-31 | Mode B lockstep confirm | 8a5fc9 -->
+<!-- agent: composer-2.5 | 2026-07-31 | scenes mode b resync note | 4588c4 -->
+<!-- agent: composer-2.5 | 2026-07-31 | scenes mode b resync note | 4588c4 -->
+**Mode B (default multi-peer):** host broadcasts reliable `LOCK_CONFIRM` (+ hist) for each tick (real inputs or zeros after `NG_LOCK_CONFIRM_SEC`). Peers step on confirmed ticks; mirrors may predict ≤ `NG_LOCK_PREDICT_MAX` with last-input hold and local Save-ring rollback. Late inputs after confirm are dropped (heartbeat kept). Lag ≥ `NG_LOCK_CATCHUP_TICKS` or repeated `LOCK_HASH` mismatch → soft `LOCK_PHYS` to **that peer only** (hash-verified). Classic STALL remains for join/`await_phys`/empty roster — not permanent hash freeze. See `docs/article_gaffer_networking.md` recovery ladder.
+
+**Playout / Mode A note:** Missing peer input before confirm still waits up to the confirm deadline (short hitch), then zero-fills.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
-Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Join hash mismatch **aborts** the join (no RESUME). Periodic `LOCK_HASH` mismatch stalls sync. Disconnect removes the peer from the lockstep set.
+Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Join hash mismatch **aborts** the join (no RESUME). Periodic `LOCK_HASH` mismatch triggers host soft PHYS to the disagreeing peer (not a permanent STALL). Disconnect removes the peer from the lockstep set.
 
 Entity `sync` on bodies is **ignored** under lockstep (spawn/step/author). Net flush still sends `STATE_UPDATE` for bodiless entities.
 
@@ -146,4 +153,6 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep input consumers | 0ecb5e -->
 <!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
+<!-- agent: composer-2.5 | 2026-07-31 | Mode B lockstep confirm | 8a5fc9 -->
+<!-- agent: composer-2.5 | 2026-07-31 | scenes mode b resync note | 4588c4 -->
 

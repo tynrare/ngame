@@ -53,6 +53,12 @@ typedef struct NetPeerState {
   int lock_phys_size;
   int lock_phys_sent;
   uint32_t lock_phys_tick;
+  uint32_t lock_phys_hash; /* expected checksum for soft/join PHYS */
+  uint32_t catchup_sent_tick; /* last CATCHUP PHYS tick; cooldown spam */
+  uint8_t hash_mismatch_streak;
+  uint32_t last_hash_cmp_tick;
+  bool force_phys_resync;
+  uint8_t phys_resync_retries;
   uint8_t peer_id;
   uint8_t role;
   uint16_t assigned_agent_port;
@@ -124,6 +130,7 @@ typedef struct ModNetCtx {
   int lock_phys_rx_size;
   int lock_phys_rx_got;
   uint32_t lock_phys_rx_tick;
+  uint32_t lock_phys_expect_hash;
   uint8_t lock_joining_peer;
   uint32_t lock_join_hash;
   bool lock_join_pending;
@@ -233,6 +240,139 @@ static void mod_net_broadcast_lock_pause(ModNetCtx *ctx, NgNet *net, uint32_t ti
   ng_net_broadcast(net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
 }
 
+static void mod_net_send_lock_phys_chunks(NgNet *net, NgNetPeer *peer, ModNetCtx *ctx, NetPeerState *ps);
+
+static void mod_net_broadcast_lock_confirm(ModNetCtx *ctx, NgNet *net, const NgLockConfirmPkt *pkt) {
+  // agent: composer-2.5 | 2026-07-31 | bcast all unsent confirms | 9ea2ac
+  if (!ctx || !net || !pkt || pkt->tick == 0) {
+    return;
+  }
+  if (!ng_proto_encode_lock_confirm(&ctx->tx_buf, ++ctx->seq, pkt)) {
+    return;
+  }
+  /* Reliable: unreliable + last-only resend dropped mid-frame confirms and
+   * permanently gapped mirrors (apply requires contiguous ticks). */
+  ng_net_broadcast(net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+}
+
+static void mod_net_lockstep_pump_confirms(ModNetCtx *ctx, NgNet *net) {
+  // agent: composer-2.5 | 2026-07-31 | bcast all unsent confirms | 9ea2ac
+  if (!ctx || !net || !mod_lockstep_is_clock_owner()) {
+    return;
+  }
+  for (int i = 0; i < 4; i++) {
+    NgLockConfirmPkt c;
+    if (!mod_lockstep_host_try_confirm(&c)) {
+      break;
+    }
+  }
+  /* Send every confirm not yet marked on the wire, in tick order. */
+  for (int i = 0; i < NG_LOCK_CONFIRM_HIST; i++) {
+    NgLockConfirmPkt c;
+    if (!mod_lockstep_next_unsent_confirm(&c)) {
+      break;
+    }
+    mod_net_broadcast_lock_confirm(ctx, net, &c);
+    mod_lockstep_mark_confirm_sent(c.tick);
+  }
+}
+
+typedef struct ModNetCatchupCtx {
+  ModNetCtx *ctx;
+  uint32_t want_peer;
+  bool found;
+  bool force; /* hash-resync: bypass lag cooldown floor slightly differently */
+} ModNetCatchupCtx;
+
+static bool mod_net_start_peer_phys(NgNet *net, NgNetPeer *peer, ModNetCtx *ctx, NetPeerState *ps,
+                                    const char *reason) {
+  // agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46
+  if (!ps || ps->pending_lock_phys || !ctx) {
+    return false;
+  }
+  const uint32_t conf = mod_lockstep_confirmed_tick();
+  if (conf == 0) {
+    return false;
+  }
+  mod_scene_runtime_use_server();
+  uint8_t *phys = NULL;
+  int phys_size = 0;
+  if (!mod_scene_physics_export(&phys, &phys_size) || !phys || phys_size <= 0) {
+    return false;
+  }
+  const uint32_t wh = mod_scene_physics_checksum();
+  ps->lock_phys_data = phys;
+  ps->lock_phys_size = phys_size;
+  ps->lock_phys_sent = 0;
+  ps->lock_phys_tick = conf;
+  ps->lock_phys_hash = wh;
+  ps->catchup_sent_tick = conf;
+  ps->pending_lock_phys = true;
+  ps->force_phys_resync = false;
+  NG_LOG_WARN("lockstep: %s PHYS peer=%u tick=%u hash=0x%08x bytes=%d", reason ? reason : "CATCHUP",
+              ps->peer_id, ps->lock_phys_tick, wh, phys_size);
+  mod_net_send_lock_phys_chunks(net, peer, ctx, ps);
+  return true;
+}
+
+static void mod_net_catchup_peer_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
+  // agent: composer-2.5 | 2026-07-31 | catchup phys cooldown | 0d4a11
+  // agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46
+  ModNetCatchupCtx *cc = (ModNetCatchupCtx *)vctx;
+  NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+  if (!ps || ps->peer_id != cc->want_peer || ps->pending_lock_phys) {
+    return;
+  }
+  const uint32_t conf = mod_lockstep_confirmed_tick();
+  if (!cc->force && ps->catchup_sent_tick != 0u &&
+      conf < ps->catchup_sent_tick + (uint32_t)NG_LOCK_CATCHUP_TICKS) {
+    return;
+  }
+  /* Hash resync: allow retry after one CATCHUP window, max 2 attempts. */
+  if (cc->force && ps->catchup_sent_tick != 0u &&
+      conf < ps->catchup_sent_tick + (uint32_t)NG_LOCK_CATCHUP_TICKS / 2u) {
+    return;
+  }
+  if (cc->force && ps->phys_resync_retries >= 2u) {
+    NG_LOG_ERROR("lockstep: PHYS resync exhausted peer=%u — giving up", ps->peer_id);
+    ps->force_phys_resync = false;
+    return;
+  }
+  if (mod_net_start_peer_phys(net, peer, cc->ctx, ps, cc->force ? "HASH_RESYNC" : "CATCHUP")) {
+    if (cc->force) {
+      ps->phys_resync_retries++;
+      ps->hash_mismatch_streak = 0;
+    }
+    cc->found = true;
+  }
+}
+
+static void mod_net_force_phys_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
+  // agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46
+  ModNetCtx *ctx = (ModNetCtx *)vctx;
+  NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+  if (!ps || !ps->force_phys_resync || ps->pending_lock_phys) {
+    return;
+  }
+  ModNetCatchupCtx cc = {.ctx = ctx, .want_peer = ps->peer_id, .found = false, .force = true};
+  mod_net_catchup_peer_cb(net, peer, &cc);
+}
+
+static void mod_net_lockstep_catchup(ModNetCtx *ctx, NgNet *net) {
+  // agent: composer-2.5 | 2026-07-31 | broadcast confirm drop late | 0623bf
+  // agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46
+  if (!ctx || !net || !mod_lockstep_is_clock_owner() || ctx->lock_join_pending) {
+    return;
+  }
+  uint32_t ids[NG_LOCK_PEER_MAX];
+  const int n = mod_lockstep_peers_need_catchup(ids, NG_LOCK_PEER_MAX);
+  for (int i = 0; i < n; i++) {
+    ModNetCatchupCtx cc = {.ctx = ctx, .want_peer = ids[i], .found = false, .force = false};
+    ng_net_foreach_peer(net, mod_net_catchup_peer_cb, &cc);
+  }
+  ng_net_foreach_peer(net, mod_net_force_phys_cb, ctx);
+}
+
 static void mod_net_send_lock_phys_chunks(NgNet *net, NgNetPeer *peer, ModNetCtx *ctx, NetPeerState *ps) {
   if (!ps || !ps->pending_lock_phys || !ps->lock_phys_data || ps->lock_phys_size <= 0) {
     return;
@@ -242,6 +382,7 @@ static void mod_net_send_lock_phys_chunks(NgNet *net, NgNetPeer *peer, ModNetCtx
     pkt.sim_tick = ps->lock_phys_tick;
     pkt.offset = (uint32_t)ps->lock_phys_sent;
     pkt.total = (uint32_t)ps->lock_phys_size;
+    pkt.world_hash = (pkt.offset == 0u) ? ps->lock_phys_hash : 0u;
     uint32_t remain = (uint32_t)(ps->lock_phys_size - ps->lock_phys_sent);
     pkt.len = (uint16_t)(remain > NG_LOCK_PHYS_CHUNK ? NG_LOCK_PHYS_CHUNK : remain);
     memcpy(pkt.data, ps->lock_phys_data + ps->lock_phys_sent, pkt.len);
@@ -301,6 +442,41 @@ static void mod_net_count_peers_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
   int *n = (int *)vctx;
   if (n) {
     (*n)++;
+  }
+}
+
+static void mod_net_lockstep_broadcast_roster(ModNetCtx *ctx, NgNet *net);
+
+typedef struct {
+  uint32_t peer_id;
+} ModNetKickFind;
+
+static void mod_net_kick_peer_id_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
+  ModNetKickFind *k = (ModNetKickFind *)vctx;
+  NetPeerState *ps = (NetPeerState *)ng_net_peer_data(peer);
+  if (ps && k && ps->peer_id == k->peer_id) {
+    ng_net_disconnect_peer(net, peer);
+  }
+}
+
+/* Clock owner: silent through stall grace ⇒ leave (Gaffer: don't invent input). */
+// agent: cursor-grok-4.5 | 2026-07-31 | host prune silent call roster | 1f23a2
+static void mod_net_lockstep_prune_silent(ModNetCtx *ctx, NgNet *net) {
+  if (!ctx || !net || !mod_lockstep_active() || !mod_lockstep_is_clock_owner()) {
+    return;
+  }
+  uint32_t dropped[NG_LOCK_PEER_MAX];
+  const int n = mod_lockstep_prune_silent_peers(dropped, NG_LOCK_PEER_MAX);
+  if (n <= 0) {
+    return;
+  }
+  for (int i = 0; i < n; i++) {
+    ModNetKickFind k = {.peer_id = dropped[i]};
+    ng_net_foreach_peer(net, mod_net_kick_peer_id_cb, &k);
+  }
+  ng_net_flush(net);
+  if (!ctx->lock_join_pending && !mod_lockstep_syncing()) {
+    mod_net_lockstep_broadcast_roster(ctx, net);
   }
 }
 
@@ -887,6 +1063,8 @@ static void mod_net_handle_upstream_packet(NgNet *net, NgNetPeer *peer, const ui
   case NG_PKT_LOCK_PHYS:
   case NG_PKT_LOCK_READY:
   case NG_PKT_LOCK_RESUME:
+  // agent: composer-2.5 | 2026-07-31 | broadcast confirm drop late | 0623bf
+  case NG_PKT_LOCK_CONFIRM:
     if (h.type == NG_PKT_SNAPSHOT) {
       NgSnapshot snap = {0};
       bool delta = false;
@@ -1155,15 +1333,35 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
   }
   case NG_PKT_LOCK_HASH: {
     // agent: composer-2.5 | 2026-07-30 | hash mismatch stalls sync | 10e625
+    // agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46
     NgLockHashPkt pkt = {0};
     if (!ng_proto_decode_lock_hash(buf, &pkt)) {
       return;
     }
-    if (pkt.peer_id != 0 && pkt.peer_id != (uint8_t)mod_lockstep_local_peer_id() &&
-        pkt.tick != 0 && pkt.tick == mod_lockstep_last_hash_tick() &&
-        pkt.hash != mod_lockstep_last_hash()) {
-      // agent: composer-2.5 | 2026-07-30 | broadcast synth lock inputs | 96e06d
-      /* Log only — permanent note_desync freezes the clock owner and all mirrors. */
+    NetPeerState *ps = peer ? (NetPeerState *)ng_net_peer_data(peer) : NULL;
+    if (ps && pkt.peer_id != 0 && pkt.peer_id == ps->peer_id && pkt.tick != 0 &&
+        pkt.tick == mod_lockstep_last_hash_tick()) {
+      if (pkt.hash != mod_lockstep_last_hash()) {
+        /* Log + streak; soft PHYS heals — do not note_desync (freezes all). */
+        NG_LOG_WARN("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x streak=%u",
+                    pkt.peer_id, pkt.tick, pkt.hash, mod_lockstep_last_hash(),
+                    (unsigned)ps->hash_mismatch_streak + 1u);
+        if (ps->last_hash_cmp_tick != pkt.tick) {
+          ps->hash_mismatch_streak++;
+          ps->last_hash_cmp_tick = pkt.tick;
+        }
+        if (ps->hash_mismatch_streak >= (uint8_t)NG_LOCK_DESYNC_PHYS_STREAK) {
+          ps->force_phys_resync = true;
+          NG_LOG_WARN("lockstep: hash streak peer=%u → force PHYS", ps->peer_id);
+        }
+      } else {
+        ps->hash_mismatch_streak = 0;
+        ps->phys_resync_retries = 0;
+        ps->last_hash_cmp_tick = pkt.tick;
+      }
+    } else if (pkt.peer_id != 0 && pkt.peer_id != (uint8_t)mod_lockstep_local_peer_id() &&
+               pkt.tick != 0 && pkt.tick == mod_lockstep_last_hash_tick() &&
+               pkt.hash != mod_lockstep_last_hash()) {
       NG_LOG_WARN("lockstep: hash mismatch peer=%u tick=%u got=0x%08x want=0x%08x", pkt.peer_id,
                   pkt.tick, pkt.hash, mod_lockstep_last_hash());
     }
@@ -1425,6 +1623,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
   }
   case NG_PKT_LOCK_PHYS: {
     // agent: cursor-grok-4.5 | 2026-07-31 | phys joiner only no fanout | c01e05
+    // agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46
     NgLockPhysPkt pkt = {0};
     if (!ng_proto_decode_lock_phys(buf, &pkt)) {
       return;
@@ -1442,6 +1641,10 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       ctx->lock_phys_rx_size = (int)pkt.total;
       ctx->lock_phys_rx_got = 0;
       ctx->lock_phys_rx_tick = pkt.sim_tick;
+      ctx->lock_phys_expect_hash = 0;
+    }
+    if (pkt.offset == 0u && pkt.world_hash != 0u) {
+      ctx->lock_phys_expect_hash = pkt.world_hash;
     }
     memcpy(ctx->lock_phys_rx + pkt.offset, pkt.data, pkt.len);
     if ((int)(pkt.offset + pkt.len) > ctx->lock_phys_rx_got) {
@@ -1459,13 +1662,31 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       mod_net_lock_free_rx(ctx);
       break;
     }
+    const uint32_t got_hash = mod_scene_physics_checksum();
+    if (ctx->lock_phys_expect_hash != 0u && got_hash != ctx->lock_phys_expect_hash) {
+      NG_LOG_ERROR("lockstep: PHYS hash mismatch tick=%u got=0x%08x want=0x%08x — await retry",
+                   pkt.sim_tick, got_hash, ctx->lock_phys_expect_hash);
+      mod_lockstep_await_phys(true);
+      mod_net_lock_free_rx(ctx);
+      ctx->lock_phys_expect_hash = 0;
+      break;
+    }
+    /* Soft catchup / hash resync (no PAUSE): snap clock and continue. */
+    // agent: composer-2.5 | 2026-07-31 | broadcast confirm drop late | 0623bf
+    if (!mod_lockstep_syncing()) {
+      mod_lockstep_on_soft_phys(pkt.sim_tick);
+      NG_LOG_INFO("lockstep: soft PHYS ok tick=%u hash=0x%08x", pkt.sim_tick, got_hash);
+      mod_net_lock_free_rx(ctx);
+      ctx->lock_phys_expect_hash = 0;
+      break;
+    }
     mod_lockstep_set_sim_tick(pkt.sim_tick);
     /* Keep await_phys until RESUME so joiner cannot step on in-flight tips. */
     {
       NgLockReadyPkt ready = {
           .peer_id = ctx->lock_peer_id ? ctx->lock_peer_id : (uint8_t)mod_lockstep_local_peer_id(),
           .sim_tick = pkt.sim_tick,
-          .hash = mod_scene_physics_checksum(),
+          .hash = got_hash,
       };
       /* Host accepts READY only from lock_joining_peer; mirror READY is ignored. */
       NG_LOG_INFO("lockstep: send READY peer=%u tick=%u hash=0x%08x", ready.peer_id, ready.sim_tick,
@@ -1479,6 +1700,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       }
     }
     mod_net_lock_free_rx(ctx);
+    ctx->lock_phys_expect_hash = 0;
     break;
   }
   case NG_PKT_LOCK_RESUME: {
@@ -1497,6 +1719,20 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       mod_lockstep_set_sim_tick(pkt.sim_tick);
       mod_lockstep_end_sync();
     }
+    break;
+  }
+  case NG_PKT_LOCK_CONFIRM: {
+    // agent: composer-2.5 | 2026-07-31 | broadcast confirm drop late | 0623bf
+    // agent: composer-2.5 | 2026-07-31 | confirm triggers resim | af02c9
+    NgLockConfirmPkt pkt = {0};
+    if (!ng_proto_decode_lock_confirm(buf, &pkt)) {
+      return;
+    }
+    if (!mod_lockstep_apply_confirm(&pkt)) {
+      /* Gap — wait for CATCHUP PHYS. */
+      break;
+    }
+    mod_scene_lockstep_pump_resim();
     break;
   }
   default:
@@ -1554,6 +1790,7 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
         ps->lock_phys_size = phys_size;
         ps->lock_phys_sent = 0;
         ps->lock_phys_tick = tick;
+        ps->lock_phys_hash = ctx->lock_join_hash;
         ps->pending_lock_phys = true;
         ps->pending_connect_snap = false;
         NG_LOG_INFO("lockstep: phys export ok peer=%u bytes=%d (joiner only)", ps->peer_id,
@@ -1920,6 +2157,9 @@ static void mod_net_upstream_tick(ModNetCtx *ctx) {
       ctx->upstream_phase = 5;
       NG_LOG_WARN("Lost connection to the game server at %s:%u.", ctx->upstream_host,
                   ctx->upstream_port);
+      /* Stop all_have STALL on a ghost roster after timeout/kick. */
+      // agent: cursor-grok-4.5 | 2026-07-31 | mirror teardown on upstream loss | 256e51
+      mod_lockstep_on_net_lost();
     } else if (ctx->upstream_phase != 5) {
       ctx->upstream_phase = 1;
       if (now - ctx->upstream_last_hint_log >= 2.0) {
@@ -2197,6 +2437,18 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
   if (!ctx || !mod_lockstep_active()) {
     return;
   }
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  if (mod_lockstep_is_clock_owner() && ctx->net) {
+    mod_net_lockstep_prune_silent(ctx, ctx->net);
+    mod_net_lockstep_pump_confirms(ctx, ctx->net);
+    mod_net_lockstep_catchup(ctx, ctx->net);
+  }
+#endif
+  /* Continue rollback resim across frames if capped last time. */
+  // agent: composer-2.5 | 2026-07-31 | confirm triggers resim | af02c9
+  if (mod_lockstep_resim_to() != 0u) {
+    mod_scene_lockstep_pump_resim();
+  }
 #if defined(NG_HAS_EMBEDDED)
   /* Solo gateway: one process owns the clock; loopback LOCK relay floods CPU. */
   if (ctx->gateway && !(ctx->net_upstream && ng_net_connected(ctx->net_upstream))) {
@@ -2473,3 +2725,7 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: cursor-grok-4.5 | 2026-07-31 | scene gen beats join sync | 1151a3
 // agent: cursor-grok-4.5 | 2026-07-31 | abort join on scene epoch | b096e1
 // agent: cursor-grok-4.5 | 2026-07-31 | cold connect broadcasts roster | 997aa2
+// agent: cursor-grok-4.5 | 2026-07-31 | mirror teardown on upstream loss | 256e51
+// agent: composer-2.5 | 2026-07-31 | catchup phys cooldown | 0d4a11
+// agent: composer-2.5 | 2026-07-31 | bcast all unsent confirms | 9ea2ac
+// agent: composer-2.5 | 2026-07-31 | hash streak force phys | b9db46

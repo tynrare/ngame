@@ -98,6 +98,12 @@ uint32_t mod_scene_physics_checksum(void);
 bool mod_scene_physics_export(uint8_t **out, int *out_size);
 bool mod_scene_physics_import(const uint8_t *data, int size);
 
+/* Mode B local rollback ring (b3World_Save — not recording/replay). */
+// agent: composer-2.5 | 2026-07-31 | save ring for rollback | 2fa13d
+void mod_scene_physics_save_ring_clear(void);
+void mod_scene_physics_save_ring_push(uint32_t tick);
+bool mod_scene_physics_save_ring_restore(uint32_t tick);
+
 #endif
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | 9871a5
 // agent: composer-2.5 | 2026-07-30 | physics export import names | 837963
@@ -106,3 +112,4 @@ bool mod_scene_physics_import(const uint8_t *data, int size);
 // agent: composer-2.5 | 2026-07-30 | apply force and torque helpers | 257985
 // agent: composer-2.5 | 2026-07-30 | physics gravity sensor api | 8ec243
 // agent: composer-2.5 | 2026-07-30 | sphere shape enum | f52c4b
+// agent: composer-2.5 | 2026-07-31 | save ring decls | e478f4

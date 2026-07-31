@@ -166,6 +166,11 @@ void ng_net_peer_set_data(NgNetPeer *peer, void *data) {
   }
 }
 
+void ng_net_disconnect_peer(NgNet *n, NgNetPeer *peer) {
+  (void)n;
+  (void)peer;
+}
+
 bool ng_net_connected(NgNet *n) {
   if (!n || !n->pair) {
     return false;

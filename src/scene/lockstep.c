@@ -11,11 +11,22 @@
 #include "lockstep.h"
 #include "client/input.h"
 #include "engine/ng_log.h"
+#include "engine/ng_proto.h"
+#include "physics.h"
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
+
+// agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
+static double mod_lockstep_wall_now(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
 
 typedef struct NgLockSlot {
   bool present;
+  bool predicted; /* Mode B: filled with last-input hold; confirm may correct */
   uint8_t bits;
   uint32_t tick; /* absolute tick; required so ring wrap cannot false-match */
 } NgLockSlot;
@@ -28,6 +39,8 @@ typedef struct NgLockPeer {
   NgLockSlot slots[NG_LOCK_RING];
   uint32_t highest_recv;
   uint32_t ack_our; /* remote reports they have world inputs through this tick */
+  double last_input_wall; /* monotonic; host prunes silent peers (left) */
+  uint8_t last_bits; /* Mode B prediction hold */
 } NgLockPeer;
 
 typedef struct NgLockCtx {
@@ -43,12 +56,21 @@ typedef struct NgLockCtx {
   uint32_t step_tick;
   uint32_t local_send_tick;
   uint32_t playout_ticks;
+  uint32_t confirmed_tick; /* Mode B: highest host-confirmed tick */
+  double confirm_wait_start; /* wall when waiting on next confirm */
+  NgLockConfirmPkt last_confirm;
+  bool last_confirm_valid;
+  NgLockConfirmPkt confirm_hist[NG_LOCK_CONFIRM_HIST];
+  int confirm_hist_n;
+  uint32_t confirm_bcast_tick; /* highest confirm marked sent on wire */
+  uint32_t resim_to; /* >0: rollback target tip to resim through */
   NgLockPeer peers[NG_LOCK_PEER_MAX];
   int peer_count;
   uint32_t last_hash;
   uint32_t last_hash_tick;
   uint32_t local_ack;
   // agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | f2b236
+  // agent: composer-2.5 | 2026-07-31 | host confirm zero fill gate | 0e6e01
 } NgLockCtx;
 
 static NgLockCtx g_lock;
@@ -122,14 +144,18 @@ static void mod_lockstep_gen_local(uint32_t tick) {
     if (tick > g_lock.local_send_tick) {
       g_lock.local_send_tick = tick;
     }
+    self->last_input_wall = mod_lockstep_wall_now();
     return;
   }
   s->present = true;
   s->bits = bits;
   s->tick = tick;
+  s->predicted = false;
   if (tick > g_lock.local_send_tick) {
     g_lock.local_send_tick = tick;
   }
+  self->last_bits = bits;
+  self->last_input_wall = mod_lockstep_wall_now();
   mod_lockstep_advance_contiguous(self);
 }
 
@@ -183,6 +209,7 @@ void mod_lockstep_reset(void) {
   // agent: composer-2.5 | 2026-07-30 | lockstep playout setter | 9b7f42
   memset(&g_lock, 0, sizeof(g_lock));
   g_lock.playout_ticks = (uint32_t)NG_LOCK_PLAYOUT_TICKS;
+  mod_scene_physics_save_ring_clear();
 }
 
 void mod_lockstep_set_playout_ticks(uint32_t ticks) {
@@ -268,6 +295,7 @@ void mod_lockstep_add_peer(uint32_t peer_id) {
   // agent: cursor-grok-4.5 | 2026-07-31 | gaffer reduce gate end_sync | 0f5fb7
   p->highest_recv = g_lock.sim_tick;
   p->ack_our = g_lock.sim_tick;
+  p->last_input_wall = mod_lockstep_wall_now();
 }
 
 void mod_lockstep_remove_peer(uint32_t peer_id) {
@@ -358,6 +386,8 @@ void mod_lockstep_end_sync(void) {
   g_lock.await_phys = false;
   g_lock.sim_started = true;
   g_lock.local_send_tick = g_lock.sim_tick;
+  g_lock.confirmed_tick = g_lock.sim_tick;
+  g_lock.confirm_wait_start = 0.0;
   /* Drop in-flight pre-PAUSE tip packets until we have stepped past that window. */
   g_lock.resume_barrier = g_lock.sim_tick + mod_lockstep_playout_ticks();
   for (int i = 0; i < g_lock.peer_count; i++) {
@@ -369,6 +399,7 @@ void mod_lockstep_end_sync(void) {
     memset(g_lock.peers[i].slots, 0, sizeof(g_lock.peers[i].slots));
   }
   mod_lockstep_recompute_ack();
+  mod_scene_physics_save_ring_clear();
 }
 
 bool mod_lockstep_syncing(void) { return g_lock.syncing; }
@@ -385,11 +416,32 @@ void mod_lockstep_note_desync(void) {
   mod_lockstep_begin_sync(g_lock.sim_tick);
 }
 
+static void mod_lockstep_ensure_predict(uint32_t tick) {
+  // agent: composer-2.5 | 2026-07-31 | predict fill gate rollback | 5c8d67
+  if (tick == 0) {
+    return;
+  }
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->peer_id == 0) {
+      continue;
+    }
+    if (mod_lockstep_slot_has(p, tick)) {
+      continue;
+    }
+    /* Hold last input (GGPO/SnapNet). Do not bump highest_recv (not real wire). */
+    NgLockSlot *s = &p->slots[tick % NG_LOCK_RING];
+    s->present = true;
+    s->predicted = true;
+    s->bits = p->last_bits;
+    s->tick = tick;
+  }
+}
+
 NgLockGate mod_lockstep_gate(void) {
-  // agent: cursor-grok-4.5 | 2026-07-31 | gaffer reduce gate end_sync | 0f5fb7
-  /* Gaffer Deterministic Lockstep gate (reduced):
-   * sample local → grow tip to playout → wait all_have(n) → step. No invent,
-   * no solo debounce, no RING/2 tip race, no post-join clock hold. */
+  // agent: composer-2.5 | 2026-07-31 | host confirm zero fill gate | 0e6e01
+  // agent: composer-2.5 | 2026-07-31 | predict fill gate rollback | 5c8d67
+  /* Mode B: confirmed GO, or mirror predict up to PREDICT_MAX with last-input. */
   if (!g_lock.active) {
     return NG_LOCK_GATE_GO;
   }
@@ -400,17 +452,12 @@ NgLockGate mod_lockstep_gate(void) {
   const uint32_t next_sim = g_lock.sim_tick + 1u;
   const uint32_t playout = mod_lockstep_playout_ticks();
 
-  /* Sample next_sim even while paused so RESUME has local input. Do NOT grow
-   * the playout tip during PAUSE — those futures are sent on the wire and let
-   * a joiner all_have/race ahead; end_sync then wipes mirrors → deadlock. */
   mod_lockstep_gen_local(next_sim);
 
   if (g_lock.syncing || g_lock.await_phys) {
     return NG_LOCK_GATE_STALL;
   }
 
-  /* Grow playout tip only when live — not under resume_barrier (STALL + tip
-   * growth re-feeds the joiner the +playout race). */
   if (g_lock.resume_barrier == 0u && g_lock.local_peer_id != 0) {
     const uint32_t send_target = g_lock.sim_tick + playout;
     if (g_lock.local_send_tick < send_target) {
@@ -419,25 +466,35 @@ NgLockGate mod_lockstep_gate(void) {
   }
 
   if (g_lock.clock_owner) {
-    /* Empty roster after scene restart: do not solo-race ahead of mirrors. */
+    // agent: composer-2.5 | 2026-07-31 | confirm hist unsent bcast | 226e5b
+    /* Confirm after gen_local (above). Net flush broadcasts every unsent hist
+     * tick — do not rely on last_confirm alone across multi-step frames. */
     if (g_lock.peer_count == 0) {
       return NG_LOCK_GATE_BUFFER;
     }
     g_lock.sim_started = true;
-    /* Host relays LOCK_INPUT; no synth rebroadcast (that doubled UDP + stalled). */
-    // agent: cursor-grok-4.5 | 2026-07-31 | drop owner go rebroadcast | b2dafa
-    if (!mod_lockstep_all_have(next_sim)) {
-      return NG_LOCK_GATE_STALL;
+    if (g_lock.confirmed_tick < next_sim) {
+      NgLockConfirmPkt tmp;
+      (void)mod_lockstep_host_try_confirm(&tmp);
     }
-    return NG_LOCK_GATE_GO;
+    if (g_lock.confirmed_tick >= next_sim) {
+      return NG_LOCK_GATE_GO;
+    }
+    return NG_LOCK_GATE_STALL;
   }
 
   if (!g_lock.roster_ok) {
     return NG_LOCK_GATE_BUFFER;
   }
   if (g_lock.peer_count <= 1) {
+    /* Mirror with only self still needs host LOCK_CONFIRM — never self-confirm
+     * (that races ahead of the server and desyncs). */
+    // agent: composer-2.5 | 2026-07-31 | mirrors never self confirm | 6b113e
     g_lock.sim_started = true;
-    return NG_LOCK_GATE_GO;
+    if (g_lock.confirmed_tick >= next_sim) {
+      return NG_LOCK_GATE_GO;
+    }
+    return NG_LOCK_GATE_STALL;
   }
   if (!g_lock.sim_started) {
     if (g_lock.local_send_tick < g_lock.sim_tick + playout) {
@@ -445,10 +502,20 @@ NgLockGate mod_lockstep_gate(void) {
     }
     g_lock.sim_started = true;
   }
-  if (!mod_lockstep_all_have(next_sim)) {
-    return NG_LOCK_GATE_STALL;
+  if (g_lock.confirmed_tick >= next_sim) {
+    return NG_LOCK_GATE_GO;
   }
-  return NG_LOCK_GATE_GO;
+  /* Mirror prediction: step ahead of confirm with last remote input. */
+  {
+    NgLockPeer *self = mod_lockstep_find_peer(g_lock.local_peer_id);
+    if (g_lock.confirmed_tick > 0 &&
+        next_sim <= g_lock.confirmed_tick + (uint32_t)NG_LOCK_PREDICT_MAX && self &&
+        mod_lockstep_slot_has(self, next_sim)) {
+      mod_lockstep_ensure_predict(next_sim);
+      return NG_LOCK_GATE_GO;
+    }
+  }
+  return NG_LOCK_GATE_STALL;
 }
 
 void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash) {
@@ -463,13 +530,40 @@ void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash) {
     g_lock.last_hash = hash;
     g_lock.last_hash_tick = g_lock.sim_tick;
   }
+  /* Save confirmed and predicted tips so confirm mismatch can Restore@(c-1).
+   * Host rarely predicts (steps on confirm); mirrors predict ≤ PREDICT_MAX. */
+  // agent: composer-2.5 | 2026-07-31 | predict save ring depth | 752810
+  if (g_lock.confirmed_tick != 0 && g_lock.sim_tick >= g_lock.confirmed_tick &&
+      g_lock.sim_tick <= g_lock.confirmed_tick + (uint32_t)NG_LOCK_PREDICT_MAX) {
+    mod_scene_physics_save_ring_push(g_lock.sim_tick);
+  } else if (g_lock.sim_tick == g_lock.confirmed_tick) {
+    mod_scene_physics_save_ring_push(g_lock.sim_tick);
+  }
 }
 
 void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits) {
   // agent: composer-2.5 | 2026-07-30 | solo lockstep always go | 4950ad
   // agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
   // agent: composer-2.5 | 2026-07-30 | server clock owner gate | 16b04a
+  // agent: composer-2.5 | 2026-07-31 | host confirm zero fill gate | 0e6e01
+  // agent: composer-2.5 | 2026-07-31 | late input still heartbeat | 37caa0
   if (tick == 0 || peer_id == 0) {
+    return;
+  }
+  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
+  if (!p) {
+    /* Roster/connect/READY only — wire-learn re-added pruned leavers and
+     * asymmetric all_have STALLs (Gaffer: host roster is authority). */
+    // agent: cursor-grok-4.5 | 2026-07-31 | no wire learn any side | b7c0ff
+    return;
+  }
+  /* Always heartbeat — late packets still prove the peer is alive (Mode B
+   * confirm may have already zero-filled this tick; do not silent-prune). */
+  p->got_input = true;
+  p->last_input_wall = mod_lockstep_wall_now();
+  p->last_bits = bits;
+  /* Mode B: drop late inputs after host confirm (bits already committed). */
+  if (g_lock.confirmed_tick != 0 && tick <= g_lock.confirmed_tick) {
     return;
   }
   /* During PAUSE/await or post-RESUME barrier: only next tick from remotes
@@ -478,21 +572,6 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
       tick > g_lock.sim_tick + 1u) {
     return;
   }
-  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
-  if (!p) {
-    /* Owner may learn from wire before RESUME; mirrors must not — that inflated
-     * all_have (peers=2 vs peers=1) and froze one client permanently. */
-    // agent: cursor-grok-4.5 | 2026-07-31 | no mirror wire-learn peers | 55aad6
-    if (!g_lock.clock_owner) {
-      return;
-    }
-    mod_lockstep_add_peer(peer_id);
-    p = mod_lockstep_find_peer(peer_id);
-  }
-  if (!p) {
-    return;
-  }
-  p->got_input = true;
   NgLockSlot *s = &p->slots[tick % NG_LOCK_RING];
   if (s->present && s->tick == tick) {
     if (s->bits != bits) {
@@ -500,6 +579,7 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
         /* Adopt newer wire bits before step; ignore conflicts after step. */
         if (tick > g_lock.sim_tick) {
           s->bits = bits;
+          s->predicted = false;
           return;
         }
         NG_LOG_WARN("lockstep: ignore late input peer=%u tick=%u got=%u have=%u", peer_id, tick,
@@ -510,11 +590,13 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
       // agent: composer-2.5 | 2026-07-30 | host commit overwrites local | 2da677
       if (tick > g_lock.sim_tick) {
         s->bits = bits;
+        s->predicted = false;
         return;
       }
       NG_LOG_WARN("lockstep: adopt remote bits peer=%u tick=%u was=%u now=%u", peer_id, tick,
                   (unsigned)s->bits, (unsigned)bits);
       s->bits = bits;
+      s->predicted = false;
       return;
     }
     return;
@@ -522,6 +604,7 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
   s->present = true;
   s->bits = bits;
   s->tick = tick;
+  s->predicted = false;
   mod_lockstep_advance_contiguous(p);
 }
 
@@ -660,6 +743,333 @@ void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_starte
   }
 }
 
+void mod_lockstep_on_net_lost(void) {
+  // agent: cursor-grok-4.5 | 2026-07-31 | lockstep net lost buffer | 939686
+  /* Mirror lost upstream: stop all_have-waiting on a dead roster (death spiral). */
+  if (!g_lock.active || g_lock.clock_owner) {
+    return;
+  }
+  g_lock.syncing = false;
+  g_lock.await_phys = false;
+  g_lock.resume_barrier = 0u;
+  g_lock.roster_ok = false;
+  g_lock.sim_started = false;
+  const uint32_t self = g_lock.local_peer_id;
+  mod_lockstep_clear_peers();
+  if (self != 0u) {
+    mod_lockstep_add_peer(self);
+  }
+  NG_LOG_INFO("lockstep: net lost — roster cleared peer=%u (wait RESUME)", self);
+}
+
+int mod_lockstep_prune_silent_peers(uint32_t *out_dropped, int max_dropped) {
+  // agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
+  /* Gaffer: cannot invent missing input n — but a peer silent through the stall
+   * grace has left. Drop them so survivors are not wedged until ENet 5–15s. */
+  if (!g_lock.active || !g_lock.clock_owner || max_dropped <= 0) {
+    return 0;
+  }
+  const uint32_t next_sim = g_lock.sim_tick + 1u;
+  if (next_sim == 0u) {
+    return 0;
+  }
+  const double now = mod_lockstep_wall_now();
+  const double grace = (double)NG_LOCK_SILENT_SEC;
+  int n = 0;
+  for (int i = g_lock.peer_count - 1; i >= 0 && n < max_dropped; i--) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->peer_id == 0 || p->peer_id == g_lock.local_peer_id) {
+      continue;
+    }
+    if (mod_lockstep_slot_has(p, next_sim)) {
+      continue;
+    }
+    const double last = p->last_input_wall > 0.0 ? p->last_input_wall : now;
+    if ((now - last) < grace) {
+      continue;
+    }
+    const uint32_t id = p->peer_id;
+    NG_LOG_WARN("lockstep: silent peer=%u (%.2fs) — treat as leave", id, now - last);
+    mod_lockstep_remove_peer(id);
+    if (out_dropped) {
+      out_dropped[n] = id;
+    }
+    n++;
+  }
+  return n;
+}
+
+// agent: composer-2.5 | 2026-07-31 | host confirm zero fill gate | 0e6e01
+uint32_t mod_lockstep_confirmed_tick(void) { return g_lock.confirmed_tick; }
+
+// agent: composer-2.5 | 2026-07-31 | confirm hist unsent bcast | 226e5b
+static void mod_lockstep_hist_push(const NgLockConfirmPkt *pkt) {
+  if (!pkt || pkt->tick == 0) {
+    return;
+  }
+  for (int i = 0; i < g_lock.confirm_hist_n; i++) {
+    if (g_lock.confirm_hist[i].tick == pkt->tick) {
+      g_lock.confirm_hist[i] = *pkt;
+      return;
+    }
+  }
+  if (g_lock.confirm_hist_n >= NG_LOCK_CONFIRM_HIST) {
+    memmove(&g_lock.confirm_hist[0], &g_lock.confirm_hist[1],
+            sizeof(g_lock.confirm_hist[0]) * (NG_LOCK_CONFIRM_HIST - 1));
+    g_lock.confirm_hist_n = NG_LOCK_CONFIRM_HIST - 1;
+  }
+  g_lock.confirm_hist[g_lock.confirm_hist_n++] = *pkt;
+}
+
+void mod_lockstep_set_confirmed_tick(uint32_t tick) {
+  g_lock.confirmed_tick = tick;
+  g_lock.confirm_wait_start = 0.0;
+  /* Catchup/import: treat as already delivered — no hist to rebroadcast. */
+  if (tick >= g_lock.confirm_bcast_tick) {
+    g_lock.confirm_bcast_tick = tick;
+  }
+}
+
+bool mod_lockstep_apply_confirm(const NgLockConfirmPkt *pkt) {
+  // agent: composer-2.5 | 2026-07-31 | predict fill gate rollback | 5c8d67
+  if (!pkt || pkt->tick == 0 || pkt->peer_count > NG_LOCK_PEER_MAX) {
+    return false;
+  }
+  if (pkt->tick <= g_lock.confirmed_tick) {
+    return true;
+  }
+  const uint32_t expect = g_lock.confirmed_tick + 1u;
+  if (g_lock.confirmed_tick != 0 && pkt->tick != expect) {
+    return false; /* gap — needs PHYS catchup */
+  }
+  if (g_lock.confirmed_tick == 0 && g_lock.sim_tick > 0 && pkt->tick != g_lock.sim_tick + 1u &&
+      pkt->tick != 1u) {
+    return false;
+  }
+
+  bool mismatch = false;
+  if (g_lock.sim_tick >= pkt->tick) {
+    for (uint8_t i = 0; i < pkt->peer_count; i++) {
+      NgLockPeer *p = mod_lockstep_find_peer(pkt->peer_ids[i]);
+      if (!p || !mod_lockstep_slot_has(p, pkt->tick)) {
+        mismatch = true;
+        break;
+      }
+      if (p->slots[pkt->tick % NG_LOCK_RING].bits != pkt->bits[i]) {
+        mismatch = true;
+        break;
+      }
+    }
+  }
+
+  for (uint8_t i = 0; i < pkt->peer_count; i++) {
+    const uint32_t pid = pkt->peer_ids[i];
+    if (pid == 0) {
+      continue;
+    }
+    NgLockPeer *p = mod_lockstep_find_peer(pid);
+    if (!p) {
+      mod_lockstep_add_peer(pid);
+      p = mod_lockstep_find_peer(pid);
+    }
+    if (!p) {
+      continue;
+    }
+    NgLockSlot *s = &p->slots[pkt->tick % NG_LOCK_RING];
+    s->present = true;
+    s->predicted = false;
+    s->bits = pkt->bits[i];
+    s->tick = pkt->tick;
+    p->last_bits = pkt->bits[i];
+    p->got_input = true;
+    mod_lockstep_advance_contiguous(p);
+  }
+  g_lock.confirmed_tick = pkt->tick;
+  g_lock.confirm_wait_start = 0.0;
+
+  if (mismatch && pkt->tick > 0) {
+    const uint32_t tip = g_lock.sim_tick;
+    const uint32_t restore = pkt->tick - 1u;
+    if (restore > 0 && mod_scene_physics_save_ring_restore(restore)) {
+      g_lock.sim_tick = restore;
+      if (tip > restore) {
+        g_lock.resim_to = tip;
+      }
+      NG_LOG_INFO("lockstep: rollback confirm=%u restore=%u resim_to=%u", pkt->tick, restore, tip);
+    } else if (restore == 0) {
+      /* No save at 0 — cannot rollback first tick; accept snap-forward. */
+      NG_LOG_WARN("lockstep: confirm mismatch tick=%u but no save@0", pkt->tick);
+    } else {
+      // agent: composer-2.5 | 2026-07-31 | predict save ring depth | 752810
+      NG_LOG_WARN("lockstep: confirm mismatch tick=%u missing save@%u — await PHYS", pkt->tick,
+                  restore);
+      /* Do not keep simulating a wrong world; host hash streak will PHYS. */
+      if (!g_lock.clock_owner) {
+        g_lock.await_phys = true;
+      }
+    }
+  }
+  return true;
+}
+
+void mod_lockstep_on_soft_phys(uint32_t tick) {
+  // agent: composer-2.5 | 2026-07-31 | predict save ring depth | 752810
+  if (tick == 0) {
+    return;
+  }
+  g_lock.sim_tick = tick;
+  g_lock.confirmed_tick = tick;
+  g_lock.confirm_bcast_tick = tick;
+  g_lock.confirm_wait_start = 0.0;
+  g_lock.local_send_tick = tick;
+  g_lock.resim_to = 0;
+  g_lock.await_phys = false;
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive) {
+      continue;
+    }
+    p->highest_recv = tick;
+    p->ack_our = tick;
+    for (int s = 0; s < NG_LOCK_RING; s++) {
+      NgLockSlot *sl = &p->slots[s];
+      if (sl->present && sl->tick > tick) {
+        sl->present = false;
+        sl->bits = 0;
+        sl->tick = 0;
+        sl->predicted = false;
+      }
+    }
+  }
+  mod_scene_physics_save_ring_clear();
+  if (tick > 0) {
+    mod_scene_physics_save_ring_push(tick);
+  }
+}
+
+uint32_t mod_lockstep_resim_to(void) { return g_lock.resim_to; }
+
+void mod_lockstep_clear_resim(void) { g_lock.resim_to = 0; }
+
+bool mod_lockstep_host_try_confirm(NgLockConfirmPkt *out) {
+  if (!out || !g_lock.clock_owner || !g_lock.active) {
+    return false;
+  }
+  if (g_lock.syncing || g_lock.await_phys || g_lock.peer_count == 0) {
+    return false;
+  }
+  const uint32_t next = g_lock.confirmed_tick + 1u;
+  if (next == 0u) {
+    return false;
+  }
+  /* Do not confirm far ahead of sim — one tick at a time. */
+  if (next > g_lock.sim_tick + 1u) {
+    return false;
+  }
+  const bool ready = mod_lockstep_all_have(next);
+  const double now = mod_lockstep_wall_now();
+  if (!ready) {
+    if (g_lock.confirm_wait_start <= 0.0) {
+      g_lock.confirm_wait_start = now;
+    }
+    if ((now - g_lock.confirm_wait_start) < (double)NG_LOCK_CONFIRM_SEC) {
+      return false;
+    }
+  }
+  memset(out, 0, sizeof(*out));
+  out->tick = next;
+  uint8_t miss = 0;
+  for (int i = 0; i < g_lock.peer_count && out->peer_count < NG_LOCK_PEER_MAX; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->peer_id == 0) {
+      continue;
+    }
+    const uint8_t idx = out->peer_count;
+    out->peer_ids[idx] = (uint8_t)p->peer_id;
+    if (mod_lockstep_slot_has(p, next)) {
+      out->bits[idx] = p->slots[next % NG_LOCK_RING].bits;
+    } else {
+      out->bits[idx] = 0; /* deadline / disconnect fill */
+      miss |= (uint8_t)(1u << idx);
+    }
+    out->peer_count++;
+  }
+  out->miss_mask = miss;
+  if (out->peer_count == 0) {
+    return false;
+  }
+  if (!mod_lockstep_apply_confirm(out)) {
+    return false;
+  }
+  g_lock.last_confirm = *out;
+  g_lock.last_confirm_valid = true;
+  // agent: composer-2.5 | 2026-07-31 | confirm hist unsent bcast | 226e5b
+  mod_lockstep_hist_push(out);
+  if (miss != 0) {
+    NG_LOG_WARN("lockstep: CONFIRM tick=%u zero-fill mask=0x%02x", next, (unsigned)miss);
+  }
+  return true;
+}
+
+bool mod_lockstep_copy_last_confirm(NgLockConfirmPkt *out) {
+  if (!out || !g_lock.last_confirm_valid) {
+    return false;
+  }
+  *out = g_lock.last_confirm;
+  return true;
+}
+
+bool mod_lockstep_next_unsent_confirm(NgLockConfirmPkt *out) {
+  // agent: composer-2.5 | 2026-07-31 | confirm hist unsent bcast | 226e5b
+  if (!out || g_lock.confirmed_tick == 0) {
+    return false;
+  }
+  const uint32_t want = g_lock.confirm_bcast_tick + 1u;
+  if (want == 0u || want > g_lock.confirmed_tick) {
+    return false;
+  }
+  for (int i = 0; i < g_lock.confirm_hist_n; i++) {
+    if (g_lock.confirm_hist[i].tick == want) {
+      *out = g_lock.confirm_hist[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+void mod_lockstep_mark_confirm_sent(uint32_t tick) {
+  // agent: composer-2.5 | 2026-07-31 | confirm hist unsent bcast | 226e5b
+  if (tick == g_lock.confirm_bcast_tick + 1u) {
+    g_lock.confirm_bcast_tick = tick;
+  }
+}
+
+uint8_t mod_lockstep_last_bits(uint32_t peer_id) {
+  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
+  return p ? p->last_bits : 0;
+}
+
+int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers) {
+  if (!out_peers || max_peers <= 0 || g_lock.confirmed_tick == 0) {
+    return 0;
+  }
+  int n = 0;
+  const uint32_t floor = (g_lock.confirmed_tick > (uint32_t)NG_LOCK_CATCHUP_TICKS)
+                             ? (g_lock.confirmed_tick - (uint32_t)NG_LOCK_CATCHUP_TICKS)
+                             : 0u;
+  for (int i = 0; i < g_lock.peer_count && n < max_peers; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->peer_id == 0 || p->peer_id == g_lock.local_peer_id) {
+      continue;
+    }
+    const uint32_t lag = p->highest_recv < p->ack_our ? p->highest_recv : p->ack_our;
+    if (lag < floor) {
+      out_peers[n++] = p->peer_id;
+    }
+  }
+  return n;
+}
+
 // agent: composer-2.5 | 2026-07-29 | lockstep clock module | 4a4ad4
 // agent: composer-2.5 | 2026-07-30 | lockstep own sim clock | b39964
 // agent: composer-2.5 | 2026-07-30 | lockstep gate diag | 626c3b
@@ -687,6 +1097,15 @@ void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_starte
 // agent: composer-2.5 | 2026-07-31 | gaffer tip sample sendahead | 2e5e49
 // agent: cursor-grok-4.5 | 2026-07-31 | gaffer reduce gate end_sync | 0f5fb7
 // agent: cursor-grok-4.5 | 2026-07-31 | drop owner go rebroadcast | b2dafa
+// agent: composer-2.5 | 2026-07-31 | host confirm zero fill gate | 0e6e01
 // agent: cursor-grok-4.5 | 2026-07-31 | remove dead synth path | f2b236
 // agent: cursor-grok-4.5 | 2026-07-31 | apply authoritative resume roster | 6eea5d
 // agent: cursor-grok-4.5 | 2026-07-31 | no mirror wire-learn peers | 55aad6
+// agent: cursor-grok-4.5 | 2026-07-31 | no wire learn any side | b7c0ff
+// agent: cursor-grok-4.5 | 2026-07-31 | lockstep net lost buffer | 939686
+// agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
+// agent: composer-2.5 | 2026-07-31 | predict fill gate rollback | 5c8d67
+// agent: composer-2.5 | 2026-07-31 | late input still heartbeat | 37caa0
+// agent: composer-2.5 | 2026-07-31 | mirrors never self confirm | 6b113e
+// agent: composer-2.5 | 2026-07-31 | confirm hist unsent bcast | 226e5b
+// agent: composer-2.5 | 2026-07-31 | predict save ring depth | 752810

@@ -211,6 +211,7 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
   }
 
   // agent: composer-2.5 | 2026-07-29 | lockstep agent hash cmd | a8a2fc
+  // agent: composer-2.5 | 2026-07-31 | lockstep hash shows confirmed | 4d4950
   if (strcmp(cmdline, "lockstep_hash") == 0) {
     // agent: composer-2.5 | 2026-07-30 | lockstep gate diag | e4c1f4
     char out[320];
@@ -223,10 +224,10 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
     int peers = 0, started = 0;
     mod_lockstep_debug(&send, &peers, &started, &peer);
     snprintf(out, sizeof(out),
-             "{\"ok\":true,\"text\":\"lockstep active=%d tick=%u hash=0x%08x last_tick=%u "
+             "{\"ok\":true,\"text\":\"lockstep active=%d tick=%u confirmed=%u hash=0x%08x last_tick=%u "
              "last_hash=0x%08x send=%u peers=%d started=%d peer=%u\"}",
-             mod_lockstep_active() ? 1 : 0, tick, hash, last_t, last_h, send, peers, started,
-             peer);
+             mod_lockstep_active() ? 1 : 0, tick, mod_lockstep_confirmed_tick(), hash, last_t, last_h,
+             send, peers, started, peer);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }
@@ -578,3 +579,4 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-07-29 | mcp entity transforms server | 649b35
 // agent: composer-2.5 | 2026-07-29 | lockstep agent hash cmd | a8a2fc
 // agent: composer-2.5 | 2026-07-30 | lockstep gate diag | e4c1f4
+// agent: composer-2.5 | 2026-07-31 | lockstep hash shows confirmed | 4d4950

@@ -11,7 +11,7 @@ struct NgActionResult;
 #define NG_PROTO_MAGIC   0x4E474D45u /* NGME */
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa
 // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | c2b274
-#define NG_PROTO_VERSION 8
+#define NG_PROTO_VERSION 9
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -37,6 +37,8 @@ struct NgActionResult;
 #define NG_PKT_LOCK_PHYS    17
 #define NG_PKT_LOCK_READY   18
 #define NG_PKT_LOCK_RESUME  19
+// agent: composer-2.5 | 2026-07-31 | lock confirm packet | 4cf5ef
+#define NG_PKT_LOCK_CONFIRM 20
 
 #define NG_LOCK_INPUT_MAX 32
 #define NG_LOCK_PHYS_CHUNK 3072
@@ -70,6 +72,9 @@ typedef struct NgLockPhysPkt {
   uint32_t sim_tick;
   uint32_t offset;
   uint32_t total;
+  /* Host world checksum at export; meaningful on first chunk (offset==0). */
+  // agent: composer-2.5 | 2026-07-31 | phys pkt expect hash | 2fd4e1
+  uint32_t world_hash;
   uint16_t len;
   uint8_t data[NG_LOCK_PHYS_CHUNK];
 } NgLockPhysPkt;
@@ -85,6 +90,16 @@ typedef struct NgLockResumePkt {
   uint8_t peer_count;
   uint8_t peer_ids[NG_LOCK_PEER_MAX];
 } NgLockResumePkt;
+
+/* Host-authoritative input vector for one sim tick (Mode B). */
+// agent: composer-2.5 | 2026-07-31 | lock confirm packet | 4cf5ef
+typedef struct NgLockConfirmPkt {
+  uint32_t tick;
+  uint8_t peer_count;
+  uint8_t peer_ids[NG_LOCK_PEER_MAX];
+  uint8_t bits[NG_LOCK_PEER_MAX];
+  uint8_t miss_mask; /* bit i set => bits[i] was zero-filled */
+} NgLockConfirmPkt;
 
 typedef enum NgPeerRole {
   NG_PEER_THIN = 0,
@@ -164,7 +179,14 @@ bool ng_proto_encode_lock_ready(NgProtoBuf *b, uint16_t seq, const NgLockReadyPk
 bool ng_proto_decode_lock_ready(NgProtoBuf *b, NgLockReadyPkt *pkt);
 bool ng_proto_encode_lock_resume(NgProtoBuf *b, uint16_t seq, const NgLockResumePkt *pkt);
 bool ng_proto_decode_lock_resume(NgProtoBuf *b, NgLockResumePkt *pkt);
+// agent: composer-2.5 | 2026-07-31 | lock confirm packet | 4cf5ef
+bool ng_proto_encode_lock_confirm(NgProtoBuf *b, uint16_t seq, const NgLockConfirmPkt *pkt);
+bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
+// agent: composer-2.5 | 2026-07-31 | lock confirm packet | 4cf5ef
+bool ng_proto_encode_lock_confirm(NgProtoBuf *b, uint16_t seq, const NgLockConfirmPkt *pkt);
+bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
 
 #endif
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa
 // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | c2b274
+// agent: composer-2.5 | 2026-07-31 | phys pkt expect hash | 2fd4e1

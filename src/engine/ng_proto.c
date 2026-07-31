@@ -1073,7 +1073,7 @@ bool ng_proto_encode_lock_phys(NgProtoBuf *b, uint16_t seq, const NgLockPhysPkt 
   };
   if (!ng_proto_write_header(b, &h) || !ng_proto_write_u32(b, pkt->sim_tick) ||
       !ng_proto_write_u32(b, pkt->offset) || !ng_proto_write_u32(b, pkt->total) ||
-      !ng_proto_write_u16(b, pkt->len)) {
+      !ng_proto_write_u32(b, pkt->world_hash) || !ng_proto_write_u16(b, pkt->len)) {
     return false;
   }
   for (uint16_t i = 0; i < pkt->len; i++) {
@@ -1089,9 +1089,10 @@ bool ng_proto_decode_lock_phys(NgProtoBuf *b, NgLockPhysPkt *pkt) {
     return false;
   }
   memset(pkt, 0, sizeof(*pkt));
+  // agent: composer-2.5 | 2026-07-31 | phys encode expect hash | ba2dd6
   if (!ng_proto_read_u32(b, &pkt->sim_tick) || !ng_proto_read_u32(b, &pkt->offset) ||
-      !ng_proto_read_u32(b, &pkt->total) || !ng_proto_read_u16(b, &pkt->len) ||
-      pkt->len > NG_LOCK_PHYS_CHUNK) {
+      !ng_proto_read_u32(b, &pkt->total) || !ng_proto_read_u32(b, &pkt->world_hash) ||
+      !ng_proto_read_u16(b, &pkt->len) || pkt->len > NG_LOCK_PHYS_CHUNK) {
     return false;
   }
   for (uint16_t i = 0; i < pkt->len; i++) {
@@ -1169,4 +1170,48 @@ bool ng_proto_decode_lock_resume(NgProtoBuf *b, NgLockResumePkt *pkt) {
   }
   return true;
 }
+
+// agent: composer-2.5 | 2026-07-31 | lock confirm encode decode | de86c1
+bool ng_proto_encode_lock_confirm(NgProtoBuf *b, uint16_t seq, const NgLockConfirmPkt *pkt) {
+  if (!b || !pkt || pkt->peer_count > NG_LOCK_PEER_MAX) {
+    return false;
+  }
+  ng_proto_buf_init(b);
+  NgProtoHeader h = {
+      .magic = NG_PROTO_MAGIC,
+      .version = NG_PROTO_VERSION,
+      .channel = NG_CH_UNRELIABLE,
+      .type = NG_PKT_LOCK_CONFIRM,
+      .seq = seq,
+      .tick = pkt->tick,
+  };
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u32(b, pkt->tick) ||
+      !ng_proto_write_u8(b, pkt->peer_count) || !ng_proto_write_u8(b, pkt->miss_mask)) {
+    return false;
+  }
+  for (uint8_t i = 0; i < pkt->peer_count; i++) {
+    if (!ng_proto_write_u8(b, pkt->peer_ids[i]) || !ng_proto_write_u8(b, pkt->bits[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt) {
+  if (!b || !pkt) {
+    return false;
+  }
+  memset(pkt, 0, sizeof(*pkt));
+  if (!ng_proto_read_u32(b, &pkt->tick) || !ng_proto_read_u8(b, &pkt->peer_count) ||
+      !ng_proto_read_u8(b, &pkt->miss_mask) || pkt->peer_count > NG_LOCK_PEER_MAX) {
+    return false;
+  }
+  for (uint8_t i = 0; i < pkt->peer_count; i++) {
+    if (!ng_proto_read_u8(b, &pkt->peer_ids[i]) || !ng_proto_read_u8(b, &pkt->bits[i])) {
+      return false;
+    }
+  }
+  return true;
+}
 // agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec
+// agent: composer-2.5 | 2026-07-31 | phys encode expect hash | ba2dd6

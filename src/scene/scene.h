@@ -34,6 +34,9 @@ void mod_scene_view_on_session(const NgSessionState *session);
 void mod_scene_clear_lockstep_server(void);
 void mod_scene_apply_remote(const NgStateUpdate *update);
 void mod_scene_view_apply_remote(const NgStateUpdate *update);
+/* Mode B: after CONFIRM mismatch, Restore+resim predicted tip (no draw). */
+// agent: composer-2.5 | 2026-07-31 | lockstep resim after confirm | bdb5d7
+void mod_scene_lockstep_pump_resim(void);
 bool mod_scene_take_flush(NgStateUpdate *out);
 bool mod_scene_graph_active(void);
 bool mod_scene_view_is_loaded(void);

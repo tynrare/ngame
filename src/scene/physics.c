@@ -723,6 +723,72 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
   return true;
 }
 
+/* Cover confirmed + NG_LOCK_PREDICT_MAX predict frames (+slack). */
+// agent: composer-2.5 | 2026-07-31 | save ring size predict | e30e6f
+#ifndef NG_PHYS_SAVE_RING
+#define NG_PHYS_SAVE_RING 10
+#endif
+typedef struct NgPhysSaveSlot {
+  uint32_t tick;
+  uint8_t *data;
+  int size;
+} NgPhysSaveSlot;
+
+static NgPhysSaveSlot g_phys_save_ring[NG_PHYS_SAVE_RING];
+static int g_phys_save_count;
+
+void mod_scene_physics_save_ring_clear(void) {
+  for (int i = 0; i < NG_PHYS_SAVE_RING; i++) {
+    if (g_phys_save_ring[i].data) {
+      b3FreeSaveData(g_phys_save_ring[i].data, g_phys_save_ring[i].size);
+      g_phys_save_ring[i].data = NULL;
+      g_phys_save_ring[i].size = 0;
+      g_phys_save_ring[i].tick = 0;
+    }
+  }
+  g_phys_save_count = 0;
+}
+
+void mod_scene_physics_save_ring_push(uint32_t tick) {
+  if (tick == 0 || !GPHYS().world_alive) {
+    return;
+  }
+  uint8_t *data = NULL;
+  int size = 0;
+  if (!mod_scene_physics_export(&data, &size) || !data || size <= 0) {
+    return;
+  }
+  /* Replace same tick or evict oldest when full. */
+  for (int i = 0; i < g_phys_save_count; i++) {
+    if (g_phys_save_ring[i].tick == tick) {
+      b3FreeSaveData(g_phys_save_ring[i].data, g_phys_save_ring[i].size);
+      g_phys_save_ring[i].data = data;
+      g_phys_save_ring[i].size = size;
+      return;
+    }
+  }
+  if (g_phys_save_count >= NG_PHYS_SAVE_RING) {
+    b3FreeSaveData(g_phys_save_ring[0].data, g_phys_save_ring[0].size);
+    memmove(&g_phys_save_ring[0], &g_phys_save_ring[1],
+            sizeof(g_phys_save_ring[0]) * (NG_PHYS_SAVE_RING - 1));
+    g_phys_save_count = NG_PHYS_SAVE_RING - 1;
+    memset(&g_phys_save_ring[g_phys_save_count], 0, sizeof(g_phys_save_ring[0]));
+  }
+  g_phys_save_ring[g_phys_save_count].tick = tick;
+  g_phys_save_ring[g_phys_save_count].data = data;
+  g_phys_save_ring[g_phys_save_count].size = size;
+  g_phys_save_count++;
+}
+
+bool mod_scene_physics_save_ring_restore(uint32_t tick) {
+  for (int i = 0; i < g_phys_save_count; i++) {
+    if (g_phys_save_ring[i].tick == tick && g_phys_save_ring[i].data) {
+      return mod_scene_physics_import(g_phys_save_ring[i].data, g_phys_save_ring[i].size);
+    }
+  }
+  return false;
+}
+
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | f77a9c
 // agent: composer-2.5 | 2026-07-30 | physics export import names | 1b75f3
 // agent: composer-2.5 | 2026-07-30 | lockstep join fixes logging | 4775ae
@@ -735,3 +801,5 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 // agent: composer-2.5 | 2026-07-30 | sphere shape attach | ebc7a0
 // agent: composer-2.5 | 2026-07-30 | rebind after import sensors | e3b692
 // agent: cursor-grok-4.5 | 2026-07-31 | lockstep rest velocity sleep | 5f26b0
+// agent: composer-2.5 | 2026-07-31 | save ring for rollback | 2fa13d
+// agent: composer-2.5 | 2026-07-31 | save ring size predict | e30e6f

@@ -1614,6 +1614,34 @@ static void mod_scene_fixed_step(void *vctx, float fixed_dt, uint32_t tick) {
   mod_scene_runtime_use_server();
 }
 
+// agent: composer-2.5 | 2026-07-31 | lockstep resim after confirm | bdb5d7
+void mod_scene_lockstep_pump_resim(void) {
+  if (!mod_lockstep_active()) {
+    return;
+  }
+  uint32_t target = mod_lockstep_resim_to();
+  if (target == 0u) {
+    return;
+  }
+  if (mod_lockstep_sim_tick() >= target) {
+    mod_lockstep_clear_resim();
+    return;
+  }
+  /* Cap like Gaffer spiral — slightly above normal frame catch-up for rollback. */
+  const int cap = NG_MOD_FIXED_MAX_STEPS * 2;
+  int steps = 0;
+  while (mod_lockstep_sim_tick() < target && steps < cap) {
+    if (mod_lockstep_gate() != NG_LOCK_GATE_GO) {
+      break;
+    }
+    mod_scene_fixed_step(NULL, NG_MOD_FIXED_DT, mod_lockstep_sim_tick() + 1u);
+    steps++;
+  }
+  if (mod_lockstep_sim_tick() >= target) {
+    mod_lockstep_clear_resim();
+  }
+}
+
 static void mod_scene_set_active_for(ModSceneCtx *ctx) {
   if (ctx == &g_scene_server.scene) {
     mod_scene_runtime_use_server();
@@ -2622,3 +2650,4 @@ bool mod_scene_smoke_test(void) {
 // agent: cursor-grok-4.5 | 2026-07-31 | join_sync requires syncing flag | 73e30a
 // agent: cursor-grok-4.5 | 2026-07-31 | allow same scene reload | 4ee66e
 // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | 0ca291
+// agent: composer-2.5 | 2026-07-31 | lockstep resim after confirm | bdb5d7
