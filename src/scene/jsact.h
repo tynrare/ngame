@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-01 | jsact registry and apply | ecdc2a
+// agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | e812b7
 #ifndef NG_SCENE_JSACT_H
 #define NG_SCENE_JSACT_H
 
@@ -28,5 +29,9 @@ bool ng_jsact_call(duk_context *ctx, const char *name, uint8_t argc, const float
 uint32_t ng_jsact_apply_peer(void);
 uint32_t ng_jsact_apply_tick(void);
 
+/* Next deterministic sim-band entity id for spawn during action apply. */
+uint32_t ng_jsact_next_sim_entity_id(void);
+
 #endif
 // agent: composer-2.5 | 2026-08-01 | jsact registry and apply | ecdc2a
+// agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | e812b7

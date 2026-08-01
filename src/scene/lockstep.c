@@ -797,13 +797,17 @@ NgLockGate mod_lockstep_gate(void) {
 
 void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash) {
   // agent: composer-2.5 | 2026-07-30 | lockstep own sim clock | b39964
+  // agent: composer-2.5 | 2026-08-01 | hash only confirmed tips | 2c31a3
   (void)tick;
   g_lock.sim_tick += 1u;
   g_lock.step_tick = 0;
   if (g_lock.resume_barrier > 0u && g_lock.sim_tick >= g_lock.resume_barrier) {
     g_lock.resume_barrier = 0u;
   }
-  if (g_lock.sim_tick > 0 && (g_lock.sim_tick % 60u) == 0u) {
+  /* Publish hash only for confirmed tips — hybrid predict ahead would
+   * compare speculative worlds to the clock owner's authoritative hash. */
+  if (g_lock.sim_tick > 0 && (g_lock.sim_tick % 60u) == 0u &&
+      g_lock.sim_tick <= g_lock.confirmed_tick) {
     g_lock.last_hash = hash;
     g_lock.last_hash_tick = g_lock.sim_tick;
   }
@@ -867,9 +871,13 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
   }
   NgLockSlot *s = &p->slots[tick % NG_LOCK_RING];
   const bool act_present = action && action->present;
+  // agent: composer-2.5 | 2026-08-01 | keep wire action on adopt | 0b6b21
   if (s->present && s->tick == tick) {
-    if (s->bits != bits || (act_present != s->has_action) ||
-        (act_present && (s->action_id != action->id || s->action_argc != action->argc))) {
+    /* Action-less redundant INPUT must not wipe a prior propose. Only upgrade
+     * when the wire carries an action (or bits change). */
+    if (s->bits != bits ||
+        (act_present &&
+         (!s->has_action || s->action_id != action->id || s->action_argc != action->argc))) {
       if (g_lock.clock_owner) {
         /* Adopt newer wire bits before step; ignore conflicts after step. */
         if (tick > g_lock.sim_tick) {
@@ -880,10 +888,6 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
             s->action_id = action->id;
             s->action_argc = action->argc;
             memcpy(s->action_argv, action->argv, sizeof(float) * action->argc);
-          } else {
-            s->has_action = false;
-            s->action_id = 0;
-            s->action_argc = 0;
           }
           return;
         }
@@ -901,10 +905,6 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
           s->action_id = action->id;
           s->action_argc = action->argc;
           memcpy(s->action_argv, action->argv, sizeof(float) * action->argc);
-        } else {
-          s->has_action = false;
-          s->action_id = 0;
-          s->action_argc = 0;
         }
         return;
       }
@@ -917,10 +917,6 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
         s->action_id = action->id;
         s->action_argc = action->argc;
         memcpy(s->action_argv, action->argv, sizeof(float) * action->argc);
-      } else {
-        s->has_action = false;
-        s->action_id = 0;
-        s->action_argc = 0;
       }
       return;
     }
@@ -1456,17 +1452,20 @@ uint8_t mod_lockstep_last_bits(uint32_t peer_id) {
 
 // agent: composer-2.5 | 2026-08-01 | slot action propose APIs | a8876f
 bool mod_lockstep_propose_local_action(uint16_t action_id, uint8_t argc, const float *argv) {
+  // agent: composer-2.5 | 2026-08-01 | propose future tip only | e6c793
   if (argc > NG_LOCK_ACTION_FLOATS || (argc > 0 && !argv)) {
     return false;
   }
   if (!g_lock.active || g_lock.local_peer_id == 0) {
     return false;
   }
+  /* Prefer sendahead tip; never attach to an already-stepped tick (soft PHYS /
+   * PAUSE set local_send_tick = sim — that would silently drop the action). */
   uint32_t tick = g_lock.local_send_tick;
-  if (tick == 0) {
+  if (tick <= g_lock.sim_tick) {
     tick = g_lock.sim_tick + 1u;
   }
-  if (tick == 0) {
+  if (tick == 0u) {
     tick = 1u;
   }
   mod_lockstep_gen_local(tick);
@@ -1586,3 +1585,6 @@ int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers) {
 // agent: composer-2.5 | 2026-08-01 | hybrid flag lockstep impl | 384379
 // agent: composer-2.5 | 2026-08-01 | slot action propose APIs | a8876f
 // agent: composer-2.5 | 2026-08-01 | propose view only tip overwrite | cab054
+// agent: composer-2.5 | 2026-08-01 | propose future tip only | e6c793
+// agent: composer-2.5 | 2026-08-01 | keep wire action on adopt | 0b6b21
+// agent: composer-2.5 | 2026-08-01 | hash only confirmed tips | 2c31a3

@@ -14,6 +14,25 @@ struct duk_hthread;
 // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 8a078a
 #define NG_SCENE_INST_MAX 512
 
+/* Net entity id bands (input-sim). Start/join use low ids [1, SIM_BASE). */
+// agent: composer-2.5 | 2026-08-01 | entity id band helpers | 21c51e
+#define NG_ENTITY_ID_SIM_BASE 0x40000000u
+#define NG_ENTITY_ID_LOCAL_BASE 0x80000000u
+
+typedef enum NgSpawnCtx {
+  NG_SPAWN_CTX_NONE = 0,
+  NG_SPAWN_CTX_START,
+  NG_SPAWN_CTX_ACTION_APPLY,
+  NG_SPAWN_CTX_JOIN_MATERIALIZE,
+} NgSpawnCtx;
+
+void mod_scene_spawn_set_ctx(NgSpawnCtx ctx);
+NgSpawnCtx mod_scene_spawn_get_ctx(void);
+
+bool mod_scene_graph_id_is_sim(uint32_t id);
+bool mod_scene_graph_id_is_local(uint32_t id);
+uint32_t mod_scene_graph_pack_sim_id(uint32_t tick, uint32_t peer, uint8_t seq);
+uint32_t mod_scene_graph_alloc_local_id(void);
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
 typedef struct NgSceneDesc {
   char kind[16];
@@ -178,3 +197,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-08-01 | server delta prepare wire | 68a698
 // agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
 // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 8a078a
+// agent: composer-2.5 | 2026-08-01 | entity id band helpers | 21c51e

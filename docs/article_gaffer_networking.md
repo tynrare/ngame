@@ -234,6 +234,15 @@ Do not “optimize latency” by undoing Phase 1 anti-drift below.
 13. Long blackout (~tens of seconds): ghost/`NG_LOCK_PRUNE_SEC` + name rebind + soft PHYS — do not stretch playout/predict to cover it.
 14. Prefer playout before deep predict (`predict_allow`); do not raise speculation past SnapNet ~150ms sports ceiling without more delay.
 15. Server STATE: shared stays absolute; delta only for host-authored `sync:server` vs per-peer ACK.
+16. Entity identity (input-sim): start/join use low ids (SESSION); action apply uses sim-band ids `f(tick,peer,seq)` identical on every heap; `sync:local` uses a private high band. Refuse net `spawn` outside start / action apply / join materialize.
+17. Dual heap may mirror poses by **entity id** once sim-band ids agree — do not invent string keys for lockstep creates.
+18. Predict / ZF must not invent action oneshots; re-apply of the same action is idempotent (same sim id).
+
+<!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | d4b0d1 -->
+
+### Entity identity (Phase 1 actions)
+
+JS `action(...)` propose → confirm blob → `action_fire` on every loaded heap before `fixed_step`. Spawns during apply receive deterministic sim-band entity ids (no per-heap `alloc_id`, no required spawn key). View draw matches server poses by id. Server-sim role-gated create + STATE unchanged (Gaffer #2–#3).
 
 ---
 
@@ -313,3 +322,4 @@ Skim: Box3D → lockstep core → auth → predict/recover → snapshot/state sy
 <!-- agent: composer-2.5 | 2026-08-01 | hybrid mode article split | 5ddfed -->
 <!-- agent: composer-2.5 | 2026-08-01 | server gaffer article rewrite | 4e35ee -->
 <!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | 106d0d -->
+<!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | d4b0d1 -->

@@ -3,7 +3,9 @@
 // agent: composer-2.5 | 2026-08-01 | shoot key peer tick only | e461f5
 // agent: composer-2.5 | 2026-08-01 | propose view only tip overwrite | b8d9cb
 // agent: composer-2.5 | 2026-08-01 | drop is_server propose gate | 2574db
+// agent: composer-2.5 | 2026-08-01 | shoot drop key sim id | 24b549
 // Propose from local input + camera; tip overwrite dedupes dual-heap step.
+// Spawn identity = engine sim-band id during action apply (no key).
 function SampleShooting() {}
 
 SampleShooting.prototype.init = function () {
@@ -72,12 +74,7 @@ SampleShooting.prototype.step = function (dt) {
 SampleShooting.prototype.fixed_step = function (dt) {};
 
 SampleShooting.prototype.action_fire = function (ox, oy, oz, dx, dy, dz, speed) {
-  var peer = global.action_peer();
-  var tick = global.action_tick();
-  /* One action/peer/tick — key is fully determined by confirm payload. */
-  var key = "sb_" + peer + "_" + tick;
   var h = global.spawn("shoot_ball_e", {
-    key: key,
     position: { x: ox, y: oy, z: oz },
     scale: 1,
   });
@@ -114,3 +111,4 @@ global.module(SampleShooting);
 // agent: composer-2.5 | 2026-08-01 | shoot key peer tick only | e461f5
 // agent: composer-2.5 | 2026-08-01 | propose view only tip overwrite | b8d9cb
 // agent: composer-2.5 | 2026-08-01 | drop is_server propose gate | 2574db
+// agent: composer-2.5 | 2026-08-01 | shoot drop key sim id | 24b549

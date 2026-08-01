@@ -81,8 +81,10 @@ Body scripts on the phys owner apply torque/force from that. Conflicting bits fo
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | e26fd2 -->
 <!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 524507 -->
-**Actions (POD):** `global.action_register(this, "action_fire")` then `global.action("action_fire", origin, dir, speed)`. Propose from view `step` with `get_local_input` + camera; args pack as floats (vec3 → 3). Max one action per peer per tick on the wire (`LOCK_INPUT` / `LOCK_CONFIRM`, proto ≥13). Engine dispatches `action_fire(...)` on each heap before `fixed_step` for that tick. Zero-fill / remote predict never hold-fire. See `res/modules/sample_shooting.js`.
+**Actions (POD):** `global.action_register(this, "action_fire")` then `global.action("action_fire", origin, dir, speed)`. Propose with `get_local_input` + camera (tip overwrite dedupes dual-heap `step`); args pack as floats (vec3 → 3). Max one action per peer per tick (`LOCK_INPUT` / `LOCK_CONFIRM`, proto ≥13). Engine dispatches `action_fire(...)` on each heap before `fixed_step`. Zero-fill / remote predict never hold-fire. See `res/modules/sample_shooting.js`.
 
+<!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | 2af883 -->
+**Spawn contexts / ids (input-sim):** non-`local` `spawn` only in `Scene.start`, confirmed action apply, or join materialize (else refuse). Start/join: low entity ids from SESSION/ordinal. Action apply: sim-band id `pack(tick, peer, seq)` — same on server and view heaps; resim is idempotent. `sync:local`: private id band, any time. Optional spawn `key` is not required for shoot/action creates.
 <!-- agent: composer-2.5 | 2026-07-30 | docs bandwidth lockstep playout | 563455 -->
 **Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`.
 
@@ -187,3 +189,4 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
 <!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | e26fd2 -->
 <!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 524507 -->
+<!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | 2af883 -->

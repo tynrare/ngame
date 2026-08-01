@@ -484,6 +484,7 @@ float mod_scene_physics_get_mass(int handle) {
 }
 
 uint32_t mod_scene_physics_checksum(void) {
+  // agent: composer-2.5 | 2026-08-01 | checksum sort by entity id | 58e95f
   uint32_t h = 2166136261u;
   const int n = mod_scene_graph_inst_count();
   const NgSceneInst *ordered[NG_SCENE_INST_MAX];
@@ -495,10 +496,22 @@ uint32_t mod_scene_physics_checksum(void) {
     }
     ordered[count++] = inst;
   }
-  /* Stable order by entity key for cross-peer checksum. */
+  /* Stable order: key when set, else entity id (keyless action balls). */
   for (int i = 0; i < count; i++) {
     for (int j = i + 1; j < count; j++) {
-      if (strcmp(ordered[j]->key, ordered[i]->key) < 0) {
+      const bool kj = ordered[j]->key[0] != '\0';
+      const bool ki = ordered[i]->key[0] != '\0';
+      int cmp = 0;
+      if (kj && ki) {
+        cmp = strcmp(ordered[j]->key, ordered[i]->key);
+      } else if (kj != ki) {
+        cmp = kj ? -1 : 1; /* keyed before keyless */
+      } else if (ordered[j]->id < ordered[i]->id) {
+        cmp = -1;
+      } else if (ordered[j]->id > ordered[i]->id) {
+        cmp = 1;
+      }
+      if (cmp < 0) {
         const NgSceneInst *tmp = ordered[i];
         ordered[i] = ordered[j];
         ordered[j] = tmp;
@@ -520,8 +533,14 @@ uint32_t mod_scene_physics_checksum(void) {
       h ^= u;
       h *= 16777619u;
     }
-    for (const char *c = inst->key; *c; c++) {
-      h ^= (uint8_t)*c;
+    if (inst->key[0] != '\0') {
+      for (const char *c = inst->key; *c; c++) {
+        h ^= (uint8_t)*c;
+        h *= 16777619u;
+      }
+    } else {
+      uint32_t eid = inst->id;
+      h ^= eid;
       h *= 16777619u;
     }
   }
@@ -748,6 +767,15 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
       const char *name = b3Body_GetName(collect.ids[j]);
       if (name && strcmp(name, want) == 0) {
         inst->body_id_bits = b3StoreBodyId(collect.ids[j]);
+        // agent: composer-2.5 | 2026-08-01 | import sync poses from bodies | e80a86
+        /* Graph poses stay stale across Restore — pull from rebound body so
+         * push-to-view / scripts do not flash spawn/zero until the next step. */
+        b3Pos p = b3Body_GetPosition(collect.ids[j]);
+        b3Quat q = b3Body_GetRotation(collect.ids[j]);
+        inst->pos[0] = (float)p.x;
+        inst->pos[1] = (float)p.y;
+        inst->pos[2] = (float)p.z;
+        mod_scene_physics_euler_from_quat(q, inst->rot);
         NG_LOG_INFO("lockstep: rebind key=%s", want);
         break;
       }
@@ -842,3 +870,5 @@ bool mod_scene_physics_save_ring_restore(uint32_t tick) {
 // agent: composer-2.5 | 2026-08-01 | hybrid input sim helpers | 57aea3
 // agent: composer-2.5 | 2026-08-01 | input sim physics paths | 99d265
 // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
+// agent: composer-2.5 | 2026-08-01 | checksum sort by entity id | 58e95f
+// agent: composer-2.5 | 2026-08-01 | import sync poses from bodies | e80a86

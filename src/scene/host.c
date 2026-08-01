@@ -618,7 +618,39 @@ static int mod_scene_spawn_from_pending(duk_context *ctx, ModSceneCtx *scene, co
                                 pending->rot, scale, func_idx);
 }
 
+static int mod_scene_spawn_refresh_existing(ModSceneCtx *scene, NgSceneInst *inst,
+                                            const float *pos, const float *rot, float scale,
+                                            bool have_pos, bool have_rot, bool have_scale) {
+  if (!inst) {
+    return 0;
+  }
+  if (have_pos && pos) {
+    inst->pos[0] = pos[0];
+    inst->pos[1] = pos[1];
+    inst->pos[2] = pos[2];
+  }
+  if (have_rot && rot) {
+    inst->rot[0] = rot[0];
+    inst->rot[1] = rot[1];
+    inst->rot[2] = rot[2];
+  }
+  if (have_scale && scale > 0.0f) {
+    inst->scale = scale;
+  }
+  if (inst->body[0] != '\0') {
+    if (inst->body_id_bits != 0 && have_pos) {
+      mod_scene_physics_detach(inst->handle);
+    }
+    if (inst->body_id_bits == 0) {
+      mod_scene_physics_attach(inst->handle, inst->body, inst->sync, mod_scene_is_server(),
+                               scene->is_controller, inst->pos, inst->rot);
+    }
+  }
+  return inst->handle;
+}
+
 static duk_ret_t bind_spawn(duk_context *ctx) {
+  // agent: composer-2.5 | 2026-08-01 | spawn context sim id guards | 7c6221
   ModSceneCtx *scene = mod_scene_from_ctx(ctx);
   const char *name = duk_require_string(ctx, 0);
   NgSceneDesc *desc = mod_scene_graph_entity_desc(name);
@@ -630,42 +662,10 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
   ModSceneSpawnOpts opts;
   mod_scene_read_spawn_opts(ctx, 1, &opts);
   const char *key = opts.key[0] ? opts.key : NULL;
-  // agent: composer-2.5 | 2026-08-01 | keyed spawn reattach pose | 35782a
-  if (key) {
-    NgSceneInst *by_key = mod_scene_graph_inst_by_key(key);
-    if (by_key) {
-      if (opts.have_pos) {
-        by_key->pos[0] = opts.pos[0];
-        by_key->pos[1] = opts.pos[1];
-        by_key->pos[2] = opts.pos[2];
-      }
-      if (opts.have_rot) {
-        by_key->rot[0] = opts.rot[0];
-        by_key->rot[1] = opts.rot[1];
-        by_key->rot[2] = opts.rot[2];
-      }
-      if (opts.have_scale && opts.scale > 0.0f) {
-        by_key->scale = opts.scale;
-      }
-      /* Resim restore can drop body handles while the keyed inst remains — recreate. */
-      if (by_key->body[0] != '\0') {
-        if (by_key->body_id_bits != 0 && opts.have_pos) {
-          mod_scene_physics_detach(by_key->handle);
-        }
-        if (by_key->body_id_bits == 0) {
-          mod_scene_physics_attach(by_key->handle, by_key->body, by_key->sync,
-                                   mod_scene_is_server(), scene->is_controller, by_key->pos,
-                                   by_key->rot);
-        }
-      }
-      duk_push_int(ctx, by_key->handle);
-      return 1;
-    }
-  }
-
   const bool on_server = mod_scene_is_server();
   const NgSyncMode sync = desc->sync;
   const bool lockstep_body = mod_scene_lockstep_body(desc->body);
+  const NgSpawnCtx spawn_ctx = mod_scene_spawn_get_ctx();
   const int func_idx = mod_scene_stash_func(ctx, name);
   const float *pos = opts.have_pos ? opts.pos : NULL;
   const float *rot = opts.have_rot ? opts.rot : NULL;
@@ -679,6 +679,55 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     rot = default_rot;
   }
 
+  /* Local may spawn anytime; net entities only in start / action / join. */
+  if (sync != NG_SYNC_LOCAL && spawn_ctx == NG_SPAWN_CTX_NONE) {
+    NG_LOG_ERROR("spawn: refuse %s — not in start/action/join context", name);
+    duk_push_int(ctx, 0);
+    return 1;
+  }
+
+  /* Action apply: deterministic sim-band id (idempotent on resim). */
+  if (spawn_ctx == NG_SPAWN_CTX_ACTION_APPLY && sync != NG_SYNC_LOCAL) {
+    const uint32_t entity_id = ng_jsact_next_sim_entity_id();
+    NgSceneInst *by_id = mod_scene_graph_inst_by_id(entity_id);
+    if (by_id) {
+      duk_push_int(ctx, mod_scene_spawn_refresh_existing(scene, by_id, pos, rot, scale,
+                                                         opts.have_pos, opts.have_rot,
+                                                         opts.have_scale));
+      return 1;
+    }
+    if (key) {
+      NgSceneInst *by_key = mod_scene_graph_inst_by_key(key);
+      if (by_key) {
+        duk_push_int(ctx, mod_scene_spawn_refresh_existing(scene, by_key, pos, rot, scale,
+                                                           opts.have_pos, opts.have_rot,
+                                                           opts.have_scale));
+        return 1;
+      }
+    }
+    if (!mod_scene_spawn_creates_local(sync, on_server, scene->is_controller, lockstep_body) &&
+        !mod_scene_spawn_should_materialize(sync, on_server, lockstep_body) && !lockstep_body) {
+      mod_scene_graph_registry_add_instance(name, key, entity_id, sync, pos, rot, scale);
+      duk_push_int(ctx, 0);
+      return 1;
+    }
+    const int handle =
+        mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
+    duk_push_int(ctx, handle);
+    return 1;
+  }
+
+  // agent: composer-2.5 | 2026-08-01 | keyed spawn reattach pose | 35782a
+  if (key) {
+    NgSceneInst *by_key = mod_scene_graph_inst_by_key(key);
+    if (by_key) {
+      duk_push_int(ctx, mod_scene_spawn_refresh_existing(scene, by_key, pos, rot, scale,
+                                                         opts.have_pos, opts.have_rot,
+                                                         opts.have_scale));
+      return 1;
+    }
+  }
+
   const NgSessionSpawn *pending = mod_scene_graph_take_pending(name, key);
   if (pending) {
     if (mod_scene_spawn_creates_local(sync, on_server, scene->is_controller, lockstep_body) ||
@@ -687,7 +736,6 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
       duk_push_int(ctx, handle);
       return 1;
     }
-    // Server keeps registry pose for session fill (shared/owner authored on views).
     mod_scene_graph_registry_add_instance(name, pending->key[0] ? pending->key : key,
                                           pending->entity_id, sync, pending->pos, pending->rot,
                                           pending->scale > 0.0f ? pending->scale : 1.0f);
@@ -697,6 +745,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
 
   if (!mod_scene_spawn_creates_local(sync, on_server, scene->is_controller, lockstep_body)) {
     if (sync == NG_SYNC_LOCAL) {
+      /* Wrong heap for local create. */
       duk_push_int(ctx, 0);
       return 1;
     }
@@ -712,8 +761,12 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     return 1;
   }
 
+  uint32_t entity_id = 0;
+  if (sync == NG_SYNC_LOCAL) {
+    entity_id = mod_scene_graph_alloc_local_id();
+  }
   const int handle =
-      mod_scene_finish_spawn(ctx, scene, name, 0, key, pos, rot, scale, func_idx);
+      mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
   duk_push_int(ctx, handle);
   return 1;
 }
@@ -769,13 +822,15 @@ static bool mod_scene_input_key_down(int key, int buttons) {
 
 /* OR of all peers' committed bits for step_tick (shared controls). */
 // agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 827710
+// agent: composer-2.5 | 2026-08-01 | lockstep bits for dedicated host | b1ef71
 static duk_ret_t bind_get_any_input(duk_context *ctx) {
   const int key = duk_require_int(ctx, 0);
   int buttons = mod_input_buttons();
   if (mod_lockstep_active()) {
     const uint32_t tick = mod_lockstep_step_tick();
-    if (mod_lockstep_have_input(mod_lockstep_local_peer_id(), tick) ||
-        mod_lockstep_peer_count() > 1) {
+    /* Dedicated clock owner has local_peer_id=0 (no seat). Still must OR
+     * remote peer slots — peer_count==1 used to fall through to empty kb. */
+    if (tick != 0u) {
       buttons = (int)mod_lockstep_bits_or(tick);
     }
   }
@@ -1697,6 +1752,17 @@ static bool mod_scene_call_method(ModSceneCtx *ctx, const char *method, int narg
   return true;
 }
 
+static bool mod_scene_call_start(ModSceneCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-01 | spawn context sim id guards | 7c6221
+  const NgSpawnCtx prev = mod_scene_spawn_get_ctx();
+  mod_scene_spawn_set_ctx(NG_SPAWN_CTX_START);
+  const bool ok = mod_scene_call_method(ctx, "start", 1);
+  /* Wired module start (empty for sample-shooting) while still in START. */
+  mod_scene_call_all_wired(ctx, "start", false);
+  mod_scene_spawn_set_ctx(prev);
+  return ok;
+}
+
 static void mod_scene_drain_pending_change(ModSceneCtx *ctx) {
   if (!ctx || !ctx->pending_scene_id[0] || !mod_scene_is_server()) {
     return;
@@ -2002,13 +2068,15 @@ static void mod_scene_push_server_phys_to_view(void) {
     return;
   }
   for (int i = 0; i < n; i++) {
-    // agent: composer-2.5 | 2026-08-01 | push prefer key no id | ad13dc
-    /* Keyed action spawns (e.g. sb_<peer>_<tick>) must not fall back to id —
-     * dual-heap alloc_id can collide with a stack box and teleport its mesh. */
+    // agent: composer-2.5 | 2026-08-01 | push by id after sim ids | 61401b
+    // agent: composer-2.5 | 2026-08-01 | push prefer key then id | 15a52d
+    /* Keyed start entities: key survives per-heap alloc_id skew. Keyless
+     * action balls: sim-band id is the only stable handle. */
     NgSceneInst *v = NULL;
     if (poses[i].key[0] != '\0') {
       v = mod_scene_graph_inst_by_key(poses[i].key);
-    } else {
+    }
+    if (!v) {
       v = mod_scene_graph_inst_by_id(poses[i].id);
     }
     if (!v) {
@@ -2224,7 +2292,7 @@ bool mod_scene_load(const char *scene_id) {
   // agent: composer-2.5 | 2026-08-01 | session mode apply fill | 4dc3e3
   session.lockstep = mod_scene_physics_is_input_sim() ? (uint8_t)mod_scene_physics_sim_mode() : 0u;
   mod_scene_push_session_obj(ctx, &session);
-  if (!mod_scene_call_method(ctx, "start", 1)) {
+  if (!mod_scene_call_start(ctx)) {
     mod_scene_unload(ctx);
     return false;
   }
@@ -2339,10 +2407,15 @@ static void mod_scene_on_session_ctx(ModSceneCtx *ctx, const NgSessionState *ses
     }
     mod_scene_graph_seed_pending(session);
     mod_scene_push_session_obj(ctx, session);
-    mod_scene_call_method(ctx, "start", 1);
+    (void)mod_scene_call_start(ctx);
     mod_scene_drain_pending_change(ctx);
     ctx->started = true;
-    mod_scene_graph_foreach_unmatched_pending(mod_scene_materialize_pending_ud, ctx);
+    {
+      const NgSpawnCtx prev = mod_scene_spawn_get_ctx();
+      mod_scene_spawn_set_ctx(NG_SPAWN_CTX_JOIN_MATERIALIZE);
+      mod_scene_graph_foreach_unmatched_pending(mod_scene_materialize_pending_ud, ctx);
+      mod_scene_spawn_set_ctx(prev);
+    }
     // agent: composer-2.5 | 2026-07-30 | unload always clears lockstep gate | 314d8e
     // agent: composer-2.5 | 2026-07-30 | view lockstep activate not restart | 7a6732
     // agent: cursor-grok-4.5 | 2026-07-31 | view restart on scene change | abd7ca
@@ -2897,7 +2970,7 @@ static bool mod_scene_smoke_one(const char *scene_id, const char *spawn_desc, bo
   NgSessionState session = {0};
   strncpy(session.scene_id, scene_id, sizeof(session.scene_id) - 1);
   mod_scene_push_session_obj(ctx, &session);
-  if (!mod_scene_call_method(ctx, "start", 1)) {
+  if (!mod_scene_call_start(ctx)) {
     mod_scene_unload(ctx);
     return false;
   }
@@ -2934,7 +3007,7 @@ static bool mod_scene_lockstep_hash_smoke(void) {
     strncpy(session.scene_id, "physics", sizeof(session.scene_id) - 1);
     session.lockstep = 2; /* hybrid */
     mod_scene_push_session_obj(ctx, &session);
-    if (!mod_scene_call_method(ctx, "start", 1)) {
+    if (!mod_scene_call_start(ctx)) {
       mod_scene_unload(ctx);
       return false;
     }
@@ -2959,7 +3032,7 @@ static bool mod_scene_lockstep_hash_smoke(void) {
     session.controller_id = 1;
     mod_scene_graph_seed_pending(&session);
     mod_scene_push_session_obj(ctx, &session);
-    if (!mod_scene_call_method(ctx, "start", 1)) {
+    if (!mod_scene_call_start(ctx)) {
       mod_scene_unload(ctx);
       mod_scene_runtime_use_server();
       mod_scene_unload(mod_scene_runtime_scene());
@@ -3094,6 +3167,112 @@ static bool mod_scene_lockstep_hash_smoke(void) {
   return ok;
 }
 
+// agent: composer-2.5 | 2026-08-01 | smoke both heap ball id | 78867a
+static bool mod_scene_action_sim_id_smoke(void) {
+  // agent: composer-2.5 | 2026-08-01 | smoke always dual heap ids | e0ca6e
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+
+  mod_scene_runtime_use_server();
+  if (!mod_scene_begin("stacking", true, true)) {
+    return false;
+  }
+  {
+    ModSceneCtx *ctx = mod_scene_runtime_scene();
+    NgSessionState session = {0};
+    strncpy(session.scene_id, "stacking", sizeof(session.scene_id) - 1);
+    session.lockstep = 2;
+    mod_scene_push_session_obj(ctx, &session);
+    if (!mod_scene_call_start(ctx)) {
+      mod_scene_unload(ctx);
+      return false;
+    }
+    mod_scene_drain_pending_change(ctx);
+    ctx->started = true;
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_HYBRID);
+  }
+
+  mod_scene_runtime_use_view();
+  if (!mod_scene_begin("stacking", false, true)) {
+    mod_scene_runtime_use_server();
+    mod_scene_unload(mod_scene_runtime_scene());
+    return false;
+  }
+  {
+    ModSceneCtx *ctx = mod_scene_runtime_scene();
+    NgSessionState session = {0};
+    strncpy(session.scene_id, "stacking", sizeof(session.scene_id) - 1);
+    session.lockstep = 2;
+    session.your_id = 1;
+    session.controller_id = 1;
+    mod_scene_push_session_obj(ctx, &session);
+    if (!mod_scene_call_start(ctx)) {
+      mod_scene_unload(ctx);
+      mod_scene_runtime_use_server();
+      mod_scene_unload(mod_scene_runtime_scene());
+      return false;
+    }
+    mod_scene_drain_pending_change(ctx);
+    ctx->started = true;
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_HYBRID);
+  }
+
+  mod_scene_lockstep_restart(1);
+  mod_lockstep_set_local_peer(1);
+  mod_lockstep_set_clock_owner(true);
+  mod_lockstep_note_roster();
+
+  const float argv[7] = {0.0f, 15.0f, 48.0f, 0.0f, 0.2f, -1.0f, 20.0f};
+  mod_scene_runtime_use_server();
+  if (!ng_jsact_call(g_scene_server.scene.ctx, "action_fire", 7, argv)) {
+    mod_scene_runtime_use_view();
+    mod_scene_unload(mod_scene_runtime_scene());
+    mod_scene_runtime_use_server();
+    mod_scene_unload(mod_scene_runtime_scene());
+    return false;
+  }
+  NgSceneInst *sball = mod_scene_graph_inst_by_desc("shoot_ball_e");
+  const uint32_t sid = sball ? sball->id : 0u;
+
+  mod_scene_runtime_use_view();
+  if (!ng_jsact_call(g_scene_view.scene.ctx, "action_fire", 7, argv)) {
+    mod_scene_unload(mod_scene_runtime_scene());
+    mod_scene_runtime_use_server();
+    mod_scene_unload(mod_scene_runtime_scene());
+    return false;
+  }
+  NgSceneInst *vball = mod_scene_graph_inst_by_desc("shoot_ball_e");
+  const uint32_t vid = vball ? vball->id : 0u;
+
+  bool ok = sid != 0u && sid == vid && mod_scene_graph_id_is_sim(sid);
+
+  /* Soft PHYS clamps send tip to sim — propose must still land on a future tick. */
+  // agent: composer-2.5 | 2026-08-01 | smoke two action fires | a60dcf
+  if (ok) {
+    const uint32_t sim = mod_lockstep_sim_tick() > 0 ? mod_lockstep_sim_tick() : 1u;
+    mod_lockstep_on_soft_phys(sim);
+    const float argv2[7] = {1.0f, 2.0f, 3.0f, 0.0f, 1.0f, 0.0f, 10.0f};
+    const uint16_t aid = ng_jsact_hash_name("action_fire");
+    if (!mod_lockstep_propose_local_action(aid, 7, argv2)) {
+      ok = false;
+    } else {
+      NgLockAction got = {0};
+      const uint32_t expect = sim + 1u;
+      if (!mod_lockstep_action_for(mod_lockstep_local_peer_id(), expect, &got) || !got.present) {
+        ok = false;
+      }
+    }
+  }
+
+  mod_scene_runtime_use_view();
+  mod_scene_unload(mod_scene_runtime_scene());
+  mod_scene_runtime_use_server();
+  mod_scene_unload(mod_scene_runtime_scene());
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+  return ok;
+}
+
 bool mod_scene_smoke_test(void) {
   // agent: composer-2.5 | 2026-07-30 | lockstep dual channel flush smoke | 26e91c
   if (!mod_scene_smoke_one("cube", "cube_a_e", false)) {
@@ -3123,6 +3302,11 @@ bool mod_scene_smoke_test(void) {
   }
   if (!mod_scene_lockstep_hash_smoke()) {
     fprintf(stderr, "smoke fail: lockstep_hash\n");
+    return false;
+  }
+  // agent: composer-2.5 | 2026-08-01 | smoke both heap ball id | 78867a
+  if (!mod_scene_action_sim_id_smoke()) {
+    fprintf(stderr, "smoke fail: action_sim_id\n");
     return false;
   }
   return true;
@@ -3204,3 +3388,10 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-08-01 | keyed spawn reattach pose | 35782a
 // agent: composer-2.5 | 2026-08-01 | push poses after both heaps | e810ca
 // agent: composer-2.5 | 2026-08-01 | push prefer key no id | ad13dc
+// agent: composer-2.5 | 2026-08-01 | spawn context sim id guards | 7c6221
+// agent: composer-2.5 | 2026-08-01 | push by id after sim ids | 61401b
+// agent: composer-2.5 | 2026-08-01 | smoke both heap ball id | 78867a
+// agent: composer-2.5 | 2026-08-01 | smoke always dual heap ids | e0ca6e
+// agent: composer-2.5 | 2026-08-01 | smoke two action fires | a60dcf
+// agent: composer-2.5 | 2026-08-01 | lockstep bits for dedicated host | b1ef71
+// agent: composer-2.5 | 2026-08-01 | push prefer key then id | 15a52d

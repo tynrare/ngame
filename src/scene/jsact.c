@@ -1,7 +1,9 @@
 // agent: composer-2.5 | 2026-08-01 | jsact registry and apply | 30972d
+// agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | 09de0e
 #include "jsact.h"
 #include "engine/ng_log.h"
 #include "engine/ng_proto.h"
+#include "graph.h"
 #include "lockstep.h"
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +19,7 @@ static NgJsActEntry g_jsact[NG_JSACT_MAX];
 static int g_jsact_n;
 static uint32_t g_jsact_apply_peer;
 static uint32_t g_jsact_apply_tick;
+static uint8_t g_jsact_spawn_seq;
 
 uint16_t ng_jsact_hash_name(const char *name) {
   /* FNV-1a 16-bit (xor-fold). */
@@ -33,6 +36,17 @@ uint16_t ng_jsact_hash_name(const char *name) {
 
 uint32_t ng_jsact_apply_peer(void) { return g_jsact_apply_peer; }
 uint32_t ng_jsact_apply_tick(void) { return g_jsact_apply_tick; }
+
+uint32_t ng_jsact_next_sim_entity_id(void) {
+  const uint8_t seq = g_jsact_spawn_seq;
+  if (g_jsact_spawn_seq < 0x0fu) {
+    g_jsact_spawn_seq++;
+  } else {
+    NG_LOG_WARN("action: sim spawn seq saturated peer=%u tick=%u", g_jsact_apply_peer,
+                g_jsact_apply_tick);
+  }
+  return mod_scene_graph_pack_sim_id(g_jsact_apply_tick, g_jsact_apply_peer, seq);
+}
 
 static NgJsActEntry *ng_jsact_find(uint16_t id) {
   for (int i = 0; i < g_jsact_n; i++) {
@@ -129,6 +143,7 @@ void ng_jsact_clear(duk_context *ctx) {
   /* Keep name→id table across dual server/view heaps; receivers live in stash. */
   g_jsact_apply_peer = 0;
   g_jsact_apply_tick = 0;
+  g_jsact_spawn_seq = 0;
 }
 
 static bool ng_jsact_pcall(duk_context *ctx, const char *name, uint8_t argc, const float *argv) {
@@ -162,14 +177,38 @@ bool ng_jsact_call(duk_context *ctx, const char *name, uint8_t argc, const float
   if (!ctx || !name) {
     return false;
   }
-  return ng_jsact_pcall(ctx, name, argc, argv);
+  const NgSpawnCtx prev = mod_scene_spawn_get_ctx();
+  mod_scene_spawn_set_ctx(NG_SPAWN_CTX_ACTION_APPLY);
+  g_jsact_apply_tick = mod_lockstep_active() ? mod_lockstep_sim_tick() + 1u : 1u;
+  if (g_jsact_apply_tick == 0u) {
+    g_jsact_apply_tick = 1u;
+  }
+  g_jsact_apply_peer = mod_lockstep_local_peer_id();
+  if (g_jsact_apply_peer == 0u) {
+    g_jsact_apply_peer = 1u;
+  }
+  g_jsact_spawn_seq = 0;
+  const bool ok = ng_jsact_pcall(ctx, name, argc, argv);
+  g_jsact_apply_peer = 0;
+  g_jsact_apply_tick = 0;
+  g_jsact_spawn_seq = 0;
+  mod_scene_spawn_set_ctx(prev);
+  return ok;
 }
 
 void ng_jsact_dispatch_tick(duk_context *ctx, uint32_t tick) {
+  // agent: composer-2.5 | 2026-08-01 | actions only when confirmed | 1d4a0d
   if (!ctx || tick == 0 || !mod_lockstep_active()) {
     return;
   }
+  /* Predict/ZF must not fire oneshots — only confirmed timeline (article anti-drift). */
+  if (tick > mod_lockstep_confirmed_tick()) {
+    return;
+  }
+  const NgSpawnCtx prev = mod_scene_spawn_get_ctx();
+  mod_scene_spawn_set_ctx(NG_SPAWN_CTX_ACTION_APPLY);
   g_jsact_apply_tick = tick;
+  g_jsact_spawn_seq = 0;
   const int pc = mod_lockstep_peer_count();
   for (int i = 0; i < pc; i++) {
     const uint32_t peer = mod_lockstep_peer_id_at(i);
@@ -190,5 +229,9 @@ void ng_jsact_dispatch_tick(duk_context *ctx, uint32_t tick) {
   }
   g_jsact_apply_peer = 0;
   g_jsact_apply_tick = 0;
+  g_jsact_spawn_seq = 0;
+  mod_scene_spawn_set_ctx(prev);
 }
 // agent: composer-2.5 | 2026-08-01 | jsact registry and apply | 30972d
+// agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | 09de0e
+// agent: composer-2.5 | 2026-08-01 | actions only when confirmed | 1d4a0d

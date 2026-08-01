@@ -13,6 +13,33 @@
 
 #define GGRAPH() (*mod_scene_runtime_graph())
 
+// agent: composer-2.5 | 2026-08-01 | entity id band helpers | b89ff8
+static NgSpawnCtx g_spawn_ctx = NG_SPAWN_CTX_NONE;
+static uint32_t g_local_id_seq = 1u;
+
+void mod_scene_spawn_set_ctx(NgSpawnCtx ctx) { g_spawn_ctx = ctx; }
+NgSpawnCtx mod_scene_spawn_get_ctx(void) { return g_spawn_ctx; }
+
+bool mod_scene_graph_id_is_sim(uint32_t id) {
+  return id >= NG_ENTITY_ID_SIM_BASE && id < NG_ENTITY_ID_LOCAL_BASE;
+}
+
+bool mod_scene_graph_id_is_local(uint32_t id) { return (id & NG_ENTITY_ID_LOCAL_BASE) != 0u; }
+
+uint32_t mod_scene_graph_pack_sim_id(uint32_t tick, uint32_t peer, uint8_t seq) {
+  /* SIM_BASE | tick[15:0]<<12 | peer[7:0]<<4 | seq[3:0] — 16 spawns/peer/tick. */
+  return NG_ENTITY_ID_SIM_BASE | ((tick & 0xffffu) << 12) | ((peer & 0xffu) << 4) |
+         (uint32_t)(seq & 0x0fu);
+}
+
+uint32_t mod_scene_graph_alloc_local_id(void) {
+  uint32_t n = g_local_id_seq++;
+  if (n == 0u) {
+    n = g_local_id_seq++;
+  }
+  return NG_ENTITY_ID_LOCAL_BASE | (n & 0x7fffffffu);
+}
+
 static int mod_scene_graph_alive_count(void) {
   int n = 0;
   for (int i = 0; i < GGRAPH().inst_count; i++) {
@@ -49,6 +76,7 @@ void mod_scene_graph_reset(void) {
   ModSceneGraphCtx *g = mod_scene_runtime_graph();
   memset(g, 0, sizeof(*g));
   g->next_local_id = 1u;
+  /* Local band seq is process-wide; leave g_local_id_seq so ids stay unique across reloads. */
 }
 
 bool mod_scene_graph_describe(const char *kind, const char *name, NgSyncMode sync,
@@ -1167,3 +1195,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
 // agent: composer-2.5 | 2026-08-01 | peer ack baseline structs | 0d01e8
 // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 6af17e
+// agent: composer-2.5 | 2026-08-01 | entity id band helpers | b89ff8

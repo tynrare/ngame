@@ -269,6 +269,9 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
         buttons |= NG_INPUT_W;
       } else if (*p == 'S' || *p == 's') {
         buttons |= NG_INPUT_S;
+      } else if (*p == 'F' || *p == 'f') {
+        // agent: composer-2.5 | 2026-08-01 | wire_input KEY_F bit | 28e90f
+        buttons |= NG_INPUT_F;
       }
       while (*p && *p != ' ' && *p != '\t') {
         p++;
@@ -589,3 +592,4 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-07-31 | lockstep hash shows confirmed | 4d4950
 // agent: composer-2.5 | 2026-07-31 | lockstep hash stats agent | fc7b6a
 // agent: composer-2.5 | 2026-08-01 | lockstep hash predict field | a8ca41
+// agent: composer-2.5 | 2026-08-01 | wire_input KEY_F bit | 28e90f
