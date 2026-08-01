@@ -11,7 +11,10 @@ struct NgActionResult;
 #define NG_PROTO_MAGIC   0x4E474D45u /* NGME */
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | c1fcfa
 // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | c2b274
-#define NG_PROTO_VERSION 9
+// agent: composer-2.5 | 2026-08-01 | session playout proto v10 | 4ca19d
+// agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
+// agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
+#define NG_PROTO_VERSION 13
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -45,12 +48,22 @@ struct NgActionResult;
 #ifndef NG_LOCK_PEER_MAX
 #define NG_LOCK_PEER_MAX 8
 #endif
+// agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
+#define NG_LOCK_ACTION_FLOATS 8
+
+typedef struct NgLockAction {
+  uint8_t present; /* 0/1 */
+  uint16_t id;     /* FNV-1a name hash */
+  uint8_t argc;
+  float argv[NG_LOCK_ACTION_FLOATS];
+} NgLockAction;
 
 typedef struct NgLockInputPkt {
   uint8_t peer_id;
   uint32_t base_tick;
   uint8_t count;
   uint8_t bits[NG_LOCK_INPUT_MAX];
+  NgLockAction actions[NG_LOCK_INPUT_MAX];
 } NgLockInputPkt;
 
 typedef struct NgLockAckPkt {
@@ -100,6 +113,8 @@ typedef struct NgLockConfirmPkt {
   uint8_t peer_ids[NG_LOCK_PEER_MAX];
   uint8_t bits[NG_LOCK_PEER_MAX];
   uint8_t miss_mask; /* bit i set => bits[i] was zero-filled */
+  // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
+  NgLockAction actions[NG_LOCK_PEER_MAX];
 } NgLockConfirmPkt;
 
 typedef enum NgPeerRole {
@@ -189,3 +204,7 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
 // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | c2b274
 // agent: composer-2.5 | 2026-07-31 | phys pkt expect hash | 2fd4e1
 // agent: composer-2.5 | 2026-07-31 | drop mode b comment proto | 9e123b
+// agent: composer-2.5 | 2026-08-01 | session playout proto v10 | 4ca19d
+// agent: composer-2.5 | 2026-08-01 | proto version 11 | 2dbf01
+// agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
+// agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6

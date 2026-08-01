@@ -212,22 +212,29 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
 
   // agent: composer-2.5 | 2026-07-29 | lockstep agent hash cmd | a8a2fc
   // agent: composer-2.5 | 2026-07-31 | lockstep hash shows confirmed | 4d4950
+  // agent: composer-2.5 | 2026-07-31 | lockstep hash stats agent | fc7b6a
+  // agent: composer-2.5 | 2026-08-01 | lockstep hash predict field | a8ca41
   if (strcmp(cmdline, "lockstep_hash") == 0) {
     // agent: composer-2.5 | 2026-07-30 | lockstep gate diag | e4c1f4
-    char out[320];
+    char out[416];
     mod_scene_runtime_use_server();
     const uint32_t hash = mod_scene_physics_checksum();
     const uint32_t tick = mod_lockstep_sim_tick();
+    const uint32_t conf = mod_lockstep_confirmed_tick();
     const uint32_t last_t = mod_lockstep_last_hash_tick();
     const uint32_t last_h = mod_lockstep_last_hash();
     uint32_t send = 0, peer = 0;
     int peers = 0, started = 0;
+    uint32_t playout = 0, buf = 0, zf = 0, resim = 0;
+    const uint32_t predict = (tick > conf) ? (tick - conf) : 0u;
     mod_lockstep_debug(&send, &peers, &started, &peer);
+    mod_lockstep_stats(&playout, &buf, &zf, &resim);
     snprintf(out, sizeof(out),
              "{\"ok\":true,\"text\":\"lockstep active=%d tick=%u confirmed=%u hash=0x%08x last_tick=%u "
-             "last_hash=0x%08x send=%u peers=%d started=%d peer=%u\"}",
-             mod_lockstep_active() ? 1 : 0, tick, mod_lockstep_confirmed_tick(), hash, last_t, last_h,
-             send, peers, started, peer);
+             "last_hash=0x%08x send=%u peers=%d started=%d peer=%u playout=%u predict=%u buf=%u zf=%u "
+             "resim=%u\"}",
+             mod_lockstep_active() ? 1 : 0, tick, conf, hash, last_t, last_h, send, peers, started,
+             peer, playout, predict, buf, zf, resim);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }
@@ -580,3 +587,5 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-07-29 | lockstep agent hash cmd | a8a2fc
 // agent: composer-2.5 | 2026-07-30 | lockstep gate diag | e4c1f4
 // agent: composer-2.5 | 2026-07-31 | lockstep hash shows confirmed | 4d4950
+// agent: composer-2.5 | 2026-07-31 | lockstep hash stats agent | fc7b6a
+// agent: composer-2.5 | 2026-08-01 | lockstep hash predict field | a8ca41

@@ -27,3 +27,7 @@ Scene.prototype.dispose = function () {
 
 // agent: composer-2.5 | 2026-07-28 | owner sync test fixture | f0e1d2
 // agent: composer-2.5 | 2026-07-29 | owner spawn transform opts | 3c46d4
+
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | 7fd981
+global.module(Scene);
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | 7fd981

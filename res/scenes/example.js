@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-28 | example scene using helpers | e1x2a3
+// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 0b8d0c
 function Scene() {}
 
 Scene.prototype.init = function () {
@@ -22,7 +23,7 @@ Scene.prototype.start = function (session) {
 };
 
 Scene.prototype.step = function (dt) {
-  if (global.get_input(KEY_A)) {
+  if (global.get_any_input(KEY_A)) {
     var ry = global.get_rotation_y(this.cube);
     global.set_rotation_y(this.cube, ry - dt);
   }
@@ -41,3 +42,9 @@ Scene.prototype.dispose = function () {
 
 // agent: composer-2.5 | 2026-07-28 | example scene using helpers | e1x2a3
 // agent: composer-2.5 | 2026-07-29 | example spawn transform opts | 0d63bf
+
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | d0182e
+global.module(Scene);
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | d0182e
+// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 0b8d0c
+// agent: composer-2.5 | 2026-08-01 | cube example any input again | 95e2fa

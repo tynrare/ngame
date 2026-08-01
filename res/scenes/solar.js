@@ -1,3 +1,4 @@
+// agent: composer-2.5 | 2026-08-01 | solar scene hybrid sim | f482ab
 // agent: composer-2.5 | 2026-07-30 | solar n-body lockstep scene | 2e5f34
 // agent: composer-2.5 | 2026-07-30 | solar spheres sync fix | fe8964
 // agent: composer-2.5 | 2026-07-30 | solar fixed camera | a37b4e
@@ -106,7 +107,7 @@ Scene.prototype.init = function () {
 
   // agent: composer-2.5 | 2026-07-30 | solar fixed camera | a37b4e
   global.describe("scene", "view", {
-    sim: "lockstep",
+    sim: "hybrid",
     gravity: { x: 0, y: 0, z: 0 },
     bg: { r: 4, g: 6, b: 16 },
     camera: {
@@ -338,3 +339,8 @@ Scene.prototype.dispose = function () {
 // agent: composer-2.5 | 2026-07-30 | solar spheres sync fix | fe8964
 // agent: composer-2.5 | 2026-07-30 | solar fixed camera | a37b4e
 // agent: cursor-grok-4.5 | 2026-07-31 | solar join uses syncing only | 889c3d
+// agent: composer-2.5 | 2026-08-01 | solar scene hybrid sim | f482ab
+
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | c8af46
+global.module(Scene);
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | c8af46

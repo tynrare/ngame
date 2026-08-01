@@ -1,7 +1,15 @@
-// agent: composer-2.5 | 2026-07-29 | server-only boot routes to sphere | a3c7e4
-function Scene() {}
+// agent: composer-2.5 | 2026-08-01 | boot registers scene modules | f6ec11
+global.register("sphere", "scenes/sphere.js");
+global.register("cube", "scenes/cube.js");
+global.register("physics", "scenes/physics.js");
+global.register("lockstep", "scenes/lockstep.js");
+global.register("solar", "scenes/solar.js");
+global.register("stacking", "scenes/stacking.js");
+global.register("example", "scenes/example.js");
 
-Scene.prototype.init = function () {
+function Boot() {}
+
+Boot.prototype.init = function () {
   global.describe("scene", "view", {
     bg: { r: 8, g: 12, b: 20 },
     camera: {
@@ -13,16 +21,17 @@ Scene.prototype.init = function () {
   });
 };
 
-Scene.prototype.start = function (session) {
+Boot.prototype.start = function (session) {
   if (global.is_server()) {
     global.change_scene("sphere");
   }
 };
 
-Scene.prototype.step = function (dt) {};
+Boot.prototype.step = function (dt) {};
 
-Scene.prototype.stop = function () {};
+Boot.prototype.stop = function () {};
 
-Scene.prototype.dispose = function () {};
+Boot.prototype.dispose = function () {};
 
-// agent: composer-2.5 | 2026-07-29 | server-only boot routes to sphere | a3c7e4
+global.module(Boot);
+// agent: composer-2.5 | 2026-08-01 | boot registers scene modules | f6ec11

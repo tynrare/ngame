@@ -1,10 +1,5 @@
-// agent: composer-2.5 | 2026-08-01 | physics scene hybrid sim | 27b7d9
-// agent: composer-2.5 | 2026-07-29 | physics lockstep scene js | c3e03d
-// agent: composer-2.5 | 2026-07-30 | lockstep physics sync note | e2ce57
-// agent: composer-2.5 | 2026-07-30 | physics sim flag note only | d4ecc2
-// agent: composer-2.5 | 2026-07-30 | physics js wasd impulse demo | 9e37b8
-// agent: composer-2.5 | 2026-07-30 | wasd torque rotate cube | 40bf8c
-// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | c19ffd
+// agent: composer-2.5 | 2026-08-01 | pure lockstep demo scene | 7055f5
+// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | fcadf5
 function Box() {}
 Box.prototype.init = function () {};
 Box.prototype.start = function () {};
@@ -79,10 +74,10 @@ Scene.prototype.init = function () {
   global.describe("body", "ground_body", { type: "static", shape: "ground_shape" });
 
   // sim: physics-only (bodies). Bodiless entities still use entity.sync (cube-compatible).
-  // Under hybrid, body entity sync is ignored; transforms for bodies are not streamed.
+  // Under pure lockstep, body entity sync is ignored; transforms for bodies are not streamed.
   // Every peer runs Box3D; one world per process (no dual server/view sim).
   global.describe("scene", "view", {
-    sim: "hybrid",
+    sim: "lockstep",
     bg: { r: 24, g: 28, b: 36 },
     camera: {
       mode: "fixed",
@@ -93,7 +88,7 @@ Scene.prototype.init = function () {
   });
 
   // agent: composer-2.5 | 2026-07-30 | physics sim flag note only | d4ecc2
-  // sync on bodies unused under sim:hybrid; kept for sim:server compatibility.
+  // sync on bodies unused under sim:lockstep (classic wait-for-all); kept for sim:server compatibility.
   global.describe("entity", "box_e", {
     model: "box_mo",
     body: "box_body",
@@ -150,11 +145,10 @@ Scene.prototype.dispose = function () {
   global.dispose("mesh", "box_m");
   global.dispose("mesh", "ground_m");
 };
-// agent: composer-2.5 | 2026-07-30 | physics js wasd impulse demo | 9e37b8
-// agent: composer-2.5 | 2026-07-30 | wasd torque rotate cube | 40bf8c
-// agent: composer-2.5 | 2026-08-01 | physics scene hybrid sim | 27b7d9
 
-// agent: composer-2.5 | 2026-08-01 | export scene via global.module | a98e93
+// agent: composer-2.5 | 2026-08-01 | pure lockstep demo scene | 7055f5
+
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | 010a4a
 global.module(Scene);
-// agent: composer-2.5 | 2026-08-01 | export scene via global.module | a98e93
-// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | c19ffd
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | 010a4a
+// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | fcadf5

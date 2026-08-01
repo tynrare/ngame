@@ -3,6 +3,9 @@
 # agent: composer-2.5 | 2026-07-25 | single server validate | 51bd3a
 # agent: composer-2.5 | 2026-07-31 | validate phys save smoke | e1a45a
 # agent: composer-2.5 | 2026-07-31 | validate lockstep loss soak | 8d3df1
+# agent: composer-2.5 | 2026-07-31 | validate soak delay env | 5461f1
+# agent: composer-2.5 | 2026-08-01 | validate poor peer soak | f7dfa0
+# agent: composer-2.5 | 2026-08-01 | validate pure lockstep stall | f069f1
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
@@ -106,9 +109,24 @@ echo "$EMBED_OUT" | grep -q 'EMBED_SNAPSHOT scene=cube'
 stop_server
 
 # agent: composer-2.5 | 2026-07-31 | validate lockstep loss soak | 8d3df1
-echo "== lockstep loss soak (2 remotes, sim drop) =="
-NG_LOCK_SIM_DROP=15 NG_LOCK_SOAK_SEC=10 NG_LOCK_SOAK_MIN_CONFIRMED=30 \
+# agent: composer-2.5 | 2026-07-31 | validate soak delay env | 5461f1
+# agent: composer-2.5 | 2026-08-01 | validate poor peer soak | f7dfa0
+# agent: composer-2.5 | 2026-08-01 | validate server state soak | 8419a0
+echo "== server state soak (cube, 2 remotes) =="
+NG_STATE_SOAK_SEC=6 \
+  "$ROOT/scripts/server_state_soak.sh"
+
+echo "== lockstep pure stall (sim:lockstep, no ZF) =="
+NG_LOCK_SIM_DROP=25 NG_LOCK_SIM_DELAY_MS=50 NG_LOCK_SOAK_SEC=8 NG_LOCK_SOAK_MIN_CONFIRMED=15 \
+  "$ROOT/scripts/lockstep_pure_stall.sh"
+
+echo "== lockstep loss soak (2 remotes, sim drop+delay) =="
+NG_LOCK_SIM_DROP=15 NG_LOCK_SIM_DELAY_MS=50 NG_LOCK_SOAK_SEC=10 NG_LOCK_SOAK_MIN_CONFIRMED=30 \
   "$ROOT/scripts/lockstep_loss_soak.sh"
+
+echo "== lockstep poor-peer soak (ghost rebind) =="
+NG_LOCK_SIM_DROP=15 NG_LOCK_SIM_DELAY_MS=50 NG_LOCK_SOAK_SEC=6 NG_LOCK_SOAK_MIN_CONFIRMED=20 \
+  "$ROOT/scripts/lockstep_poor_peer_soak.sh"
 
 echo "== gateway solo smoke =="
 ./ngame --solo > /tmp/ngame_solo.log 2>&1 &
@@ -200,3 +218,7 @@ echo "ALL OK"
 # agent: composer-2.5 | 2026-07-29 | boot snap expects sphere route | 1ac81b
 # agent: composer-2.5 | 2026-07-31 | validate phys save smoke | e1a45a
 # agent: composer-2.5 | 2026-07-31 | validate lockstep loss soak | 8d3df1
+# agent: composer-2.5 | 2026-07-31 | validate soak delay env | 5461f1
+# agent: composer-2.5 | 2026-08-01 | validate poor peer soak | f7dfa0
+# agent: composer-2.5 | 2026-08-01 | validate pure lockstep stall | f069f1
+# agent: composer-2.5 | 2026-08-01 | validate server state soak | 8419a0

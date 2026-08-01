@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-28 | cube explicit describes restored | r1c2u3
 // agent: composer-2.5 | 2026-07-29 | cube multi spawn opts | e3adac
+// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | ae9325
 function Cube() {}
 
 Cube.prototype.init = function () {};
@@ -75,19 +76,19 @@ Scene.prototype.step = function (dt) {
   }
 
   // agent: codex-5.3 | 2026-07-29 | add second axis on W S | f5e8c2
-  if (global.get_input(KEY_A)) {
+  if (global.get_any_input(KEY_A)) {
     var ry = global.get_rotation_y(this.test_cube);
     global.set_rotation_y(this.test_cube, ry - dt * 1.5);
   }
-  if (global.get_input(KEY_D)) {
+  if (global.get_any_input(KEY_D)) {
     var ry2 = global.get_rotation_y(this.test_cube);
     global.set_rotation_y(this.test_cube, ry2 + dt * 1.5);
   }
-  if (global.get_input(KEY_W)) {
+  if (global.get_any_input(KEY_W)) {
     var rx = global.get_rotation_x(this.test_cube);
     global.set_rotation_x(this.test_cube, rx - dt * 1.5);
   }
-  if (global.get_input(KEY_S)) {
+  if (global.get_any_input(KEY_S)) {
     var rx2 = global.get_rotation_x(this.test_cube);
     global.set_rotation_x(this.test_cube, rx2 + dt * 1.5);
   }
@@ -117,3 +118,9 @@ Scene.prototype.dispose = function () {
 // agent: codex-5.3 | 2026-07-29 | add second axis on W S | f5e8c2
 // agent: codex-5.3 | 2026-07-29 | set transform bandwidth mode | c6f310
 // agent: composer-2.5 | 2026-07-28 | cube explicit describes restored | r1c2u3
+
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | b49b91
+global.module(Scene);
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | b49b91
+// agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | ae9325
+// agent: composer-2.5 | 2026-08-01 | cube example any input again | 95e2fa

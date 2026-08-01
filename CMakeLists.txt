@@ -12,6 +12,7 @@ if(NOT DEFINED PLATFORM)
 endif()
 
 # agent: composer-2.5 | 2026-07-25 | web WebGL2 shader defines | 3adba7
+# agent: composer-2.5 | 2026-08-01 | add jsact to cmake | f0e545
 if(EMSCRIPTEN)
   set(GRAPHICS GRAPHICS_API_OPENGL_ES3 CACHE STRING "raylib graphics API" FORCE)
 endif()
@@ -32,6 +33,8 @@ set(NG_CORE_SOURCES
 set(NG_SCENE_SOURCES
   src/scene/runtime.c
   src/scene/host.c
+  src/scene/jsmod.c
+  src/scene/jsact.c
   src/scene/graph.c
   src/scene/assets.c
   src/scene/native.c
@@ -214,3 +217,5 @@ endif()
 # agent: composer-2.5 | 2026-07-30 | default build ngame only | 061ecb
 # agent: composer-2.5 | 2026-07-30 | link agent stubs on web | 1fca96
 # agent: composer-2.5 | 2026-07-31 | phys save smoke cmake | 33f75f
+# agent: composer-2.5 | 2026-08-01 | cmake add jsmod source | b1ae4c
+# agent: composer-2.5 | 2026-08-01 | add jsact to cmake | f0e545

@@ -67,6 +67,10 @@ static int mod_input_sample_buttons(void) {
   if (IsKeyDown(KEY_S)) {
     buttons |= NG_INPUT_S;
   }
+  // agent: composer-2.5 | 2026-08-01 | map KEY_F live input | ec1f2a
+  if (IsKeyDown(KEY_F)) {
+    buttons |= NG_INPUT_F;
+  }
   /* Wire must apply even if begin_frame has not run yet this frame. */
   if (g_input.wired_buttons_until > 0.0 && GetTime() < g_input.wired_buttons_until) {
     buttons |= g_input.wired_buttons;
@@ -152,3 +156,4 @@ bool mod_input_mouse_pos(float *out_x, float *out_y) {
 // agent: composer-2.5 | 2026-07-29 | time-based mcp wire holds | 3e9b5c
 // agent: composer-2.5 | 2026-07-29 | sticky mouse after wire | 28dc7b
 // agent: composer-2.5 | 2026-07-30 | input buttons include live wire | 2a23b1
+// agent: composer-2.5 | 2026-08-01 | map KEY_F live input | ec1f2a

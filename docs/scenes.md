@@ -1,8 +1,11 @@
 # Scenes
 
-Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, or **`example`** (helpers demo).
+<!-- agent: composer-2.5 | 2026-08-01 | list stacking in scenes docs | fcd0a4 -->
+Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, or **`example`** (helpers demo).
 
-Server **startup** runs `res/boot.js` automatically (not under `scenes/`).
+Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
+
+<!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
 
 ## Full describes (cube, sphere, boot)
 
@@ -33,47 +36,68 @@ Units match box3d HelloWorld: gravity `(0,-10,0)`, ground half-extents `(50,10,5
 
 | Layer | Scope | Flag | Wire |
 |-------|--------|------|------|
-| **Physics (`sim`)** | Entities **with** a `body` | Scene `sim: "lockstep"` or default `server` | Lockstep: inputs/acks/hash (+ late-join phys). Server: host Box3D + quantized pose/vel `STATE_UPDATE` |
-| **Entity (`sync`)** | Entities **without** a `body` (and non-lockstep bodies) | Entity `sync: shared\|owner\|server\|local` | Cube-compatible `STATE_UPDATE` (POS/ROT/SCALE) |
+| **Physics (`sim`)** | Entities **with** a `body` | Scene `sim: "lockstep"` / `"hybrid"` or default `server` | Input-sim: inputs/acks/hash (+ late-join phys). Server: host Box3D + quantized pose/vel `STATE_UPDATE` |
+| **Entity (`sync`)** | Entities **without** a `body` (and non-input-sim bodies) | Entity `sync: shared\|owner\|server\|local` | Cube-compatible `STATE_UPDATE` (POS/ROT/SCALE) |
 
 ```text
 entity.has_body  →  follow scene.sim
 entity.no_body   →  follow entity.sync   // same rules as cube.js
 ```
 
-A lockstep physics scene may also host bodiless `shared` / `owner` props; those still author and apply transforms independently of the lockstep channel.
+A lockstep/hybrid physics scene may also host bodiless `shared` / `owner` props; those still author and apply transforms independently of the lockstep channel.
 
-### Lockstep sim (`sim: "lockstep"`)
+<!-- agent: composer-2.5 | 2026-08-01 | lockstep hybrid sim docs | bd5f9a -->
+### Pure lockstep (`sim: "lockstep"`)
 
-<!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
-<!-- agent: composer-2.5 | 2026-07-31 | phase1 lockstep scenes note | 11c570 -->
-Phase 1: small-peer host-confirmed lockstep (`NG_LOCK_PEER_MAX` 8). Goals, knobs, recovery ladder, further steps: [`docs/article_gaffer_networking.md`](article_gaffer_networking.md).
+Classic Gaffer wait-for-all. Demo: `res/scenes/lockstep.js`. Host confirms only when every peer has the next tick (no deadline zero-fill). Mirrors do not predict. No adaptive/per-peer playout, ghost seats, or soft hash PHYS.
 
 ```javascript
 global.describe("scene", "view", { sim: "lockstep", bg: {...}, camera: {...} });
 ```
 
-Every peer process runs the **same** body path: capture/share tick inputs → `fixed_step` (`get_input` → forces/torque) → `b3World_Step` → local poses for draw. Lockstep ≠ `sim: "server"` pose authority; do not stream forces.
+Every peer process runs the **same** body path: capture/share tick inputs → `fixed_step` (`get_any_input` → forces/torque) → `b3World_Step` → local poses for draw. Missing inputs hitch everyone (gate STALL) until `all_have`. Late join still uses PAUSE → PHYS → RESUME.
+
+### Hybrid sim (`sim: "hybrid"`)
+
+<!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
+<!-- agent: composer-2.5 | 2026-07-31 | phase1 lockstep scenes note | 11c570 -->
+Phase 1 feel path (`physics.js`, `solar.js`). Goals, knobs, recovery ladder: [`docs/article_gaffer_networking.md`](article_gaffer_networking.md).
+
+```javascript
+global.describe("scene", "view", { sim: "hybrid", bg: {...}, camera: {...} });
+```
+
+Every peer process runs the **same** body path: capture/share tick inputs → `fixed_step` (`get_any_input` → forces/torque) → `b3World_Step` → local poses for draw. Hybrid ≠ `sim: "server"` pose authority; do not stream forces.
 
 **One Box3D world per process:** if both server and view scene slots are loaded (embedded), the **server slot is the phys owner** (attach + body `fixed_step` + step once); the view mirrors poses for draw only (no second world / no double step). A pure client with only the view slot owns physics there — that peer still runs the full input→force→step code.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep input consumers | 0ecb5e -->
-**Inputs:** each gate samples buttons into the slot for `sim_tick+1` (the tick about to step). Peers exchange `LOCK_INPUT` / `LOCK_ACK` / `LOCK_HASH`. Under lockstep, `get_input` reads those slots (solo/`peer_count<=1` may use live keys). Body scripts on the phys owner apply torque/force from that. Conflicting bits for the same peer/tick stall the gate.
+**Inputs:** each gate samples buttons into the slot for `sim_tick+1` (the tick about to step). Peers exchange `LOCK_INPUT` / `LOCK_ACK` / `LOCK_HASH`. Under input-sim:
+- `get_any_input(key)` — OR of all peers’ committed bits for this step (shared controls; formerly `get_input`)
+- `get_local_input(key)` — live view keyboard (propose / local UI)
+- `get_peer_input(key, peer_id)` — one peer’s committed bits (`peer_id` 0 → local peer)
+
+Body scripts on the phys owner apply torque/force from that. Conflicting bits for the same peer/tick stall the gate.
+
+<!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | e26fd2 -->
+<!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 524507 -->
+**Actions (POD):** `global.action_register(this, "action_fire")` then `global.action("action_fire", origin, dir, speed)`. Propose from view `step` with `get_local_input` + camera; args pack as floats (vec3 → 3). Max one action per peer per tick on the wire (`LOCK_INPUT` / `LOCK_CONFIRM`, proto ≥13). Engine dispatches `action_fire(...)` on each heap before `fixed_step` for that tick. Zero-fill / remote predict never hold-fire. See `res/modules/sample_shooting.js`.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs bandwidth lockstep playout | 563455 -->
 **Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`.
 
 <!-- agent: composer-2.5 | 2026-07-31 | drop mode b scenes note | 885a6c -->
 <!-- agent: composer-2.5 | 2026-07-31 | phase1 lockstep scenes note | 11c570 -->
-**Lockstep (multi-peer, Phase 1):** host broadcasts reliable `LOCK_CONFIRM` (+ hist) for each tick (real inputs or zeros after `NG_LOCK_CONFIRM_SEC`). Peers step on confirmed ticks; mirrors may predict ≤ `NG_LOCK_PREDICT_MAX` with last-input hold and local Save-ring rollback. Late inputs after confirm are dropped (heartbeat kept). Lag ≥ `NG_LOCK_CATCHUP_TICKS` or repeated `LOCK_HASH` mismatch → soft `LOCK_PHYS` to **that peer only** (hash-verified). Gate STALL remains for join/`await_phys`/empty roster — not permanent hash freeze. Small-peer bar for now; see article Phase 1 / further steps.
+<!-- agent: composer-2.5 | 2026-08-01 | predict max scenes note | b33b75 -->
+**Hybrid (multi-peer):** host broadcasts reliable `LOCK_CONFIRM` (+ hist) for each tick (real inputs or zeros after `NG_LOCK_CONFIRM_SEC`). Peers step on confirmed ticks; mirrors may predict ≤ `NG_LOCK_PREDICT_MAX` (9; effective depth shrinks when playout is high) with last-input hold and local Save-ring rollback. Late inputs after confirm are dropped (heartbeat kept). Lag ≥ `NG_LOCK_CATCHUP_TICKS` or repeated `LOCK_HASH` mismatch → soft `LOCK_PHYS` to **that peer only** (hash-verified). Gate STALL remains for join/`await_phys`/empty roster — not permanent hash freeze. Small-peer bar for now; see article Phase 1 / further steps.
 
 **Playout note:** Missing peer input before confirm still waits up to the confirm deadline (short hitch), then zero-fills.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep late join | fd2d78 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs lockstep one world inputs | b7a451 -->
-Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Join hash mismatch **aborts** the join (no RESUME). Periodic `LOCK_HASH` mismatch triggers host soft PHYS to the disagreeing peer (not a permanent STALL). Disconnect removes the peer from the lockstep set.
+Mid-sim join pauses all peers (`LOCK_PAUSE`), sends a Box3D world save (`LOCK_PHYS` chunks) to the joiner, verifies checksum (`LOCK_READY`), then resumes (`LOCK_RESUME`) from the shared `sim_tick`. Join hash mismatch **aborts** the join (no RESUME). Periodic `LOCK_HASH` mismatch triggers host soft PHYS to the disagreeing peer (not a permanent STALL). Disconnect may ghost-seat (`NG_LOCK_PRUNE_SEC`) for name rebind under hybrid.
 
-Entity `sync` on bodies is **ignored** under lockstep (spawn/step/author). Net flush still sends `STATE_UPDATE` for bodiless entities.
+Entity `sync` on bodies is **ignored** under lockstep/hybrid (spawn/step/author). Net flush still sends `STATE_UPDATE` for bodiless entities.
 
 Agent: `lockstep_hash` returns the current physics transform checksum and tick.
 
@@ -81,13 +105,15 @@ Agent: `lockstep_hash` returns the current physics transform checksum and tick.
 
 <!-- agent: composer-2.5 | 2026-07-30 | docs server pose vel stream | 0ab3f0 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs interp kinematic proxies | 610025 -->
-Omit `sim`, or use non-`lockstep` (implicit `server`): host runs Box3D for bodies according to entity sync (`server` on host, `shared`/`local` on views, `owner` on controller).
+<!-- agent: composer-2.5 | 2026-08-01 | scenes server gaffer notes | ad0e58 -->
+Omit `sim`, or use non-input-sim (implicit `server`): host runs Box3D for bodies according to entity sync (`server` on host, `shared`/`local` on views, `owner` on controller).
 
-Live replication uses `STATE_UPDATE` with quantized **pose + linear/angular velocity** (cm/s and mrad/s). At-rest bodies stop streaming. After a peer `STATE_ACK`, further updates for that entity are **delta-encoded** (`NG_COMP_FLAGS`) vs the acked baseline. Flush **prioritizes** high |velocity| entities (up to 16 per pass).
+Live replication uses unreliable `STATE_UPDATE` with quantized **pose + lin/ang vel** (cm / mrad) and **smallest-three** orientation (proto v12). At-rest omits vel. For `sync: "server"` only: per-peer ACK **delta** (`NG_COMP_FLAGS`) with absolute keyframes ~every 30 sends; **shared / multi-author stay absolute**. Flush prioritizes |velocity| × interest (R≈40, skip beyond 2R; up to 24 per pass).
 
-Views keep a short sample ring and **Hermite-interpolate** draw pose ~100 ms behind wall clock (extrapolate past the newest sample). For `sync: "server"` bodies, the view also attaches a **kinematic Box3D proxy** driven by the stream (for queries/contacts) — it does not run dynamic simulation.
+Views keep a sample ring and **Hermite**-interpolate with adaptive delay (~3× arrival EMA, clamp 50–350 ms; `NG_STATE_INTERP_MS` override). Past the newest sample, **hold** (no naive extrapolate). For `sync: "server"` bodies, the view attaches a **kinematic Box3D proxy** driven by pose+vel. Controller `owner` bodies: local sim; skip applying absolute host updates when error is below ~5 cm / ~5°.
 
-Do not mix local debris with networked bodies in one contact island.
+Do not mix local debris with networked bodies in one contact island. Literature map: [`docs/article_gaffer_networking.md`](article_gaffer_networking.md).
+
 
 ## Spawn (multi-instance)
 
@@ -118,7 +144,7 @@ Applies to **bodiless** entities always, and to bodies when `sim` is not lockste
 | `server` | server | views from session | server |
 | `local` | each peer | not in session | local only |
 
-Under `sim: "lockstep"`, bodies ignore this table (all peers create/step locally).
+Under `sim: "lockstep"` or `sim: "hybrid"`, bodies ignore this table (all peers create/step locally).
 
 ## Helpers (optional)
 
@@ -155,4 +181,9 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-07-31 | link Gaffer networking article notes | 357765 -->
 <!-- agent: composer-2.5 | 2026-07-31 | drop mode b scenes note | 885a6c -->
 <!-- agent: composer-2.5 | 2026-07-31 | phase1 lockstep scenes note | 11c570 -->
-
+<!-- agent: composer-2.5 | 2026-08-01 | predict max scenes note | b33b75 -->
+<!-- agent: composer-2.5 | 2026-08-01 | lockstep hybrid sim docs | bd5f9a -->
+<!-- agent: composer-2.5 | 2026-08-01 | list stacking in scenes docs | fcd0a4 -->
+<!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
+<!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | e26fd2 -->
+<!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 524507 -->

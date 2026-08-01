@@ -4,24 +4,39 @@
 
 | Path | Role |
 |------|------|
-| `res/boot.js` | **Server startup** — runs automatically (not in `scenes/`) |
+| `res/boot.js` | **Server startup** — registers scenes, `global.module(Boot)` |
 | `res/helpers.js` | **Optional shortcuts** — used by `example` and test fixtures |
-| `res/scenes/*.js` | **Scenes** — load with `scene <id>` |
+| `res/scenes/*.js` | **Scene modules** — `global.module(Ctor)`; load with `scene <id>` |
+| `res/modules/*.js` | **Feature modules** — wired into scenes via `register` + `wire` |
 | `res/shaders/*.fs` | Shader sources for describes |
 
 ```
 res/
-  boot.js           ← server starts here
-  helpers.js        ← sugar for example + tests
+  boot.js              ← server starts here; register("sphere", "scenes/sphere.js")
+  helpers.js
+  modules/
+    sample_shooting.js ← wire from stacking (F to fire)
   scenes/
-    cube.js         ← full mesh/shader/model/entity describes
-    sphere.js
-    physics.js      ← body/shape + box3d fixed-step demo
-    example.js      ← demo using helpers.js
+    stacking.js
+    cube.js
+    …
   shaders/
-tests/scenes/       ← CI fixtures (owner, local)
+tests/scenes/          ← CI fixtures (owner, local)
 ```
 
+### JS modules (`register` / `module` / `wire`)
+
+- `global.module(Ctor)` — file export (constructor). Required once per file.
+- `global.register(id, path)` — C-persistent catalog (survives Duktape heap teardown on scene change).
+  - Res-root: `"scenes/foo.js"` → `res/scenes/foo.js`
+  - Relative: `"./…"` / `"../…"` against the file currently being evaluated
+- `global.wire(id)` — load + `new` + attach; lifecycle after the scene (`init` runs immediately from `wire`).
+- `global.action_register(this, name)` / `global.action(name, …)` — lockstep POD actions (see [scenes.md](scenes.md)); `get_local_input` for propose edges.
+- `get_any_input` / `get_local_input` / `get_peer_input(key, id)` — input sampling (`get_input` remains an alias of `get_any_input`).
+
+<!-- agent: composer-2.5 | 2026-08-01 | docs js module wiring | 708913 -->
+<!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | 7f3a91 -->
+<!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 5df554 -->
 ## Engine
 
 Every `ngame` client runs a **gateway** (local server + thin render view):
@@ -67,3 +82,6 @@ Net flush runs both when lockstep is active: lockstep inputs/acks/hashes, plus `
 <!-- agent: composer-2.5 | 2026-07-29 | document physics body fixed_step | 98abb7 -->
 <!-- agent: composer-2.5 | 2026-07-30 | docs architecture sim sync layers | 65f300 -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gateway sim wall clock note | 64a891 -->
+<!-- agent: composer-2.5 | 2026-08-01 | docs js module wiring | 708913 -->
+<!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | 47c632 -->
+<!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 5df554 -->

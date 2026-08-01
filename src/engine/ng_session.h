@@ -27,9 +27,14 @@ typedef struct NgSessionState {
   uint8_t controller_id;
   uint8_t your_id;
   NgSyncMode scene_sync;
+  /* 0=off, 1=pure lockstep, 2=hybrid (proto v11). Non-zero = input-sim family. */
+  // agent: composer-2.5 | 2026-08-01 | session sim mode comment | 4a9b0e
   uint8_t lockstep;
   uint8_t syncing;
   uint32_t snap_tick;
+  /* Host-assigned local send-ahead (0 = client keeps current / default). */
+  // agent: composer-2.5 | 2026-08-01 | session playout field | 50d23e
+  uint8_t playout;
   int spawn_count;
   NgSessionSpawn spawns[NG_SESSION_SPAWN_MAX];
 } NgSessionState;
@@ -52,3 +57,5 @@ typedef struct NgStateUpdate {
 // agent: composer-2.5 | 2026-07-29 | lockstep session sim flag | 8766dd
 // agent: composer-2.5 | 2026-07-30 | session syncing snap tick | 75da2a
 // agent: composer-2.5 | 2026-07-30 | state update lin ang vel | 16a0ac
+// agent: composer-2.5 | 2026-08-01 | session playout field | 50d23e
+// agent: composer-2.5 | 2026-08-01 | session sim mode comment | 4a9b0e

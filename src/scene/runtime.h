@@ -34,6 +34,9 @@ typedef struct ModSceneCtx {
   bool started;
   bool native;
   int scene_inst_stash;
+  // agent: composer-2.5 | 2026-08-01 | wired module instance slots | 44dab2
+  int wire_count;
+  char wire_ids[8][48];
 } ModSceneCtx;
 
 typedef struct NgSceneRuntime {
@@ -57,3 +60,4 @@ ModScenePhysicsCtx *mod_scene_runtime_physics(void);
 #endif
 // agent: composer-2.5 | 2026-07-29 | deferred js scene route support | 149fdb
 // agent: composer-2.5 | 2026-07-29 | physics runtime ctx | d535f0
+// agent: composer-2.5 | 2026-08-01 | wired module instance slots | 44dab2

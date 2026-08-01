@@ -283,7 +283,9 @@ static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *ins
   }
   float pos[3];
   float rot[3];
-  if (!mod_scene_graph_sample_draw_pose(inst, GetTime(), 0.10f, pos, rot)) {
+  // agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
+  if (!mod_scene_graph_sample_draw_pose(inst, GetTime(), mod_scene_graph_interp_delay_s(), pos,
+                                        rot)) {
     pos[0] = inst->pos[0];
     pos[1] = inst->pos[1];
     pos[2] = inst->pos[2];
@@ -572,3 +574,4 @@ void mod_render_visibility_text(char *out, size_t cap) {
 // agent: composer-2.5 | 2026-07-30 | overlay connecting status | 0d072a
 // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
 // agent: composer-2.5 | 2026-07-30 | render hermite state samples | f452ba
+// agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f

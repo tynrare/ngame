@@ -11,7 +11,8 @@
 struct duk_hthread;
 
 #define NG_SCENE_DESC_MAX 32
-#define NG_SCENE_INST_MAX 64
+// agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 8a078a
+#define NG_SCENE_INST_MAX 512
 
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
 typedef struct NgSceneDesc {
@@ -27,6 +28,21 @@ typedef struct NgSceneDesc {
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
 // agent: composer-2.5 | 2026-07-30 | state sample ring hermite | 0ba8fd
 #define NG_STATE_SAMPLE_MAX 8
+
+// agent: composer-2.5 | 2026-08-01 | peer ack baseline structs | 0d01e8
+#define NG_PEER_STATE_ACK_MAX 32
+typedef struct NgPeerEntityAck {
+  uint32_t entity_id;
+  uint16_t ack_seq;
+  uint16_t sends_since_abs;
+  float pos[3], rot[3], scale;
+  float lin_vel[3], ang_vel[3];
+  bool alive;
+} NgPeerEntityAck;
+
+typedef struct NgPeerStateBaseline {
+  NgPeerEntityAck ents[NG_PEER_STATE_ACK_MAX];
+} NgPeerStateBaseline;
 
 typedef struct NgStateSample {
   double t;
@@ -140,8 +156,15 @@ bool mod_scene_graph_sample_draw_pose(const NgSceneInst *inst, double now, float
                                       float out_pos[3], float out_rot[3]);
 void mod_scene_graph_note_sent(NgSceneInst *inst, const NgStateUpdate *update);
 void mod_scene_graph_note_ack(uint32_t entity_id, uint16_t ack_seq);
-bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout);
+void mod_scene_graph_peer_note_ack(NgPeerStateBaseline *base, uint32_t entity_id, uint16_t ack_seq);
+void mod_scene_graph_peer_note_sent(NgPeerStateBaseline *base, uint32_t entity_id);
+bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout,
+                                         NgPeerStateBaseline *peer_base);
+float mod_scene_graph_flush_priority_at(const NgStateUpdate *u, const float origin[3],
+                                        float interest_r);
 float mod_scene_graph_flush_priority(const NgStateUpdate *u);
+void mod_scene_graph_note_state_arrival(double now);
+float mod_scene_graph_interp_delay_s(void);
 int mod_scene_graph_inst_count(void);
 const NgSceneInst *mod_scene_graph_inst_at(int index);
 
@@ -151,3 +174,7 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-07-30 | inst store lin ang vel | 779394
 // agent: composer-2.5 | 2026-07-30 | state sample ring hermite | 0ba8fd
 // agent: composer-2.5 | 2026-07-30 | state ack baseline delta | 4585d3
+// agent: composer-2.5 | 2026-08-01 | peer ack baseline structs | 0d01e8
+// agent: composer-2.5 | 2026-08-01 | server delta prepare wire | 68a698
+// agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
+// agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 8a078a

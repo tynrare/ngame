@@ -497,11 +497,13 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
   }
   // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
   // agent: composer-2.5 | 2026-07-30 | proto v8 lock phys packets | 259e88
+  // agent: composer-2.5 | 2026-08-01 | session playout encode | 5be998
+  // agent: composer-2.5 | 2026-08-01 | session mode wire byte | de3bcd
   if (!ng_proto_write_u8(b, session->controller_id) || !ng_proto_write_u8(b, session->your_id) ||
       !ng_proto_write_u8(b, (uint8_t)session->scene_sync) ||
-      !ng_proto_write_u8(b, session->lockstep ? 1u : 0u) ||
+      !ng_proto_write_u8(b, session->lockstep) ||
       !ng_proto_write_u8(b, session->syncing ? 1u : 0u) ||
-      !ng_proto_write_u32(b, session->snap_tick) ||
+      !ng_proto_write_u32(b, session->snap_tick) || !ng_proto_write_u8(b, session->playout) ||
       !ng_proto_write_u8(b, (uint8_t)session->spawn_count) ||
       session->spawn_count > NG_SESSION_SPAWN_MAX) {
     return false;
@@ -569,7 +571,9 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
   if (!ng_proto_read_u8(b, &lockstep)) {
     return false;
   }
-  session->lockstep = lockstep ? 1u : 0u;
+  /* 0=off, 1=pure lockstep, 2=hybrid (proto v11). Clamp unknown → off. */
+  // agent: composer-2.5 | 2026-08-01 | session mode wire byte | de3bcd
+  session->lockstep = (lockstep <= 2u) ? lockstep : 0u;
   if (b->pos >= b->len) {
     return true;
   }
@@ -583,6 +587,17 @@ bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session) {
   }
   if (!ng_proto_read_u32(b, &session->snap_tick)) {
     return false;
+  }
+  if (b->pos >= b->len) {
+    return true;
+  }
+  // agent: composer-2.5 | 2026-08-01 | session playout encode | 5be998
+  {
+    uint8_t playout = 0;
+    if (!ng_proto_read_u8(b, &playout)) {
+      return false;
+    }
+    session->playout = playout;
   }
   if (b->pos >= b->len) {
     return true;
@@ -675,6 +690,106 @@ static float ng_proto_dequant_angle(uint16_t v) {
   return (float)v / 65535.0f * 6.28318530718f;
 }
 
+// agent: composer-2.5 | 2026-08-01 | smallest three quat wire | b4fc42
+static void ng_proto_euler_xyz_to_quat(const float euler[3], float q[4]) {
+  const float cx = cosf(euler[0] * 0.5f);
+  const float sx = sinf(euler[0] * 0.5f);
+  const float cy = cosf(euler[1] * 0.5f);
+  const float sy = sinf(euler[1] * 0.5f);
+  const float cz = cosf(euler[2] * 0.5f);
+  const float sz = sinf(euler[2] * 0.5f);
+  q[0] = sx * cy * cz + cx * sy * sz;
+  q[1] = cx * sy * cz - sx * cy * sz;
+  q[2] = cx * cy * sz + sx * sy * cz;
+  q[3] = cx * cy * cz - sx * sy * sz;
+}
+
+static void ng_proto_quat_to_euler_xyz(const float q[4], float euler[3]) {
+  const float sinr_cosp = 2.0f * (q[3] * q[0] + q[1] * q[2]);
+  const float cosr_cosp = 1.0f - 2.0f * (q[0] * q[0] + q[1] * q[1]);
+  euler[0] = atan2f(sinr_cosp, cosr_cosp);
+  const float sinp = 2.0f * (q[3] * q[1] - q[2] * q[0]);
+  if (fabsf(sinp) >= 1.0f) {
+    euler[1] = copysignf(1.57079632679f, sinp);
+  } else {
+    euler[1] = asinf(sinp);
+  }
+  const float siny_cosp = 2.0f * (q[3] * q[2] + q[0] * q[1]);
+  const float cosy_cosp = 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]);
+  euler[2] = atan2f(siny_cosp, cosy_cosp);
+}
+
+static uint32_t ng_proto_pack_quat_smallest_three(const float euler[3]) {
+  float q[4];
+  ng_proto_euler_xyz_to_quat(euler, q);
+  float len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+  if (len2 > 1e-8f) {
+    const float inv = 1.0f / sqrtf(len2);
+    q[0] *= inv;
+    q[1] *= inv;
+    q[2] *= inv;
+    q[3] *= inv;
+  }
+  int largest = 0;
+  float largest_val = fabsf(q[0]);
+  for (int i = 1; i < 4; i++) {
+    const float v = fabsf(q[i]);
+    if (v > largest_val) {
+      largest_val = v;
+      largest = i;
+    }
+  }
+  if (q[largest] < 0.0f) {
+    q[0] = -q[0];
+    q[1] = -q[1];
+    q[2] = -q[2];
+    q[3] = -q[3];
+  }
+  uint32_t pack = (uint32_t)largest;
+  int slot = 0;
+  for (int i = 0; i < 4; i++) {
+    if (i == largest) {
+      continue;
+    }
+    float v = q[i];
+    if (v < -0.707107f) {
+      v = -0.707107f;
+    }
+    if (v > 0.707107f) {
+      v = 0.707107f;
+    }
+    uint32_t enc = (uint32_t)((v + 0.707107f) / 1.414214f * 1023.0f + 0.5f);
+    if (enc > 1023u) {
+      enc = 1023u;
+    }
+    pack |= enc << (2 + slot * 10);
+    slot++;
+  }
+  return pack;
+}
+
+static void ng_proto_unpack_quat_smallest_three(uint32_t pack, float euler[3]) {
+  const int largest = (int)(pack & 3u);
+  float q[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  int slot = 0;
+  for (int i = 0; i < 4; i++) {
+    if (i == largest) {
+      continue;
+    }
+    const uint32_t enc = (pack >> (2 + slot * 10)) & 1023u;
+    q[i] = (float)enc / 1023.0f * 1.414214f - 0.707107f;
+    slot++;
+  }
+  float sum = 0.0f;
+  for (int i = 0; i < 4; i++) {
+    if (i != largest) {
+      sum += q[i] * q[i];
+    }
+  }
+  q[largest] = sqrtf(sum > 1.0f ? 0.0f : 1.0f - sum);
+  ng_proto_quat_to_euler_xyz(q, euler);
+}
+
 static bool ng_proto_write_i16(NgProtoBuf *b, int16_t v) {
   return ng_proto_write_u16(b, (uint16_t)v);
 }
@@ -697,9 +812,7 @@ static bool ng_proto_write_state_body(NgProtoBuf *b, const NgStateUpdate *update
            ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[1])) &&
            ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[2])))) &&
          (!(update->comp_mask & NG_COMP_ROT) ||
-          (ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[0])) &&
-           ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[1])) &&
-           ng_proto_write_u16(b, ng_proto_quant_angle(update->rot[2])))) &&
+          ng_proto_write_u32(b, ng_proto_pack_quat_smallest_three(update->rot))) &&
          (!(update->comp_mask & NG_COMP_SCALE) ||
           ng_proto_write_i16(b, ng_proto_quant_cm(update->scale))) &&
          (!(update->comp_mask & NG_COMP_LIN_VEL) ||
@@ -730,13 +843,11 @@ static bool ng_proto_read_state_body(NgProtoBuf *b, NgStateUpdate *update) {
     update->pos[2] = ng_proto_dequant_cm(q2);
   }
   if (mask & NG_COMP_ROT) {
-    uint16_t q0 = 0, q1 = 0, q2 = 0;
-    if (!ng_proto_read_u16(b, &q0) || !ng_proto_read_u16(b, &q1) || !ng_proto_read_u16(b, &q2)) {
+    uint32_t packed = 0;
+    if (!ng_proto_read_u32(b, &packed)) {
       return false;
     }
-    update->rot[0] = ng_proto_dequant_angle(q0);
-    update->rot[1] = ng_proto_dequant_angle(q1);
-    update->rot[2] = ng_proto_dequant_angle(q2);
+    ng_proto_unpack_quat_smallest_three(packed, update->rot);
   }
   if (mask & NG_COMP_SCALE) {
     int16_t qs = 0;
@@ -933,6 +1044,56 @@ bool ng_proto_decode_register_ack(NgProtoBuf *b, NgRegisterAck *ack) {
          ng_proto_read_u16(b, &ack->agent_port) && ng_proto_read_u16(b, &ack->root_game_port);
 }
 
+// agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | ded0c5
+static bool ng_proto_write_lock_action(NgProtoBuf *b, const NgLockAction *a) {
+  if (!b || !a) {
+    return false;
+  }
+  if (!ng_proto_write_u8(b, a->present ? 1u : 0u)) {
+    return false;
+  }
+  if (!a->present) {
+    return true;
+  }
+  if (a->argc > NG_LOCK_ACTION_FLOATS) {
+    return false;
+  }
+  if (!ng_proto_write_u16(b, a->id) || !ng_proto_write_u8(b, a->argc)) {
+    return false;
+  }
+  for (uint8_t i = 0; i < a->argc; i++) {
+    if (!ng_proto_write_f32(b, a->argv[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool ng_proto_read_lock_action(NgProtoBuf *b, NgLockAction *a) {
+  if (!b || !a) {
+    return false;
+  }
+  memset(a, 0, sizeof(*a));
+  uint8_t present = 0;
+  if (!ng_proto_read_u8(b, &present)) {
+    return false;
+  }
+  if (!present) {
+    return true;
+  }
+  a->present = 1;
+  if (!ng_proto_read_u16(b, &a->id) || !ng_proto_read_u8(b, &a->argc) ||
+      a->argc > NG_LOCK_ACTION_FLOATS) {
+    return false;
+  }
+  for (uint8_t i = 0; i < a->argc; i++) {
+    if (!ng_proto_read_f32(b, &a->argv[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
 bool ng_proto_encode_lock_input(NgProtoBuf *b, uint16_t seq, const NgLockInputPkt *pkt) {
   if (!b || !pkt || pkt->count > NG_LOCK_INPUT_MAX) {
@@ -952,7 +1113,7 @@ bool ng_proto_encode_lock_input(NgProtoBuf *b, uint16_t seq, const NgLockInputPk
     return false;
   }
   for (uint8_t i = 0; i < pkt->count; i++) {
-    if (!ng_proto_write_u8(b, pkt->bits[i])) {
+    if (!ng_proto_write_u8(b, pkt->bits[i]) || !ng_proto_write_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -969,7 +1130,7 @@ bool ng_proto_decode_lock_input(NgProtoBuf *b, NgLockInputPkt *pkt) {
     return false;
   }
   for (uint8_t i = 0; i < pkt->count; i++) {
-    if (!ng_proto_read_u8(b, &pkt->bits[i])) {
+    if (!ng_proto_read_u8(b, &pkt->bits[i]) || !ng_proto_read_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -1190,7 +1351,8 @@ bool ng_proto_encode_lock_confirm(NgProtoBuf *b, uint16_t seq, const NgLockConfi
     return false;
   }
   for (uint8_t i = 0; i < pkt->peer_count; i++) {
-    if (!ng_proto_write_u8(b, pkt->peer_ids[i]) || !ng_proto_write_u8(b, pkt->bits[i])) {
+    if (!ng_proto_write_u8(b, pkt->peer_ids[i]) || !ng_proto_write_u8(b, pkt->bits[i]) ||
+        !ng_proto_write_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -1207,7 +1369,8 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt) {
     return false;
   }
   for (uint8_t i = 0; i < pkt->peer_count; i++) {
-    if (!ng_proto_read_u8(b, &pkt->peer_ids[i]) || !ng_proto_read_u8(b, &pkt->bits[i])) {
+    if (!ng_proto_read_u8(b, &pkt->peer_ids[i]) || !ng_proto_read_u8(b, &pkt->bits[i]) ||
+        !ng_proto_read_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -1215,3 +1378,8 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt) {
 }
 // agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec
 // agent: composer-2.5 | 2026-07-31 | phys encode expect hash | ba2dd6
+// agent: composer-2.5 | 2026-08-01 | session playout encode | 5be998
+// agent: composer-2.5 | 2026-08-01 | session mode wire byte | de3bcd
+// agent: composer-2.5 | 2026-08-01 | smallest three quat wire | b4fc42
+// agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
+// agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | ded0c5

@@ -22,9 +22,11 @@ typedef enum NgScenePhysBodyType {
   NG_PHYS_BODY_DYNAMIC = 2,
 } NgScenePhysBodyType;
 
+// agent: composer-2.5 | 2026-08-01 | hybrid sim mode enum | 772934
 typedef enum NgPhysSimMode {
   NG_PHYS_SIM_SERVER = 0,
-  NG_PHYS_SIM_LOCKSTEP = 1,
+  NG_PHYS_SIM_LOCKSTEP = 1, /* classic Gaffer wait-for-all */
+  NG_PHYS_SIM_HYBRID = 2,   /* confirm + predict + adapt + ghost */
 } NgPhysSimMode;
 
 typedef struct NgScenePhysShapeDesc {
@@ -65,7 +67,10 @@ typedef struct ModScenePhysicsCtx {
 void mod_scene_physics_reset(void);
 void mod_scene_physics_set_sim_mode(NgPhysSimMode mode);
 NgPhysSimMode mod_scene_physics_sim_mode(void);
-bool mod_scene_physics_is_lockstep(void);
+bool mod_scene_physics_is_lockstep(void); /* pure Gaffer only */
+// agent: composer-2.5 | 2026-08-01 | hybrid sim mode enum | 772934
+bool mod_scene_physics_is_hybrid(void);
+bool mod_scene_physics_is_input_sim(void); /* lockstep or hybrid */
 // agent: composer-2.5 | 2026-07-30 | physics gravity sensor api | 8ec243
 void mod_scene_physics_set_gravity(float gx, float gy, float gz);
 
@@ -116,3 +121,4 @@ bool mod_scene_physics_save_ring_restore(uint32_t tick);
 // agent: composer-2.5 | 2026-07-31 | save ring decls | e478f4
 // agent: composer-2.5 | 2026-07-31 | save ring for rollback | 2fa13d
 // agent: composer-2.5 | 2026-07-31 | drop mode b comment phys | 127036
+// agent: composer-2.5 | 2026-08-01 | hybrid sim mode enum | 772934

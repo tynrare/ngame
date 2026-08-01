@@ -13,6 +13,7 @@
 #include "box3d/id.h"
 #include "box3d/math_functions.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #define GPHYS() (*mod_scene_runtime_physics())
@@ -72,6 +73,15 @@ NgPhysSimMode mod_scene_physics_sim_mode(void) {
 
 bool mod_scene_physics_is_lockstep(void) {
   return GPHYS().sim_mode == NG_PHYS_SIM_LOCKSTEP;
+}
+
+// agent: composer-2.5 | 2026-08-01 | hybrid input sim helpers | 57aea3
+bool mod_scene_physics_is_hybrid(void) {
+  return GPHYS().sim_mode == NG_PHYS_SIM_HYBRID;
+}
+
+bool mod_scene_physics_is_input_sim(void) {
+  return GPHYS().sim_mode == NG_PHYS_SIM_LOCKSTEP || GPHYS().sim_mode == NG_PHYS_SIM_HYBRID;
 }
 
 // agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
@@ -176,7 +186,8 @@ bool mod_scene_physics_dispose(const char *kind, const char *name) {
 }
 
 bool mod_scene_physics_should_simulate(NgSyncMode sync, bool on_server, bool is_controller) {
-  if (mod_scene_physics_is_lockstep()) {
+  // agent: composer-2.5 | 2026-08-01 | input sim physics paths | 99d265
+  if (mod_scene_physics_is_input_sim()) {
     (void)sync;
     (void)on_server;
     (void)is_controller;
@@ -265,14 +276,16 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
   strncpy(inst->body, body_name, sizeof(inst->body) - 1);
   inst->phys_proxy = false;
   /* One Box3D world per process under lockstep: view skips attach when server slot owns sim. */
-  if (mod_scene_physics_is_lockstep() && mod_scene_runtime_active() == &g_scene_view &&
-      g_scene_server.scene.loaded && g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP) {
+  if (mod_scene_physics_is_input_sim() && mod_scene_runtime_active() == &g_scene_view &&
+      g_scene_server.scene.loaded &&
+      (g_scene_server.physics.sim_mode == NG_PHYS_SIM_LOCKSTEP ||
+       g_scene_server.physics.sim_mode == NG_PHYS_SIM_HYBRID)) {
     inst->body_id_bits = 0;
     return true;
   }
   const bool sim = mod_scene_physics_should_simulate(sync, on_server, is_controller);
   /* View-side kinematic proxy for server-auth bodies (sim:server, not lockstep). */
-  const bool want_proxy = !sim && !mod_scene_physics_is_lockstep() && sync == NG_SYNC_SERVER &&
+  const bool want_proxy = !sim && !mod_scene_physics_is_input_sim() && sync == NG_SYNC_SERVER &&
                           !on_server;
   if (!sim && !want_proxy) {
     inst->body_id_bits = 0;
@@ -334,6 +347,11 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
   }
   if (inst->key[0] != '\0') {
     b3Body_SetName(bodyId, inst->key);
+  } else {
+    // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
+    char id_name[32];
+    snprintf(id_name, sizeof(id_name), "e%u", inst->id);
+    b3Body_SetName(bodyId, id_name);
   }
   inst->body_id_bits = b3StoreBodyId(bodyId);
   return true;
@@ -531,7 +549,7 @@ void mod_scene_physics_fixed_step(float fixed_dt, bool on_server, bool is_contro
   }
   b3World_Step(mod_scene_physics_world_id(), fixed_dt, 4);
   // agent: composer-2.5 | 2026-07-30 | physics emit vel sleep | 530cd0
-  const bool lockstep = mod_scene_physics_is_lockstep();
+  const bool lockstep = mod_scene_physics_is_input_sim();
   const float sleep_lin = 0.02f;
   const float sleep_ang = 0.02f;
   for (int i = 0; i < n; i++) {
@@ -655,16 +673,24 @@ bool mod_scene_physics_export(uint8_t **out, int *out_size) {
     NG_LOG_ERROR("lockstep: export failed — no world");
     return false;
   }
-  /* Ensure names are set for rebind after restore. */
+  /* Ensure names are set for rebind after restore (keys or e<id> for keyless). */
+  // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
-    if (!inst || inst->body_id_bits == 0 || inst->key[0] == '\0') {
+    if (!inst || inst->body_id_bits == 0) {
       continue;
     }
     b3BodyId id = b3LoadBodyId(inst->body_id_bits);
-    if (b3Body_IsValid(id)) {
+    if (!b3Body_IsValid(id)) {
+      continue;
+    }
+    if (inst->key[0] != '\0') {
       b3Body_SetName(id, inst->key);
+    } else {
+      char id_name[32];
+      snprintf(id_name, sizeof(id_name), "e%u", inst->id);
+      b3Body_SetName(id, id_name);
     }
   }
   return b3World_Save(mod_scene_physics_world_id(), out, out_size);
@@ -707,14 +733,22 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 
   for (int i = 0; i < n; i++) {
     NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
-    if (!inst || inst->body[0] == '\0' || inst->key[0] == '\0') {
+    if (!inst || inst->body[0] == '\0') {
       continue;
+    }
+    char want[32];
+    if (inst->key[0] != '\0') {
+      strncpy(want, inst->key, sizeof(want) - 1);
+      want[sizeof(want) - 1] = '\0';
+    } else {
+      // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
+      snprintf(want, sizeof(want), "e%u", inst->id);
     }
     for (int j = 0; j < collect.count; j++) {
       const char *name = b3Body_GetName(collect.ids[j]);
-      if (name && strcmp(name, inst->key) == 0) {
+      if (name && strcmp(name, want) == 0) {
         inst->body_id_bits = b3StoreBodyId(collect.ids[j]);
-        NG_LOG_INFO("lockstep: rebind key=%s", inst->key);
+        NG_LOG_INFO("lockstep: rebind key=%s", want);
         break;
       }
     }
@@ -725,8 +759,9 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
 
 /* Cover confirmed + NG_LOCK_PREDICT_MAX predict frames (+slack). */
 // agent: composer-2.5 | 2026-07-31 | save ring size predict | e30e6f
+// agent: composer-2.5 | 2026-08-01 | save ring size predict 12 | 338b71
 #ifndef NG_PHYS_SAVE_RING
-#define NG_PHYS_SAVE_RING 10
+#define NG_PHYS_SAVE_RING 12
 #endif
 typedef struct NgPhysSaveSlot {
   uint32_t tick;
@@ -803,3 +838,7 @@ bool mod_scene_physics_save_ring_restore(uint32_t tick) {
 // agent: cursor-grok-4.5 | 2026-07-31 | lockstep rest velocity sleep | 5f26b0
 // agent: composer-2.5 | 2026-07-31 | save ring for rollback | 2fa13d
 // agent: composer-2.5 | 2026-07-31 | save ring size predict | e30e6f
+// agent: composer-2.5 | 2026-08-01 | save ring size predict 12 | 338b71
+// agent: composer-2.5 | 2026-08-01 | hybrid input sim helpers | 57aea3
+// agent: composer-2.5 | 2026-08-01 | input sim physics paths | 99d265
+// agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66

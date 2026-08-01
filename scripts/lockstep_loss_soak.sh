@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # agent: composer-2.5 | 2026-07-31 | lockstep loss soak script | 12fb0e
-# 2-remote physics lockstep soak under NG_LOCK_SIM_DROP (app-level LOCK_INPUT loss).
+# agent: composer-2.5 | 2026-07-31 | soak delay adapt validate | b68a5d
+# 2-remote physics lockstep soak under NG_LOCK_SIM_DROP + optional NG_LOCK_SIM_DELAY_MS.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${BUILD:-$ROOT/build}"
 DROP="${NG_LOCK_SIM_DROP:-15}"
+DELAY_MS="${NG_LOCK_SIM_DELAY_MS:-50}"
 SOAK_SEC="${NG_LOCK_SOAK_SEC:-12}"
 MIN_CONFIRMED="${NG_LOCK_SOAK_MIN_CONFIRMED:-40}"
 LOG=/tmp/ngame_lockstep_loss_soak.log
@@ -33,7 +35,7 @@ cleanup() {
 trap cleanup EXIT
 
 : >"$LOG"
-NG_LOCK_SIM_DROP="$DROP" ./ngame_server >"$LOG" 2>&1 &
+NG_LOCK_SIM_DROP="$DROP" NG_LOCK_SIM_DELAY_MS="$DELAY_MS" ./ngame_server >"$LOG" 2>&1 &
 SPID=$!
 for _ in $(seq 1 100); do
   grep -q "server ready" "$LOG" 2>/dev/null && break
@@ -72,18 +74,27 @@ if [[ "$ok" != 1 ]]; then
   exit 1
 fi
 
-# Ensure drop banner appeared (first LOCK_INPUT).
+# Ensure drop/delay banners appeared (first LOCK_INPUT).
 for _ in $(seq 1 50); do
   grep -q "sim drop=${DROP}%" "$LOG" && break
   sleep 0.1
 done
 grep -q "sim drop=${DROP}%" "$LOG"
+if [[ "$DELAY_MS" -gt 0 ]]; then
+  for _ in $(seq 1 50); do
+    grep -q "sim delay=${DELAY_MS}ms" "$LOG" && break
+    sleep 0.1
+  done
+  grep -q "sim delay=${DELAY_MS}ms" "$LOG"
+fi
 
 sleep "$SOAK_SEC"
 
 HASH=$(agent_line 27100 "lockstep_hash")
 echo "soak hash: $HASH"
 echo "$HASH" | grep -q 'active=1'
+echo "$HASH" | grep -qE 'playout=[0-9]+'
+echo "$HASH" | grep -qE 'zf=[0-9]+'
 
 CONF=$(echo "$HASH" | sed -n 's/.*confirmed=\([0-9][0-9]*\).*/\1/p')
 if [[ -z "$CONF" ]]; then
@@ -91,7 +102,7 @@ if [[ -z "$CONF" ]]; then
   exit 1
 fi
 if [[ "$CONF" -lt "$MIN_CONFIRMED" ]]; then
-  echo "soak: confirmed=$CONF < min $MIN_CONFIRMED under drop=${DROP}%" >&2
+  echo "soak: confirmed=$CONF < min $MIN_CONFIRMED under drop=${DROP}% delay=${DELAY_MS}ms" >&2
   exit 1
 fi
 
@@ -101,4 +112,8 @@ if grep -q "note_desync\|permanent STALL\|lockstep: ERROR" "$LOG"; then
   exit 1
 fi
 
-echo "LOCKSTEP_LOSS_SOAK ok drop=${DROP}% confirmed=$CONF peers soak=${SOAK_SEC}s"
+PLAYOUT=$(echo "$HASH" | sed -n 's/.*playout=\([0-9][0-9]*\).*/\1/p')
+ZF=$(echo "$HASH" | sed -n 's/.*zf=\([0-9][0-9]*\).*/\1/p')
+echo "LOCKSTEP_LOSS_SOAK ok drop=${DROP}% delay=${DELAY_MS}ms confirmed=$CONF playout=${PLAYOUT:-?} zf=${ZF:-?} soak=${SOAK_SEC}s"
+# agent: composer-2.5 | 2026-07-31 | lockstep loss soak script | 12fb0e
+# agent: composer-2.5 | 2026-07-31 | soak delay adapt validate | b68a5d

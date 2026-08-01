@@ -13,6 +13,8 @@
 #define NG_SCENE_KEY_D 2
 #define NG_SCENE_KEY_W 3
 #define NG_SCENE_KEY_S 4
+// agent: composer-2.5 | 2026-08-01 | scene KEY_F constant | 58ea6c
+#define NG_SCENE_KEY_F 5
 
 const NgModOps *mod_scene_ops(void);
 void *mod_scene_ctx(void);
@@ -34,6 +36,8 @@ void mod_scene_view_on_session(const NgSessionState *session);
 void mod_scene_clear_lockstep_server(void);
 void mod_scene_apply_remote(const NgStateUpdate *update);
 void mod_scene_view_apply_remote(const NgStateUpdate *update);
+// agent: composer-2.5 | 2026-08-01 | interest origin helper | 79d287
+bool mod_scene_interest_origin(float out[3]);
 /* After CONFIRM mismatch, Restore+resim predicted tip (no draw). */
 // agent: composer-2.5 | 2026-07-31 | lockstep resim after confirm | bdb5d7
 // agent: composer-2.5 | 2026-07-31 | drop mode b comment scene | 4b59ea
@@ -68,3 +72,5 @@ bool mod_scene_is_native(void);
 // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | a3917d
 // agent: composer-2.5 | 2026-07-31 | lockstep resim after confirm | bdb5d7
 // agent: composer-2.5 | 2026-07-31 | drop mode b comment scene | 4b59ea
+// agent: composer-2.5 | 2026-08-01 | interest origin helper | 79d287
+// agent: composer-2.5 | 2026-08-01 | scene KEY_F constant | 58ea6c

@@ -61,3 +61,7 @@ Scene.prototype.dispose = function () {
 
 // agent: composer-2.5 | 2026-07-28 | sphere explicit describes restored | r1s2p3
 // agent: composer-2.5 | 2026-07-29 | sphere spawn transform opts | c5c0c5
+
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | 4218b0
+global.module(Scene);
+// agent: composer-2.5 | 2026-08-01 | export scene via global.module | 4218b0

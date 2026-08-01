@@ -2,15 +2,39 @@
 // agent: composer-2.5 | 2026-07-29 | graph uses active runtime | 48c6e0
 // agent: composer-2.5 | 2026-07-29 | instance primary spawn registry | 9c2f5c
 #include "graph.h"
+#include "engine/ng_log.h"
 #include "scene/runtime.h"
 #include "world/ng_world.h"
 #include "vendor/duktape.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define GGRAPH() (*mod_scene_runtime_graph())
 
+static int mod_scene_graph_alive_count(void) {
+  int n = 0;
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    if (GGRAPH().insts[i].alive) {
+      n++;
+    }
+  }
+  return n;
+}
+
+static NgSceneInst *mod_scene_graph_take_slot(void) {
+  // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 6af17e
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    if (!GGRAPH().insts[i].alive) {
+      return &GGRAPH().insts[i];
+    }
+  }
+  if (GGRAPH().inst_count >= NG_SCENE_INST_MAX) {
+    return NULL;
+  }
+  return &GGRAPH().insts[GGRAPH().inst_count++];
+}
 static NgSceneDesc *mod_scene_graph_find_desc(const char *kind, const char *name) {
   for (int i = 0; i < GGRAPH().desc_count; i++) {
     NgSceneDesc *d = &GGRAPH().descs[i];
@@ -133,10 +157,20 @@ bool mod_scene_graph_registry_add_instance(const char *desc_name, const char *ke
     existing->scale = scale > 0.0f ? scale : 1.0f;
     return true;
   }
-  if (GGRAPH().registry_count >= NG_SCENE_INST_MAX) {
-    return false;
+  NgSceneRegistry *r = NULL;
+  for (int i = 0; i < GGRAPH().registry_count; i++) {
+    if (!GGRAPH().registry[i].alive) {
+      r = &GGRAPH().registry[i];
+      break;
+    }
   }
-  NgSceneRegistry *r = &GGRAPH().registry[GGRAPH().registry_count++];
+  if (!r) {
+    if (GGRAPH().registry_count >= NG_SCENE_INST_MAX) {
+      NG_LOG_WARN("registry: full (%d) — refuse add", NG_SCENE_INST_MAX);
+      return false;
+    }
+    r = &GGRAPH().registry[GGRAPH().registry_count++];
+  }
   memset(r, 0, sizeof(*r));
   r->alive = true;
   strncpy(r->desc_name, desc_name, sizeof(r->desc_name) - 1);
@@ -314,13 +348,18 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, const char 
       return by_key->handle;
     }
   }
-  if (GGRAPH().inst_count >= NG_SCENE_INST_MAX) {
+  if (mod_scene_graph_alive_count() >= NG_SCENE_INST_MAX) {
+    NG_LOG_WARN("spawn: entity limit %d — refuse %s", NG_SCENE_INST_MAX, desc_name);
     return 0;
   }
-  NgSceneInst *inst = &GGRAPH().insts[GGRAPH().inst_count++];
+  NgSceneInst *inst = mod_scene_graph_take_slot();
+  if (!inst) {
+    NG_LOG_WARN("spawn: entity limit %d — refuse %s", NG_SCENE_INST_MAX, desc_name);
+    return 0;
+  }
   memset(inst, 0, sizeof(*inst));
   inst->alive = true;
-  inst->handle = GGRAPH().inst_count;
+  inst->handle = (int)(inst - GGRAPH().insts) + 1;
   inst->id = entity_id ? entity_id : mod_scene_graph_alloc_id();
   strncpy(inst->desc_name, desc_name, sizeof(inst->desc_name) - 1);
   if (key) {
@@ -343,9 +382,12 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, const char 
   }
   inst->scale = scale > 0.0f ? scale : 1.0f;
   inst->script_inst_stash = -1;
-  mod_scene_graph_registry_add_instance(desc_name, key, inst->id, d->sync, inst->pos, inst->rot,
-                                        inst->scale);
-
+  if (!mod_scene_graph_registry_add_instance(desc_name, key, inst->id, d->sync, inst->pos, inst->rot,
+                                             inst->scale)) {
+    NG_LOG_WARN("spawn: registry full — refuse %s", desc_name);
+    inst->alive = false;
+    return 0;
+  }
   if (ctx && func_stash_idx >= 0) {
     // agent: composer-2.5 | 2026-07-30 | fix graph spawn stash leak | cddf4f
     duk_push_global_stash(ctx);
@@ -683,19 +725,13 @@ bool mod_scene_graph_sample_draw_pose(const NgSceneInst *inst, double now, float
     return false;
   }
   if (inst->sample_count == 1 || render_t >= newest->t) {
-    float age = (float)(now - newest->t);
-    if (age < 0.0f) {
-      age = 0.0f;
-    }
-    if (age > delay_s) {
-      age = delay_s;
-    }
-    out_pos[0] = newest->pos[0] + newest->lin_vel[0] * age;
-    out_pos[1] = newest->pos[1] + newest->lin_vel[1] * age;
-    out_pos[2] = newest->pos[2] + newest->lin_vel[2] * age;
-    out_rot[0] = newest->rot[0] + newest->ang_vel[0] * age;
-    out_rot[1] = newest->rot[1] + newest->ang_vel[1] * age;
-    out_rot[2] = newest->rot[2] + newest->ang_vel[2] * age;
+    // agent: composer-2.5 | 2026-08-01 | hold newest no extrapolate | 5b890f
+    out_pos[0] = newest->pos[0];
+    out_pos[1] = newest->pos[1];
+    out_pos[2] = newest->pos[2];
+    out_rot[0] = newest->rot[0];
+    out_rot[1] = newest->rot[1];
+    out_rot[2] = newest->rot[2];
     return true;
   }
   if (render_t <= oldest->t) {
@@ -788,19 +824,266 @@ void mod_scene_graph_note_ack(uint32_t entity_id, uint16_t ack_seq) {
   inst->ack_ang_vel[2] = inst->last_sent_ang_vel[2];
 }
 
-bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout) {
+// agent: composer-2.5 | 2026-08-01 | server delta prepare wire | 68a698
+static NgPeerEntityAck *mod_scene_graph_peer_ack_find(NgPeerStateBaseline *base, uint32_t entity_id) {
+  if (!base) {
+    return NULL;
+  }
+  for (int i = 0; i < NG_PEER_STATE_ACK_MAX; i++) {
+    NgPeerEntityAck *e = &base->ents[i];
+    if (e->alive && e->entity_id == entity_id) {
+      return e;
+    }
+  }
+  return NULL;
+}
+
+static NgPeerEntityAck *mod_scene_graph_peer_ack_alloc(NgPeerStateBaseline *base, uint32_t entity_id) {
+  NgPeerEntityAck *existing = mod_scene_graph_peer_ack_find(base, entity_id);
+  if (existing) {
+    return existing;
+  }
+  for (int i = 0; i < NG_PEER_STATE_ACK_MAX; i++) {
+    NgPeerEntityAck *e = &base->ents[i];
+    if (!e->alive) {
+      memset(e, 0, sizeof(*e));
+      e->alive = true;
+      e->entity_id = entity_id;
+      return e;
+    }
+  }
+  return NULL;
+}
+
+void mod_scene_graph_peer_note_ack(NgPeerStateBaseline *base, uint32_t entity_id, uint16_t ack_seq) {
+  NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
+  if (!inst || inst->last_sent_seq == 0) {
+    return;
+  }
+  if (ack_seq != inst->last_sent_seq && (uint16_t)(inst->last_sent_seq - ack_seq) > 0x8000u) {
+    return;
+  }
+  NgPeerEntityAck *e = mod_scene_graph_peer_ack_alloc(base, entity_id);
+  if (!e) {
+    return;
+  }
+  e->ack_seq = ack_seq;
+  e->sends_since_abs = 0;
+  e->pos[0] = inst->last_sent_pos[0];
+  e->pos[1] = inst->last_sent_pos[1];
+  e->pos[2] = inst->last_sent_pos[2];
+  e->rot[0] = inst->last_sent_rot[0];
+  e->rot[1] = inst->last_sent_rot[1];
+  e->rot[2] = inst->last_sent_rot[2];
+  e->scale = inst->last_sent_scale;
+  e->lin_vel[0] = inst->last_sent_lin_vel[0];
+  e->lin_vel[1] = inst->last_sent_lin_vel[1];
+  e->lin_vel[2] = inst->last_sent_lin_vel[2];
+  e->ang_vel[0] = inst->last_sent_ang_vel[0];
+  e->ang_vel[1] = inst->last_sent_ang_vel[1];
+  e->ang_vel[2] = inst->last_sent_ang_vel[2];
+}
+
+void mod_scene_graph_peer_note_sent(NgPeerStateBaseline *base, uint32_t entity_id) {
+  NgPeerEntityAck *e = mod_scene_graph_peer_ack_find(base, entity_id);
+  if (e) {
+    e->sends_since_abs++;
+  }
+}
+
+static bool mod_scene_graph_float3_near(const float a[3], const float b[3], float eps) {
+  return fabsf(a[0] - b[0]) <= eps && fabsf(a[1] - b[1]) <= eps && fabsf(a[2] - b[2]) <= eps;
+}
+
+static void mod_scene_graph_fill_absolute(NgSceneInst *inst, NgStateUpdate *inout, uint8_t mask) {
+  if (mask & NG_COMP_POS) {
+    inout->pos[0] = inst->pos[0];
+    inout->pos[1] = inst->pos[1];
+    inout->pos[2] = inst->pos[2];
+  }
+  if (mask & NG_COMP_ROT) {
+    inout->rot[0] = inst->rot[0];
+    inout->rot[1] = inst->rot[1];
+    inout->rot[2] = inst->rot[2];
+  }
+  if (mask & NG_COMP_SCALE) {
+    inout->scale = inst->scale;
+  }
+  if (mask & NG_COMP_LIN_VEL) {
+    inout->lin_vel[0] = inst->lin_vel[0];
+    inout->lin_vel[1] = inst->lin_vel[1];
+    inout->lin_vel[2] = inst->lin_vel[2];
+  }
+  if (mask & NG_COMP_ANG_VEL) {
+    inout->ang_vel[0] = inst->ang_vel[0];
+    inout->ang_vel[1] = inst->ang_vel[1];
+    inout->ang_vel[2] = inst->ang_vel[2];
+  }
+}
+
+bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout,
+                                         NgPeerStateBaseline *peer_base) {
   if (!inst || !inout) {
     return false;
   }
-  // agent: composer-2.5 | 2026-07-30 | shared apply ignores stale seq | 975e95
-  /* Always absolute on the wire. Delta baselines mix host/client seq namespaces and
-   * break multi-author shared entities (second client stops updating the first). */
-  (void)inst;
-  inout->comp_mask = (uint8_t)(inout->comp_mask & (uint8_t)~NG_COMP_FLAGS);
-  return true;
+  uint8_t mask = (uint8_t)(inout->comp_mask &
+                           (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE | NG_COMP_LIN_VEL |
+                            NG_COMP_ANG_VEL));
+  float vel_mag = 0.0f;
+  if (mask & NG_COMP_LIN_VEL) {
+    vel_mag += fabsf(inout->lin_vel[0]) + fabsf(inout->lin_vel[1]) + fabsf(inout->lin_vel[2]);
+  }
+  if (mask & NG_COMP_ANG_VEL) {
+    vel_mag += fabsf(inout->ang_vel[0]) + fabsf(inout->ang_vel[1]) + fabsf(inout->ang_vel[2]);
+  }
+  if (vel_mag < 0.02f) {
+    mask = (uint8_t)(mask & ~(NG_COMP_LIN_VEL | NG_COMP_ANG_VEL));
+    inout->lin_vel[0] = inout->lin_vel[1] = inout->lin_vel[2] = 0.0f;
+    inout->ang_vel[0] = inout->ang_vel[1] = inout->ang_vel[2] = 0.0f;
+  }
+  if (mask == 0) {
+    inout->comp_mask = 0;
+    return false;
+  }
+  mod_scene_graph_fill_absolute(inst, inout, mask);
+  if (inst->sync != NG_SYNC_SERVER || peer_base == NULL) {
+    inout->comp_mask = mask;
+    return true;
+  }
+  NgPeerEntityAck *ack = mod_scene_graph_peer_ack_find(peer_base, inst->id);
+  if (!ack || ack->sends_since_abs >= 30) {
+    inout->comp_mask = mask;
+    if (ack) {
+      ack->sends_since_abs = 0;
+    }
+    return true;
+  }
+  uint8_t out_mask = 0;
+  bool force_absolute = false;
+  if ((mask & NG_COMP_POS) && mod_scene_graph_float3_near(inout->pos, ack->pos, 0.005f)) {
+    /* omit */
+  } else if (mask & NG_COMP_POS) {
+    const float dx = inout->pos[0] - ack->pos[0];
+    const float dy = inout->pos[1] - ack->pos[1];
+    const float dz = inout->pos[2] - ack->pos[2];
+    if (fabsf(dx) <= 5.0f && fabsf(dy) <= 5.0f && fabsf(dz) <= 5.0f) {
+      out_mask |= NG_COMP_POS;
+      inout->pos[0] = dx;
+      inout->pos[1] = dy;
+      inout->pos[2] = dz;
+    } else {
+      force_absolute = true;
+    }
+  }
+  if (!force_absolute && (mask & NG_COMP_ROT) &&
+      mod_scene_graph_float3_near(inout->rot, ack->rot, 0.001f)) {
+    /* omit */
+  } else if (!force_absolute && (mask & NG_COMP_ROT)) {
+    const float dr0 = inout->rot[0] - ack->rot[0];
+    const float dr1 = inout->rot[1] - ack->rot[1];
+    const float dr2 = inout->rot[2] - ack->rot[2];
+    if (fabsf(dr0) <= 1.0f && fabsf(dr1) <= 1.0f && fabsf(dr2) <= 1.0f) {
+      out_mask |= NG_COMP_ROT;
+      inout->rot[0] = dr0;
+      inout->rot[1] = dr1;
+      inout->rot[2] = dr2;
+    } else {
+      force_absolute = true;
+    }
+  }
+  if (!force_absolute && (mask & NG_COMP_SCALE) && fabsf(inout->scale - ack->scale) <= 0.005f) {
+    /* omit */
+  } else if (!force_absolute && (mask & NG_COMP_SCALE)) {
+    const float ds = inout->scale - ack->scale;
+    if (fabsf(ds) <= 5.0f) {
+      out_mask |= NG_COMP_SCALE;
+      inout->scale = ds;
+    } else {
+      force_absolute = true;
+    }
+  }
+  if (!force_absolute && (mask & NG_COMP_LIN_VEL) &&
+      mod_scene_graph_float3_near(inout->lin_vel, ack->lin_vel, 0.005f)) {
+    /* omit */
+  } else if (!force_absolute && (mask & NG_COMP_LIN_VEL)) {
+    const float dv0 = inout->lin_vel[0] - ack->lin_vel[0];
+    const float dv1 = inout->lin_vel[1] - ack->lin_vel[1];
+    const float dv2 = inout->lin_vel[2] - ack->lin_vel[2];
+    if (fabsf(dv0) <= 5.0f && fabsf(dv1) <= 5.0f && fabsf(dv2) <= 5.0f) {
+      out_mask |= NG_COMP_LIN_VEL;
+      inout->lin_vel[0] = dv0;
+      inout->lin_vel[1] = dv1;
+      inout->lin_vel[2] = dv2;
+    } else {
+      force_absolute = true;
+    }
+  }
+  if (!force_absolute && (mask & NG_COMP_ANG_VEL) &&
+      mod_scene_graph_float3_near(inout->ang_vel, ack->ang_vel, 0.001f)) {
+    /* omit */
+  } else if (!force_absolute && (mask & NG_COMP_ANG_VEL)) {
+    const float dw0 = inout->ang_vel[0] - ack->ang_vel[0];
+    const float dw1 = inout->ang_vel[1] - ack->ang_vel[1];
+    const float dw2 = inout->ang_vel[2] - ack->ang_vel[2];
+    if (fabsf(dw0) <= 1.0f && fabsf(dw1) <= 1.0f && fabsf(dw2) <= 1.0f) {
+      out_mask |= NG_COMP_ANG_VEL;
+      inout->ang_vel[0] = dw0;
+      inout->ang_vel[1] = dw1;
+      inout->ang_vel[2] = dw2;
+    } else {
+      force_absolute = true;
+    }
+  }
+  if (force_absolute) {
+    mod_scene_graph_fill_absolute(inst, inout, mask);
+    inout->comp_mask = mask;
+    ack->sends_since_abs = 0;
+    return true;
+  }
+  if (out_mask != 0) {
+    out_mask |= NG_COMP_FLAGS;
+  }
+  inout->comp_mask = out_mask;
+  return out_mask != 0;
 }
 
-float mod_scene_graph_flush_priority(const NgStateUpdate *u) {
+static double g_state_arrival_last = 0.0;
+static float g_state_arrival_ema = 0.1f;
+static bool g_state_arrival_have = false;
+
+void mod_scene_graph_note_state_arrival(double now) {
+  if (g_state_arrival_have) {
+    const float dt = (float)(now - g_state_arrival_last);
+    if (dt > 0.0f && dt < 2.0f) {
+      g_state_arrival_ema = g_state_arrival_ema * 0.9f + dt * 0.1f;
+    }
+  } else {
+    g_state_arrival_ema = 0.1f;
+  }
+  g_state_arrival_last = now;
+  g_state_arrival_have = true;
+}
+
+float mod_scene_graph_interp_delay_s(void) {
+  const char *env = getenv("NG_STATE_INTERP_MS");
+  if (env && env[0] != '\0') {
+    const float ms = (float)atof(env);
+    if (ms > 0.0f) {
+      return ms * 0.001f;
+    }
+  }
+  float d = 3.0f * g_state_arrival_ema;
+  if (d < 0.05f) {
+    d = 0.05f;
+  }
+  if (d > 0.35f) {
+    d = 0.35f;
+  }
+  return d;
+}
+
+float mod_scene_graph_flush_priority_at(const NgStateUpdate *u, const float origin[3],
+                                        float interest_r) {
   if (!u) {
     return 0.0f;
   }
@@ -816,7 +1099,37 @@ float mod_scene_graph_flush_priority(const NgStateUpdate *u) {
   if (u->comp_mask & (NG_COMP_POS | NG_COMP_ROT)) {
     score += 0.01f;
   }
+  if (!origin || interest_r <= 0.0f) {
+    return score;
+  }
+  float pos[3];
+  if (u->comp_mask & NG_COMP_POS) {
+    pos[0] = u->pos[0];
+    pos[1] = u->pos[1];
+    pos[2] = u->pos[2];
+  } else {
+    const NgSceneInst *inst = mod_scene_graph_inst_by_id(u->entity_id);
+    if (!inst) {
+      return score;
+    }
+    pos[0] = inst->pos[0];
+    pos[1] = inst->pos[1];
+    pos[2] = inst->pos[2];
+  }
+  const float dx = pos[0] - origin[0];
+  const float dy = pos[1] - origin[1];
+  const float dz = pos[2] - origin[2];
+  const float dist2 = dx * dx + dy * dy + dz * dz;
+  const float r2 = interest_r * interest_r;
+  if (dist2 > 4.0f * r2) {
+    return -1.0f;
+  }
+  score /= (1.0f + dist2 / r2);
   return score;
+}
+
+float mod_scene_graph_flush_priority(const NgStateUpdate *u) {
+  return mod_scene_graph_flush_priority_at(u, NULL, 40.0f);
 }
 
 int mod_scene_graph_inst_count(void) {
@@ -850,3 +1163,7 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-07-30 | ack baseline encode apply | 1a55f8
 // agent: composer-2.5 | 2026-07-30 | fix graph spawn stash leak | cddf4f
 // agent: composer-2.5 | 2026-07-30 | shared apply ignores stale seq | 975e95
+// agent: composer-2.5 | 2026-08-01 | server delta prepare wire | 68a698
+// agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
+// agent: composer-2.5 | 2026-08-01 | peer ack baseline structs | 0d01e8
+// agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 6af17e
