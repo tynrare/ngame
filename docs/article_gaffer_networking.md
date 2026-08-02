@@ -235,8 +235,9 @@ Do not “optimize latency” by undoing Phase 1 anti-drift below.
 14. Prefer playout before deep predict (`predict_allow`); do not raise speculation past SnapNet ~150ms sports ceiling without more delay.
 15. Server STATE: shared stays absolute; delta only for host-authored `sync:server` vs per-peer ACK.
 16. Entity identity (input-sim): start/join use low ids (SESSION); action apply uses sim-band ids `f(tick,peer,seq)` identical on every heap; `sync:local` uses a private high band. Refuse net `spawn` outside start / action apply / join materialize.
-17. Dual heap may mirror poses by **entity id** once sim-band ids agree — do not invent string keys for lockstep creates.
-18. Predict / ZF must not invent action oneshots; re-apply of the same action is idempotent (same sim id).
+17. Dual heap may mirror poses by **entity id** once sim-band ids agree — do not invent string keys for lockstep creates. PHYS body wire name is `e<id>/<desc>` (desc for soft-PHYS upsert); import rebinds/upserts/despawns by that name.
+18. Predict / ZF must not invent action oneshots; re-apply of the same action is idempotent (same sim id). View-only action propose when dual heaps are loaded.
+<!-- agent: composer-2.5 | 2026-08-02 | article sim entity phys upsert | 6bee57 -->
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | d4b0d1 -->
 
@@ -323,3 +324,4 @@ Skim: Box3D → lockstep core → auth → predict/recover → snapshot/state sy
 <!-- agent: composer-2.5 | 2026-08-01 | server gaffer article rewrite | 4e35ee -->
 <!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | 106d0d -->
 <!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | d4b0d1 -->
+<!-- agent: composer-2.5 | 2026-08-02 | article sim entity phys upsert | 6bee57 -->

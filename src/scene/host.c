@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-27 | js scene lifecycle host | f3a4b5
 // agent: composer-2.5 | 2026-07-29 | host server view split | 1b39ad
+// agent: composer-2.5 | 2026-08-02 | view only action propose | 880881
 #include "scene.h"
 #include "scene/runtime.h"
 #include "engine/ng_fs.h"
@@ -17,6 +18,7 @@
 #include "engine/ng_proto.h"
 #include "engine/ng_mod.h"
 #include "net/mod_net.h"
+#include "box3d/box3d.h"
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 #include "server/sim.h"
 #endif
@@ -713,6 +715,9 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     }
     const int handle =
         mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
+    // agent: composer-2.5 | 2026-08-02 | action spawn id observe | 3c17d5
+    NG_LOG_INFO("spawn: action id=%u desc=%s handle=%d body=%s", entity_id, name, handle,
+                sync == NG_SYNC_SERVER ? "server" : "other");
     duk_push_int(ctx, handle);
     return 1;
   }
@@ -1411,11 +1416,17 @@ static duk_ret_t bind_action_register(duk_context *ctx) {
 
 static duk_ret_t bind_action(duk_context *ctx) {
   // agent: composer-2.5 | 2026-08-01 | quiet tip-full propose warn | dd7b48
+  // agent: composer-2.5 | 2026-08-02 | view only action propose | 880881
   const char *name = duk_require_string(ctx, 0);
   float argv[NG_LOCK_ACTION_FLOATS];
   const int argc = mod_scene_pack_action_args(ctx, 1, argv, NG_LOCK_ACTION_FLOATS);
   const uint16_t id = ng_jsact_hash_name(name);
   if (mod_lockstep_active()) {
+    /* sim-entity-id step 1: propose from view heap only (dual-heap tip dedupe). */
+    if (mod_scene_runtime_active() == &g_scene_server && g_scene_view.scene.loaded) {
+      duk_push_true(ctx);
+      return 1;
+    }
     const bool ok = mod_lockstep_propose_local_action(id, (uint8_t)argc, argv);
     if (!ok) {
       NG_LOG_WARN("action: propose failed name=%s id=%u (no peer/tip)", name, (unsigned)id);
@@ -2070,10 +2081,11 @@ static void mod_scene_push_server_phys_to_view(void) {
   for (int i = 0; i < n; i++) {
     // agent: composer-2.5 | 2026-08-01 | push by id after sim ids | 61401b
     // agent: composer-2.5 | 2026-08-01 | push prefer key then id | 15a52d
-    /* Keyed start entities: key survives per-heap alloc_id skew. Keyless
-     * action balls: sim-band id is the only stable handle. */
+    // agent: composer-2.5 | 2026-08-02 | view only action propose | 880881
+    /* Input-sim: match by entity id only (sim-band / SESSION). Non-input-sim
+     * still prefers key when present. */
     NgSceneInst *v = NULL;
-    if (poses[i].key[0] != '\0') {
+    if (!lockstep && poses[i].key[0] != '\0') {
       v = mod_scene_graph_inst_by_key(poses[i].key);
     }
     if (!v) {
@@ -2788,6 +2800,14 @@ static void mod_scene_entities_text_active(char *out, size_t cap) {
         inst->id, inst->key, inst->desc_name, inst->body_id_bits != 0 ? 1u : 0u,
         inst->phys_proxy ? 1 : 0, mass, lv[0], lv[1], lv[2], inst->pos[0], inst->pos[1],
         inst->pos[2], inst->rot[0], inst->rot[1], inst->rot[2]);
+    // agent: composer-2.5 | 2026-08-02 | sim id unpack entity text | 930881
+    {
+      uint32_t st = 0, sp = 0;
+      uint8_t ss = 0;
+      if (mod_scene_graph_unpack_sim_id(inst->id, &st, &sp, &ss) && used + 24 < cap) {
+        used += (size_t)snprintf(out + used, cap - used, " sim=t%u/p%u/s%u", st, sp, (unsigned)ss);
+      }
+    }
   }
   if (used == 0 && cap > 0) {
     out[0] = '\0';
@@ -3246,6 +3266,27 @@ static bool mod_scene_action_sim_id_smoke(void) {
 
   bool ok = sid != 0u && sid == vid && mod_scene_graph_id_is_sim(sid);
 
+  /* Export → import must rebind the action ball by e<id>/<desc>. */
+  // agent: composer-2.5 | 2026-08-02 | view only action propose | 880881
+  if (ok) {
+    mod_scene_runtime_use_server();
+    uint8_t *blob = NULL;
+    int blob_sz = 0;
+    if (!mod_scene_physics_export(&blob, &blob_sz) || !blob || blob_sz <= 0) {
+      ok = false;
+    } else {
+      if (!mod_scene_physics_import(blob, blob_sz)) {
+        ok = false;
+      } else {
+        NgSceneInst *after = mod_scene_graph_inst_by_id(sid);
+        if (!after || after->body_id_bits == 0) {
+          ok = false;
+        }
+      }
+      b3FreeSaveData(blob, blob_sz);
+    }
+  }
+
   /* Soft PHYS clamps send tip to sim — propose must still land on a future tick. */
   // agent: composer-2.5 | 2026-08-01 | smoke two action fires | a60dcf
   if (ok) {
@@ -3267,6 +3308,71 @@ static bool mod_scene_action_sim_id_smoke(void) {
   mod_scene_runtime_use_view();
   mod_scene_unload(mod_scene_runtime_scene());
   mod_scene_runtime_use_server();
+  mod_scene_unload(mod_scene_runtime_scene());
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+  return ok;
+}
+
+/* Two peers fire same tick with join-order [2,1] — seq must stay 0 per peer. */
+// agent: composer-2.5 | 2026-08-02 | dual peer action id smoke | de07d6
+static bool mod_scene_action_dual_peer_id_smoke(void) {
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+  mod_scene_runtime_use_server();
+  if (!mod_scene_begin("stacking", true, true)) {
+    return false;
+  }
+  {
+    ModSceneCtx *ctx = mod_scene_runtime_scene();
+    NgSessionState session = {0};
+    strncpy(session.scene_id, "stacking", sizeof(session.scene_id) - 1);
+    session.lockstep = 2;
+    mod_scene_push_session_obj(ctx, &session);
+    if (!mod_scene_call_start(ctx)) {
+      mod_scene_unload(ctx);
+      return false;
+    }
+    mod_scene_drain_pending_change(ctx);
+    ctx->started = true;
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_HYBRID);
+  }
+  mod_lockstep_set_local_peer(1);
+  mod_lockstep_set_clock_owner(true);
+  mod_scene_lockstep_restart(1);
+  /* Restart clears roster — rejoin in reverse order after activate. */
+  mod_lockstep_clear_peers();
+  mod_lockstep_add_peer(2);
+  mod_lockstep_add_peer(1);
+  mod_lockstep_set_local_peer(1);
+  mod_lockstep_note_roster();
+
+  const uint32_t tick = 5u;
+  {
+    NgLockAction a = {.present = 1, .id = ng_jsact_hash_name("action_fire"), .argc = 7};
+    a.argv[0] = 0;
+    a.argv[1] = 10;
+    a.argv[2] = 0;
+    a.argv[3] = 0;
+    a.argv[4] = 0;
+    a.argv[5] = -1;
+    a.argv[6] = 20;
+    /* Store while confirm=0 so late-input drop does not discard. */
+    mod_lockstep_store_remote_input(2, tick, 0, &a);
+    a.argv[0] = 1;
+    mod_lockstep_store_remote_input(1, tick, 0, &a);
+  }
+  mod_lockstep_set_confirmed_tick(tick);
+  mod_lockstep_set_step_tick(tick);
+  ng_jsact_dispatch_tick(g_scene_server.scene.ctx, tick);
+
+  const uint32_t want1 = mod_scene_graph_pack_sim_id(tick, 1, 0);
+  const uint32_t want2 = mod_scene_graph_pack_sim_id(tick, 2, 0);
+  NgSceneInst *b1 = mod_scene_graph_inst_by_id(want1);
+  NgSceneInst *b2 = mod_scene_graph_inst_by_id(want2);
+  const bool ok = b1 && b2 && strcmp(b1->desc_name, "shoot_ball_e") == 0 &&
+                  strcmp(b2->desc_name, "shoot_ball_e") == 0;
+
   mod_scene_unload(mod_scene_runtime_scene());
   mod_lockstep_reset();
   ng_mod_set_fixed_gate(NULL);
@@ -3307,6 +3413,11 @@ bool mod_scene_smoke_test(void) {
   // agent: composer-2.5 | 2026-08-01 | smoke both heap ball id | 78867a
   if (!mod_scene_action_sim_id_smoke()) {
     fprintf(stderr, "smoke fail: action_sim_id\n");
+    return false;
+  }
+  // agent: composer-2.5 | 2026-08-02 | dual peer action id smoke | de07d6
+  if (!mod_scene_action_dual_peer_id_smoke()) {
+    fprintf(stderr, "smoke fail: action_dual_peer_id\n");
     return false;
   }
   return true;
@@ -3395,3 +3506,7 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-08-01 | smoke two action fires | a60dcf
 // agent: composer-2.5 | 2026-08-01 | lockstep bits for dedicated host | b1ef71
 // agent: composer-2.5 | 2026-08-01 | push prefer key then id | 15a52d
+// agent: composer-2.5 | 2026-08-02 | view only action propose | 880881
+// agent: composer-2.5 | 2026-08-02 | sim id unpack entity text | 930881
+// agent: composer-2.5 | 2026-08-02 | dual peer action id smoke | de07d6
+// agent: composer-2.5 | 2026-08-02 | action spawn id observe | 3c17d5

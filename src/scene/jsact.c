@@ -1,5 +1,21 @@
+// Purpose: JS lockstep action registry, confirmed dispatch, sim-band entity ids.
+// Scope in: action_register / propose hash / dispatch before fixed_step / next sim id.
+// Scope out: Box3D attach, PHYS import upsert (physics.c), tip propose gate (host.c).
+// Flow id: sim-entity-id
+// Related: scene/physics.c, scene/host.c, scene/lockstep.c, scene/graph.c
+// Gateway role: pattern | Scope id: input-sim-identity | Flow id: sim-entity-id
+//
+// sim-entity-id flow:
+// 1) view → propose action on tip (no spawn)
+// 2) host → confirm tick T (+ action blob)
+// 3) every heap → dispatch at T → spawn with pack(T,peer,seq)
+// 4) phys owner → attach body named e<id>/<desc>
+// 5) step world
+// 6) soft PHYS (rare) → Restore → upsert/bind by name → snap clock
+//
 // agent: composer-2.5 | 2026-08-01 | jsact registry and apply | 30972d
 // agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | 09de0e
+// agent: composer-2.5 | 2026-08-02 | sim-entity-id playbook header | bec2df
 #include "jsact.h"
 #include "engine/ng_log.h"
 #include "engine/ng_proto.h"
@@ -37,6 +53,7 @@ uint16_t ng_jsact_hash_name(const char *name) {
 uint32_t ng_jsact_apply_peer(void) { return g_jsact_apply_peer; }
 uint32_t ng_jsact_apply_tick(void) { return g_jsact_apply_tick; }
 
+// sim-entity-id step 3
 uint32_t ng_jsact_next_sim_entity_id(void) {
   const uint8_t seq = g_jsact_spawn_seq;
   if (g_jsact_spawn_seq < 0x0fu) {
@@ -196,8 +213,11 @@ bool ng_jsact_call(duk_context *ctx, const char *name, uint8_t argc, const float
   return ok;
 }
 
+// sim-entity-id step 3
 void ng_jsact_dispatch_tick(duk_context *ctx, uint32_t tick) {
   // agent: composer-2.5 | 2026-08-01 | actions only when confirmed | 1d4a0d
+  // agent: composer-2.5 | 2026-08-02 | fix action seq per peer sort | f38660
+  // agent: composer-2.5 | 2026-08-02 | action dispatch peer order log | f1560b
   if (!ctx || tick == 0 || !mod_lockstep_active()) {
     return;
   }
@@ -208,13 +228,30 @@ void ng_jsact_dispatch_tick(duk_context *ctx, uint32_t tick) {
   const NgSpawnCtx prev = mod_scene_spawn_get_ctx();
   mod_scene_spawn_set_ctx(NG_SPAWN_CTX_ACTION_APPLY);
   g_jsact_apply_tick = tick;
-  g_jsact_spawn_seq = 0;
-  const int pc = mod_lockstep_peer_count();
-  for (int i = 0; i < pc; i++) {
+
+  /* Stable peer order — join-order arrays differ across clients. */
+  uint32_t peers[NG_LOCK_PEER_MAX];
+  int pc = 0;
+  const int raw_n = mod_lockstep_peer_count();
+  for (int i = 0; i < raw_n && pc < NG_LOCK_PEER_MAX; i++) {
     const uint32_t peer = mod_lockstep_peer_id_at(i);
-    if (peer == 0) {
-      continue;
+    if (peer != 0) {
+      peers[pc++] = peer;
     }
+  }
+  for (int i = 0; i < pc; i++) {
+    for (int j = i + 1; j < pc; j++) {
+      if (peers[j] < peers[i]) {
+        const uint32_t t = peers[i];
+        peers[i] = peers[j];
+        peers[j] = t;
+      }
+    }
+  }
+
+  bool any = false;
+  for (int i = 0; i < pc; i++) {
+    const uint32_t peer = peers[i];
     NgLockAction act;
     if (!mod_lockstep_action_for(peer, tick, &act) || !act.present) {
       continue;
@@ -224,8 +261,23 @@ void ng_jsact_dispatch_tick(duk_context *ctx, uint32_t tick) {
       NG_LOG_WARN("action: unregistered id=%u peer=%u tick=%u", (unsigned)act.id, peer, tick);
       continue;
     }
+    /* seq is per-peer on this tick (pack identity invariant). */
+    g_jsact_spawn_seq = 0;
     g_jsact_apply_peer = peer;
+    any = true;
+    NG_LOG_INFO("action: apply tick=%u peer=%u name=%s argc=%u seq0 id≈e%u", tick, peer, e->name,
+                (unsigned)act.argc,
+                (unsigned)mod_scene_graph_pack_sim_id(tick, peer, 0));
     (void)ng_jsact_pcall(ctx, e->name, act.argc, act.argv);
+  }
+  if (any && pc > 0) {
+    char order[64];
+    size_t used = 0;
+    order[0] = '\0';
+    for (int i = 0; i < pc && used + 8 < sizeof(order); i++) {
+      used += (size_t)snprintf(order + used, sizeof(order) - used, "%s%u", i ? "," : "", peers[i]);
+    }
+    NG_LOG_INFO("action: dispatch tick=%u peer_order=[%s]", tick, order);
   }
   g_jsact_apply_peer = 0;
   g_jsact_apply_tick = 0;
@@ -235,3 +287,4 @@ void ng_jsact_dispatch_tick(duk_context *ctx, uint32_t tick) {
 // agent: composer-2.5 | 2026-08-01 | jsact registry and apply | 30972d
 // agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | 09de0e
 // agent: composer-2.5 | 2026-08-01 | actions only when confirmed | 1d4a0d
+// agent: composer-2.5 | 2026-08-02 | sim-entity-id playbook header | bec2df

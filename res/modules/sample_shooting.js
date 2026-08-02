@@ -25,7 +25,7 @@ SampleShooting.prototype.init = function () {
   global.describe("shape", "shoot_ball_shape", {
     type: "sphere",
     radius: 0.25,
-    density: 4,
+    density: 40,
     friction: 0.3,
   });
   global.describe("body", "shoot_ball_body", { type: "dynamic", shape: "shoot_ball_shape" });

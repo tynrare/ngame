@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-07-29 | lockstep sim mode physics | f77a9c
 // agent: composer-2.5 | 2026-07-30 | physics export import names | 1b75f3
 // agent: composer-2.5 | 2026-07-30 | world gravity and sensor | 87a78b
+// agent: composer-2.5 | 2026-08-02 | phys body name e id desc | 43e739
 #include "physics.h"
 #include "engine/ng_log.h"
 #include "engine/ng_mod.h"
@@ -17,9 +18,59 @@
 #include <string.h>
 
 #define GPHYS() (*mod_scene_runtime_physics())
+/* sim-entity-id step 4: body name wire e<id>/<desc> (userData cleared on Restore). */
+#define NG_PHYS_BODY_NAME_MAX 64
 
 static b3WorldId mod_scene_physics_world_id(void) {
   return b3LoadWorldId(GPHYS().world_bits);
+}
+
+// sim-entity-id step 4
+static void mod_scene_physics_format_body_name(char *out, size_t cap, uint32_t entity_id,
+                                              const char *desc) {
+  const char *d = (desc && desc[0] != '\0') ? desc : "_";
+  snprintf(out, cap, "e%u/%s", entity_id, d);
+}
+
+// sim-entity-id step 4
+static bool mod_scene_physics_parse_body_name(const char *name, uint32_t *out_id, char *out_desc,
+                                              size_t desc_cap) {
+  if (!name || name[0] != 'e' || !out_id) {
+    return false;
+  }
+  unsigned id = 0;
+  if (sscanf(name, "e%u", &id) != 1 || id == 0u) {
+    return false;
+  }
+  *out_id = id;
+  if (out_desc && desc_cap > 0) {
+    out_desc[0] = '\0';
+    const char *slash = strchr(name, '/');
+    if (slash && slash[1] != '\0') {
+      strncpy(out_desc, slash + 1, desc_cap - 1);
+      out_desc[desc_cap - 1] = '\0';
+    }
+  }
+  return true;
+}
+
+// sim-entity-id step 4
+static void mod_scene_physics_set_inst_body_name(b3BodyId bodyId, const NgSceneInst *inst) {
+  if (!inst || !b3Body_IsValid(bodyId)) {
+    return;
+  }
+  char name[NG_PHYS_BODY_NAME_MAX];
+  if (mod_scene_physics_is_input_sim()) {
+    mod_scene_physics_format_body_name(name, sizeof(name), inst->id, inst->desc_name);
+    b3Body_SetName(bodyId, name);
+    return;
+  }
+  if (inst->key[0] != '\0') {
+    b3Body_SetName(bodyId, inst->key);
+    return;
+  }
+  mod_scene_physics_format_body_name(name, sizeof(name), inst->id, inst->desc_name);
+  b3Body_SetName(bodyId, name);
 }
 
 static void mod_scene_physics_store_world(b3WorldId id) {
@@ -345,14 +396,8 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
     b3BoxHull box = b3MakeBoxHull(sdesc->hx, sdesc->hy, sdesc->hz);
     b3CreateHullShape(bodyId, &shapeDef, &box.base);
   }
-  if (inst->key[0] != '\0') {
-    b3Body_SetName(bodyId, inst->key);
-  } else {
-    // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
-    char id_name[32];
-    snprintf(id_name, sizeof(id_name), "e%u", inst->id);
-    b3Body_SetName(bodyId, id_name);
-  }
+  // agent: composer-2.5 | 2026-08-02 | phys body name e id desc | 43e739
+  mod_scene_physics_set_inst_body_name(bodyId, inst);
   inst->body_id_bits = b3StoreBodyId(bodyId);
   return true;
 }
@@ -692,8 +737,8 @@ bool mod_scene_physics_export(uint8_t **out, int *out_size) {
     NG_LOG_ERROR("lockstep: export failed — no world");
     return false;
   }
-  /* Ensure names are set for rebind after restore (keys or e<id> for keyless). */
-  // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
+  /* sim-entity-id step 4: stamp e<id>/<desc> before Save. */
+  // agent: composer-2.5 | 2026-08-02 | phys body name e id desc | 43e739
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
@@ -704,27 +749,126 @@ bool mod_scene_physics_export(uint8_t **out, int *out_size) {
     if (!b3Body_IsValid(id)) {
       continue;
     }
-    if (inst->key[0] != '\0') {
-      b3Body_SetName(id, inst->key);
-    } else {
-      char id_name[32];
-      snprintf(id_name, sizeof(id_name), "e%u", inst->id);
-      b3Body_SetName(id, id_name);
-    }
+    mod_scene_physics_set_inst_body_name(id, inst);
   }
   return b3World_Save(mod_scene_physics_world_id(), out, out_size);
 }
 
-bool mod_scene_physics_import(const uint8_t *data, int size) {
-  if (!data || size <= 0) {
+/* Bind restored body to inst; sync pose from body. */
+// sim-entity-id step 6
+static void mod_scene_physics_bind_restored(NgSceneInst *inst, b3BodyId bid) {
+  if (!inst || !b3Body_IsValid(bid)) {
+    return;
+  }
+  inst->body_id_bits = b3StoreBodyId(bid);
+  b3Pos p = b3Body_GetPosition(bid);
+  b3Quat q = b3Body_GetRotation(bid);
+  inst->pos[0] = (float)p.x;
+  inst->pos[1] = (float)p.y;
+  inst->pos[2] = (float)p.z;
+  mod_scene_physics_euler_from_quat(q, inst->rot);
+}
+
+/* Upsert/bind one restored body onto the active graph runtime. */
+// sim-entity-id step 6
+static bool mod_scene_physics_upsert_one(b3BodyId bid, uint32_t entity_id, const char *desc,
+                                         uint32_t *matched_ids, int *matched_n, int *rebinds,
+                                         int *upserts) {
+  if (!matched_ids || !matched_n || entity_id == 0) {
+    return false;
+  }
+  NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
+  if (!inst) {
+    if (!desc || desc[0] == '\0' || strcmp(desc, "_") == 0) {
+      NG_LOG_WARN("lockstep: import orphan body e%u — no desc", entity_id);
+      return false;
+    }
+    if (!mod_scene_graph_entity_desc(desc)) {
+      NG_LOG_WARN("lockstep: import unknown desc=%s id=%u", desc, entity_id);
+      return false;
+    }
+    float pos[3] = {0, 0, 0};
+    float rot[3] = {0, 0, 0};
+    if (b3Body_IsValid(bid)) {
+      b3Pos p = b3Body_GetPosition(bid);
+      pos[0] = (float)p.x;
+      pos[1] = (float)p.y;
+      pos[2] = (float)p.z;
+      mod_scene_physics_euler_from_quat(b3Body_GetRotation(bid), rot);
+    }
+    const int handle = mod_scene_graph_spawn(desc, entity_id, NULL, pos, rot, 1.0f, NULL, -1);
+    inst = mod_scene_graph_inst_by_handle(handle);
+    if (!inst) {
+      NG_LOG_WARN("lockstep: import upsert spawn failed desc=%s id=%u", desc, entity_id);
+      return false;
+    }
+    if (upserts) {
+      (*upserts)++;
+    }
+    NG_LOG_INFO("lockstep: import upsert id=%u desc=%s", entity_id, desc);
+  } else if (rebinds) {
+    (*rebinds)++;
+  }
+  mod_scene_physics_bind_restored(inst, bid);
+  if (*matched_n < NG_SCENE_INST_MAX) {
+    matched_ids[(*matched_n)++] = entity_id;
+  }
+  return true;
+}
+
+// sim-entity-id step 6
+static bool mod_scene_physics_id_matched(const uint32_t *matched_ids, int matched_n, uint32_t id) {
+  for (int i = 0; i < matched_n; i++) {
+    if (matched_ids[i] == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Despawn body insts on active graph that did not rebind. */
+// sim-entity-id step 6
+static int mod_scene_physics_despawn_unrebound(const uint32_t *matched_ids, int matched_n) {
+  int despawned = 0;
+  int handles[NG_SCENE_INST_MAX];
+  int hn = 0;
+  const int n = mod_scene_graph_inst_count();
+  for (int i = 0; i < n && hn < NG_SCENE_INST_MAX; i++) {
+    NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
+    if (!inst || inst->body[0] == '\0') {
+      continue;
+    }
+    if (mod_scene_physics_id_matched(matched_ids, matched_n, inst->id)) {
+      continue;
+    }
+    handles[hn++] = inst->handle;
+  }
+  for (int i = 0; i < hn; i++) {
+    NgSceneInst *inst = mod_scene_graph_inst_by_handle(handles[i]);
+    if (!inst) {
+      continue;
+    }
+    NG_LOG_INFO("lockstep: import despawn unrebound id=%u desc=%s", inst->id, inst->desc_name);
+    inst->body_id_bits = 0;
+    mod_scene_graph_despawn(handles[i]);
+    despawned++;
+  }
+  return despawned;
+}
+
+bool mod_scene_physics_import_ex(const uint8_t *data, int size, uint32_t flags) {
+  // agent: composer-2.5 | 2026-08-02 | phys body name e id desc | 43e739
+    if (!data || size <= 0) {
     return false;
   }
   /* Clear old body handles; restore replaces the world image. */
-  const int n = mod_scene_graph_inst_count();
-  for (int i = 0; i < n; i++) {
-    NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
-    if (inst) {
-      inst->body_id_bits = 0;
+  {
+    const int n = mod_scene_graph_inst_count();
+    for (int i = 0; i < n; i++) {
+      NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
+      if (inst) {
+        inst->body_id_bits = 0;
+      }
     }
   }
   mod_scene_physics_destroy_world();
@@ -735,11 +879,10 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
     NG_LOG_ERROR("lockstep: b3World_Restore failed size=%d", size);
     return false;
   }
-  NG_LOG_INFO("lockstep: phys import restored size=%d", size);
+  NG_LOG_INFO("lockstep: phys import restored size=%d flags=0x%x", size, (unsigned)flags);
 
   NgPhysCollectCtx collect = {0};
   b3AABB aabb = b3World_GetBounds(mod_scene_physics_world_id());
-  /* Expand so sleeping/static bodies at edges are included. */
   aabb.lowerBound.x -= 1000.0f;
   aabb.lowerBound.y -= 1000.0f;
   aabb.lowerBound.z -= 1000.0f;
@@ -750,39 +893,108 @@ bool mod_scene_physics_import(const uint8_t *data, int size) {
   b3World_OverlapAABB(mod_scene_physics_world_id(), aabb, filter, mod_scene_physics_collect_shape,
                       &collect);
 
-  for (int i = 0; i < n; i++) {
-    NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
-    if (!inst || inst->body[0] == '\0') {
+  uint32_t matched_ids[NG_SCENE_INST_MAX];
+  int matched_n = 0;
+  int rebinds = 0;
+  int upserts = 0;
+  const bool do_upsert = (flags & NG_PHYS_IMPORT_UPSERT) != 0u;
+  const bool do_despawn = (flags & NG_PHYS_IMPORT_DESPAWN) != 0u;
+
+  NgSceneRuntime *prev = mod_scene_runtime_active();
+  mod_scene_runtime_use_server();
+
+  for (int j = 0; j < collect.count; j++) {
+    const char *name = b3Body_GetName(collect.ids[j]);
+    uint32_t entity_id = 0;
+    char desc[32];
+    if (!mod_scene_physics_parse_body_name(name, &entity_id, desc, sizeof(desc))) {
+      /* Non-input-sim keyed names: match key on server graph only. */
+      if (name && name[0] != '\0') {
+        NgSceneInst *by_key = mod_scene_graph_inst_by_key(name);
+        if (by_key) {
+          mod_scene_physics_bind_restored(by_key, collect.ids[j]);
+          if (matched_n < NG_SCENE_INST_MAX) {
+            matched_ids[matched_n++] = by_key->id;
+          }
+          rebinds++;
+          NG_LOG_INFO("lockstep: rebind key=%s", name);
+        }
+      }
       continue;
     }
-    char want[32];
-    if (inst->key[0] != '\0') {
-      strncpy(want, inst->key, sizeof(want) - 1);
-      want[sizeof(want) - 1] = '\0';
-    } else {
-      // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
-      snprintf(want, sizeof(want), "e%u", inst->id);
+    if (!do_upsert && !mod_scene_graph_inst_by_id(entity_id)) {
+      /* Rollback save: body without graph inst — skip (resim may recreate). */
+      NG_LOG_INFO("lockstep: import skip upsert id=%u desc=%s", entity_id, desc);
+      continue;
     }
+    (void)mod_scene_physics_upsert_one(collect.ids[j], entity_id, desc, matched_ids, &matched_n,
+                                       &rebinds, &upserts);
+  }
+
+  const int despawned =
+      do_despawn ? mod_scene_physics_despawn_unrebound(matched_ids, matched_n) : 0;
+
+  /* Mirror entity set onto view heap for draw (same ids). */
+  if (g_scene_view.scene.loaded) {
+    mod_scene_runtime_use_view();
+    uint32_t view_matched[NG_SCENE_INST_MAX];
+    int view_mn = 0;
     for (int j = 0; j < collect.count; j++) {
       const char *name = b3Body_GetName(collect.ids[j]);
-      if (name && strcmp(name, want) == 0) {
-        inst->body_id_bits = b3StoreBodyId(collect.ids[j]);
-        // agent: composer-2.5 | 2026-08-01 | import sync poses from bodies | e80a86
-        /* Graph poses stay stale across Restore — pull from rebound body so
-         * push-to-view / scripts do not flash spawn/zero until the next step. */
+      uint32_t entity_id = 0;
+      char desc[32];
+      if (!mod_scene_physics_parse_body_name(name, &entity_id, desc, sizeof(desc))) {
+        continue;
+      }
+      NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
+      if (!inst) {
+        if (!do_upsert || desc[0] == '\0' || strcmp(desc, "_") == 0 ||
+            !mod_scene_graph_entity_desc(desc)) {
+          continue;
+        }
+        float pos[3] = {0, 0, 0};
+        float rot[3] = {0, 0, 0};
         b3Pos p = b3Body_GetPosition(collect.ids[j]);
-        b3Quat q = b3Body_GetRotation(collect.ids[j]);
-        inst->pos[0] = (float)p.x;
-        inst->pos[1] = (float)p.y;
-        inst->pos[2] = (float)p.z;
-        mod_scene_physics_euler_from_quat(q, inst->rot);
-        NG_LOG_INFO("lockstep: rebind key=%s", want);
-        break;
+        pos[0] = (float)p.x;
+        pos[1] = (float)p.y;
+        pos[2] = (float)p.z;
+        mod_scene_physics_euler_from_quat(b3Body_GetRotation(collect.ids[j]), rot);
+        const int handle = mod_scene_graph_spawn(desc, entity_id, NULL, pos, rot, 1.0f, NULL, -1);
+        inst = mod_scene_graph_inst_by_handle(handle);
+      }
+      if (!inst) {
+        continue;
+      }
+      /* View never owns Box3D under dual-heap input-sim. */
+      inst->body_id_bits = 0;
+      b3Pos p = b3Body_GetPosition(collect.ids[j]);
+      b3Quat q = b3Body_GetRotation(collect.ids[j]);
+      inst->pos[0] = (float)p.x;
+      inst->pos[1] = (float)p.y;
+      inst->pos[2] = (float)p.z;
+      mod_scene_physics_euler_from_quat(q, inst->rot);
+      if (view_mn < NG_SCENE_INST_MAX) {
+        view_matched[view_mn++] = entity_id;
       }
     }
+    if (do_despawn) {
+      (void)mod_scene_physics_despawn_unrebound(view_matched, view_mn);
+    }
   }
-  NG_LOG_INFO("lockstep: import rebound bodies from %d collected", collect.count);
+
+  if (prev == &g_scene_view) {
+    mod_scene_runtime_use_view();
+  } else {
+    mod_scene_runtime_use_server();
+  }
+
+  NG_LOG_INFO("lockstep: import rebound bodies from %d collected rebind=%d upsert=%d despawn=%d",
+              collect.count, rebinds, upserts, despawned);
   return true;
+}
+
+bool mod_scene_physics_import(const uint8_t *data, int size) {
+  return mod_scene_physics_import_ex(data, size, NG_PHYS_IMPORT_SOFT);
 }
 
 /* Cover confirmed + NG_LOCK_PREDICT_MAX predict frames (+slack). */
@@ -844,9 +1056,11 @@ void mod_scene_physics_save_ring_push(uint32_t tick) {
 }
 
 bool mod_scene_physics_save_ring_restore(uint32_t tick) {
+    /* Confirm/predict rollback: rebind existing graph only — never upsert/despawn
+   * (soft PHYS uses full import; despawn here deleted action balls on every F). */
   for (int i = 0; i < g_phys_save_count; i++) {
     if (g_phys_save_ring[i].tick == tick && g_phys_save_ring[i].data) {
-      return mod_scene_physics_import(g_phys_save_ring[i].data, g_phys_save_ring[i].size);
+      return mod_scene_physics_import_ex(g_phys_save_ring[i].data, g_phys_save_ring[i].size, 0u);
     }
   }
   return false;
@@ -872,3 +1086,5 @@ bool mod_scene_physics_save_ring_restore(uint32_t tick) {
 // agent: composer-2.5 | 2026-08-01 | keyless body name rebind | 8a0d66
 // agent: composer-2.5 | 2026-08-01 | checksum sort by entity id | 58e95f
 // agent: composer-2.5 | 2026-08-01 | import sync poses from bodies | e80a86
+// agent: composer-2.5 | 2026-08-02 | phys body name e id desc | 43e739
+// agent: composer-2.5 | 2026-08-02 | save ring rebind only import | 5a5daa

@@ -101,6 +101,13 @@ uint32_t mod_scene_physics_checksum(void);
 
 /* Box3D world save/restore for lockstep late-join. Caller frees *out with b3FreeSaveData. */
 bool mod_scene_physics_export(uint8_t **out, int *out_size);
+/* Soft PHYS: upsert missing + despawn unrebound. Rollback save: rebind only. */
+// agent: composer-2.5 | 2026-08-02 | save ring rebind only import | 774e0a
+#define NG_PHYS_IMPORT_UPSERT 1u
+#define NG_PHYS_IMPORT_DESPAWN 2u
+#define NG_PHYS_IMPORT_SOFT (NG_PHYS_IMPORT_UPSERT | NG_PHYS_IMPORT_DESPAWN)
+
+bool mod_scene_physics_import_ex(const uint8_t *data, int size, uint32_t flags);
 bool mod_scene_physics_import(const uint8_t *data, int size);
 
 /* Local rollback ring (b3World_Save — not recording/replay). */
@@ -122,3 +129,5 @@ bool mod_scene_physics_save_ring_restore(uint32_t tick);
 // agent: composer-2.5 | 2026-07-31 | save ring for rollback | 2fa13d
 // agent: composer-2.5 | 2026-07-31 | drop mode b comment phys | 127036
 // agent: composer-2.5 | 2026-08-01 | hybrid sim mode enum | 772934
+// agent: composer-2.5 | 2026-08-02 | save ring rebind only import | 774e0a
+// agent: composer-2.5 | 2026-08-02 | save ring rebind only import | 774e0a

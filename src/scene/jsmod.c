@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-01 | js module catalog path resolve | dea7c1
+// agent: composer-2.5 | 2026-08-02 | preserve abs res root slash | b81da8
 #include "jsmod.h"
 #include "engine/ng_log.h"
 #include "ng_path.h"
@@ -51,7 +52,9 @@ static void ng_jsmod_dirname(const char *path, char *out, size_t out_cap) {
   out[n] = '\0';
 }
 
-/* Collapse . and ..; require final path under NG_RES_ROOT. */
+/* Collapse . and ..; require final path under NG_RES_ROOT.
+ * Web uses absolute NG_RES_ROOT ("/res/"); rebuild must keep the leading '/'. */
+// agent: composer-2.5 | 2026-08-02 | preserve abs res root slash | b81da8
 static bool ng_jsmod_normalize(const char *in, char *out, size_t out_cap) {
   if (!in || !out || out_cap < 8) {
     return false;
@@ -88,10 +91,16 @@ static bool ng_jsmod_normalize(const char *in, char *out, size_t out_cap) {
     nparts++;
   }
 
+  const bool abs_out = (NG_RES_ROOT[0] == '/');
   out[0] = '\0';
+  size_t used = 0;
+  if (abs_out) {
+    out[0] = '/';
+    out[1] = '\0';
+    used = 1;
+  }
   for (int i = 0; i < nparts; i++) {
-    size_t used = strlen(out);
-    if (used > 0) {
+    if ((abs_out && used > 1) || (!abs_out && used > 0)) {
       if (used + 1 >= out_cap) {
         return false;
       }
@@ -103,6 +112,7 @@ static bool ng_jsmod_normalize(const char *in, char *out, size_t out_cap) {
       return false;
     }
     memcpy(out + used, parts[i], pl + 1);
+    used += pl;
   }
 
   const char *root = NG_RES_ROOT;
@@ -116,7 +126,7 @@ static bool ng_jsmod_normalize(const char *in, char *out, size_t out_cap) {
   if (out[root_len] != '\0' && out[root_len] != '/') {
     return false;
   }
-  return out[0] != '\0';
+  return out[0] != '\0' && !(abs_out && used <= 1);
 }
 
 bool ng_jsmod_resolve_path(const char *path_in, const char *current_file, char *out, size_t out_cap) {
@@ -208,3 +218,4 @@ const char *ng_jsmod_lookup(const char *id) {
 }
 
 // agent: composer-2.5 | 2026-08-01 | js module catalog path resolve | dea7c1
+// agent: composer-2.5 | 2026-08-02 | preserve abs res root slash | b81da8

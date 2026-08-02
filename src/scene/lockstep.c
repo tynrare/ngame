@@ -1210,6 +1210,11 @@ bool mod_lockstep_apply_confirm(const NgLockConfirmPkt *pkt) {
         if (sl->has_action != want ||
             (want && (sl->action_id != pkt->actions[i].id ||
                       sl->action_argc != pkt->actions[i].argc))) {
+          // agent: composer-2.5 | 2026-08-02 | confirm mismatch action detail | 688339
+          NG_LOG_INFO("lockstep: confirm action mismatch tick=%u peer=%u had=%d want=%d "
+                      "pred=%d (hybrid predict never carries actions)",
+                      pkt->tick, pkt->peer_ids[i], sl->has_action ? 1 : 0, want ? 1 : 0,
+                      sl->predicted ? 1 : 0);
           mismatch = true;
           break;
         }
@@ -1241,7 +1246,12 @@ bool mod_lockstep_apply_confirm(const NgLockConfirmPkt *pkt) {
       s->action_argc = pkt->actions[i].argc <= NG_LOCK_ACTION_FLOATS ? pkt->actions[i].argc
                                                                       : NG_LOCK_ACTION_FLOATS;
       memcpy(s->action_argv, pkt->actions[i].argv, sizeof(float) * s->action_argc);
+      NG_LOG_INFO("lockstep: confirm adopt action tick=%u peer=%u id=%u", pkt->tick, pid,
+                  (unsigned)s->action_id);
     } else {
+      if (s->has_action) {
+        NG_LOG_INFO("lockstep: confirm clear action tick=%u peer=%u", pkt->tick, pid);
+      }
       s->has_action = false;
       s->action_id = 0;
       s->action_argc = 0;
@@ -1382,6 +1392,19 @@ bool mod_lockstep_host_try_confirm(NgLockConfirmPkt *out) {
   if (out->peer_count == 0) {
     return false;
   }
+  {
+    int nact = 0;
+    for (uint8_t i = 0; i < out->peer_count; i++) {
+      if (out->actions[i].present) {
+        nact++;
+      }
+    }
+    if (nact > 0) {
+      // agent: composer-2.5 | 2026-08-02 | confirm mismatch action detail | 688339
+      NG_LOG_INFO("lockstep: CONFIRM tick=%u peers=%u actions=%d miss=0x%02x", next,
+                  (unsigned)out->peer_count, nact, (unsigned)miss);
+    }
+  }
   if (!mod_lockstep_apply_confirm(out)) {
     return false;
   }
@@ -1453,17 +1476,22 @@ uint8_t mod_lockstep_last_bits(uint32_t peer_id) {
 // agent: composer-2.5 | 2026-08-01 | slot action propose APIs | a8876f
 bool mod_lockstep_propose_local_action(uint16_t action_id, uint8_t argc, const float *argv) {
   // agent: composer-2.5 | 2026-08-01 | propose future tip only | e6c793
+  // agent: composer-2.5 | 2026-08-02 | refuse propose on confirmed tip | ea6352
   if (argc > NG_LOCK_ACTION_FLOATS || (argc > 0 && !argv)) {
     return false;
   }
   if (!g_lock.active || g_lock.local_peer_id == 0) {
     return false;
   }
-  /* Prefer sendahead tip; never attach to an already-stepped tick (soft PHYS /
-   * PAUSE set local_send_tick = sim — that would silently drop the action). */
+  /* Prefer sendahead tip; never attach to an already-stepped or already-confirmed
+   * tick (confirm-without-action + late propose spawned client-only balls → soft
+   * PHYS despawn storm). */
   uint32_t tick = g_lock.local_send_tick;
   if (tick <= g_lock.sim_tick) {
     tick = g_lock.sim_tick + 1u;
+  }
+  if (tick <= g_lock.confirmed_tick) {
+    tick = g_lock.confirmed_tick + 1u;
   }
   if (tick == 0u) {
     tick = 1u;

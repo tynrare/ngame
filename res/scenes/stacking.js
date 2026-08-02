@@ -55,8 +55,8 @@ Scene.prototype.init = function () {
     bg: { r: 24, g: 28, b: 36 },
     camera: {
       mode: "fixed",
-      position: { x: 0, y: 15, z: 50 },
-      target: { x: 0, y: 20, z: 0 },
+      position: { x: 0, y: 15, z: 25 },
+      target: { x: 0, y: 10, z: 0 },
       fovy: 45,
     },
   });

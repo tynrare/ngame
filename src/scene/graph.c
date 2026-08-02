@@ -32,6 +32,24 @@ uint32_t mod_scene_graph_pack_sim_id(uint32_t tick, uint32_t peer, uint8_t seq) 
          (uint32_t)(seq & 0x0fu);
 }
 
+// agent: composer-2.5 | 2026-08-02 | sim id unpack entity text | adca75
+bool mod_scene_graph_unpack_sim_id(uint32_t id, uint32_t *out_tick, uint32_t *out_peer,
+                                   uint8_t *out_seq) {
+  if (!mod_scene_graph_id_is_sim(id)) {
+    return false;
+  }
+  if (out_tick) {
+    *out_tick = (id >> 12) & 0xffffu;
+  }
+  if (out_peer) {
+    *out_peer = (id >> 4) & 0xffu;
+  }
+  if (out_seq) {
+    *out_seq = (uint8_t)(id & 0x0fu);
+  }
+  return true;
+}
+
 uint32_t mod_scene_graph_alloc_local_id(void) {
   uint32_t n = g_local_id_seq++;
   if (n == 0u) {
@@ -1196,3 +1214,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-08-01 | peer ack baseline structs | 0d01e8
 // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 6af17e
 // agent: composer-2.5 | 2026-08-01 | entity id band helpers | b89ff8
+// agent: composer-2.5 | 2026-08-02 | sim id unpack entity text | adca75

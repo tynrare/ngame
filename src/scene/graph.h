@@ -32,6 +32,8 @@ NgSpawnCtx mod_scene_spawn_get_ctx(void);
 bool mod_scene_graph_id_is_sim(uint32_t id);
 bool mod_scene_graph_id_is_local(uint32_t id);
 uint32_t mod_scene_graph_pack_sim_id(uint32_t tick, uint32_t peer, uint8_t seq);
+bool mod_scene_graph_unpack_sim_id(uint32_t id, uint32_t *out_tick, uint32_t *out_peer,
+                                   uint8_t *out_seq);
 uint32_t mod_scene_graph_alloc_local_id(void);
 // agent: composer-2.5 | 2026-07-29 | entity optional body field | da5462
 typedef struct NgSceneDesc {
