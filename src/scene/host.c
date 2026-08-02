@@ -681,15 +681,23 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     rot = default_rot;
   }
 
-  /* Local may spawn anytime; net entities only in start / action / join. */
+  // agent: composer-2.5 | 2026-08-02 | fixed-step spawn ctx wire | 272cf9
+  /* Local may spawn anytime; net entities only in start / action / join / fixed_step. */
   if (sync != NG_SYNC_LOCAL && spawn_ctx == NG_SPAWN_CTX_NONE) {
-    NG_LOG_ERROR("spawn: refuse %s — not in start/action/join context", name);
+    /* Predict steps skip world spawn ctx — quiet no-op (avoid ERROR spam). */
+    // agent: composer-2.5 | 2026-08-02 | predict spawn silent skip | 12d9b1
+    if (mod_lockstep_active() && mod_lockstep_step_tick() > mod_lockstep_confirmed_tick()) {
+      duk_push_int(ctx, 0);
+      return 1;
+    }
+    NG_LOG_ERROR("spawn: refuse %s — not in start/action/join/fixed_step context", name);
     duk_push_int(ctx, 0);
     return 1;
   }
 
-  /* Action apply: deterministic sim-band id (idempotent on resim). */
-  if (spawn_ctx == NG_SPAWN_CTX_ACTION_APPLY && sync != NG_SYNC_LOCAL) {
+  /* Action / confirmed fixed_step: deterministic sim-band id (idempotent on resim). */
+  if ((spawn_ctx == NG_SPAWN_CTX_ACTION_APPLY || spawn_ctx == NG_SPAWN_CTX_FIXED_STEP) &&
+      sync != NG_SYNC_LOCAL) {
     const uint32_t entity_id = ng_jsact_next_sim_entity_id();
     NgSceneInst *by_id = mod_scene_graph_inst_by_id(entity_id);
     if (by_id) {
@@ -716,8 +724,8 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     const int handle =
         mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
     // agent: composer-2.5 | 2026-08-02 | action spawn id observe | 3c17d5
-    NG_LOG_INFO("spawn: action id=%u desc=%s handle=%d body=%s", entity_id, name, handle,
-                sync == NG_SYNC_SERVER ? "server" : "other");
+    NG_LOG_INFO("spawn: sim id=%u desc=%s handle=%d ctx=%d", entity_id, name, handle,
+                (int)spawn_ctx);
     duk_push_int(ctx, handle);
     return 1;
   }
@@ -1448,6 +1456,89 @@ static duk_ret_t bind_action_tick(duk_context *ctx) {
   return 1;
 }
 
+// agent: composer-2.5 | 2026-08-02 | fixed-step spawn ctx wire | 272cf9
+static duk_ret_t bind_sim_tick(duk_context *ctx) {
+  duk_push_number(ctx, (double)mod_lockstep_step_tick());
+  return 1;
+}
+
+// agent: composer-2.5 | 2026-08-02 | predict spawn silent skip | 12d9b1
+static duk_ret_t bind_sim_confirmed(duk_context *ctx) {
+  const bool ok =
+      !mod_lockstep_active() || mod_lockstep_step_tick() == 0u ||
+      mod_lockstep_step_tick() <= mod_lockstep_confirmed_tick();
+  duk_push_boolean(ctx, ok ? 1 : 0);
+  return 1;
+}
+
+// agent: composer-2.5 | 2026-08-02 | find_entities by desc sorted | 795149
+static duk_ret_t bind_find_entities(duk_context *ctx) {
+  const char *desc = duk_require_string(ctx, 0);
+  typedef struct {
+    uint32_t id;
+    int handle;
+  } NgFound;
+  NgFound found[NG_SCENE_INST_MAX];
+  int n = 0;
+  const int count = mod_scene_graph_inst_count();
+  for (int i = 0; i < count && n < NG_SCENE_INST_MAX; i++) {
+    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+    if (!inst || !inst->alive || strcmp(inst->desc_name, desc) != 0) {
+      continue;
+    }
+    found[n].id = inst->id;
+    found[n].handle = inst->handle;
+    n++;
+  }
+  for (int i = 0; i < n; i++) {
+    for (int j = i + 1; j < n; j++) {
+      if (found[j].id < found[i].id) {
+        const NgFound t = found[i];
+        found[i] = found[j];
+        found[j] = t;
+      }
+    }
+  }
+  duk_push_array(ctx);
+  for (int i = 0; i < n; i++) {
+    duk_push_int(ctx, found[i].handle);
+    duk_put_prop_index(ctx, -2, (duk_uarridx_t)i);
+  }
+  return 1;
+}
+
+// agent: composer-2.5 | 2026-08-02 | pack_sim_id despawn_id binds | 780590
+static duk_ret_t bind_pack_sim_id(duk_context *ctx) {
+  const uint32_t tick = (uint32_t)duk_require_number(ctx, 0);
+  const uint32_t peer = (uint32_t)duk_require_number(ctx, 1);
+  const uint32_t seq = (uint32_t)duk_require_number(ctx, 2);
+  duk_push_number(ctx, (double)mod_scene_graph_pack_sim_id(tick, peer, (uint8_t)(seq & 0x0fu)));
+  return 1;
+}
+
+static duk_ret_t bind_despawn_id(duk_context *ctx) {
+  ModSceneCtx *scene = mod_scene_from_ctx(ctx);
+  const uint32_t entity_id = (uint32_t)duk_require_number(ctx, 0);
+  NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
+  if (!inst) {
+    duk_push_boolean(ctx, 0);
+    return 1;
+  }
+  const int handle = inst->handle;
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  if (inst->world_id != 0) {
+    ng_world_despawn(mod_sim_world(), inst->world_id);
+    inst->world_id = 0;
+  }
+#endif
+  mod_scene_call_entity_method(scene, inst, "stop");
+  mod_scene_call_entity_method(scene, inst, "dispose");
+  mod_scene_physics_detach(handle);
+  mod_scene_graph_despawn(handle);
+  duk_push_boolean(ctx, 1);
+  return 1;
+}
+
 static void mod_scene_bind_global(duk_context *ctx) {
   duk_push_global_object(ctx);
 
@@ -1498,6 +1589,15 @@ static void mod_scene_bind_global(duk_context *ctx) {
   BIND("action", bind_action, DUK_VARARGS);
   BIND("action_peer", bind_action_peer, 0);
   BIND("action_tick", bind_action_tick, 0);
+  // agent: composer-2.5 | 2026-08-02 | fixed-step spawn ctx wire | 272cf9
+  BIND("sim_tick", bind_sim_tick, 0);
+  // agent: composer-2.5 | 2026-08-02 | predict spawn silent skip | 12d9b1
+  BIND("sim_confirmed", bind_sim_confirmed, 0);
+  // agent: composer-2.5 | 2026-08-02 | find_entities by desc sorted | 795149
+  BIND("find_entities", bind_find_entities, 1);
+  // agent: composer-2.5 | 2026-08-02 | pack_sim_id despawn_id binds | 780590
+  BIND("pack_sim_id", bind_pack_sim_id, 3);
+  BIND("despawn_id", bind_despawn_id, 1);
 
 #undef BIND
 
@@ -1998,6 +2098,7 @@ static void mod_scene_fixed_step_ctx(ModSceneCtx *ctx, float fixed_dt) {
   // agent: composer-2.5 | 2026-07-30 | skip view phys step lockstep | 890ea4
   // agent: composer-2.5 | 2026-07-30 | guard duk stack on scene tick | 10fe96
   // agent: composer-2.5 | 2026-08-01 | action_register action bindings | 234498
+  // agent: composer-2.5 | 2026-08-02 | fixed-step spawn ctx wire | 272cf9
   mod_scene_set_active_for(ctx);
   const duk_idx_t stack_top = duk_get_top(ctx->ctx);
   const bool lockstep_view_skip =
@@ -2010,10 +2111,22 @@ static void mod_scene_fixed_step_ctx(ModSceneCtx *ctx, float fixed_dt) {
   if (mod_lockstep_active()) {
     ng_jsact_dispatch_tick(ctx->ctx, mod_lockstep_step_tick());
   }
+  const uint32_t step_tick = mod_lockstep_step_tick();
+  const bool world_spawn_ok =
+      !mod_lockstep_active() || step_tick == 0u || step_tick <= mod_lockstep_confirmed_tick();
+  const NgSpawnCtx prev_spawn = mod_scene_spawn_get_ctx();
+  if (world_spawn_ok) {
+    mod_scene_spawn_set_ctx(NG_SPAWN_CTX_FIXED_STEP);
+    ng_jsact_begin_fixed_step_spawn(step_tick == 0u ? 1u : step_tick);
+  }
   duk_push_number(ctx->ctx, fixed_dt);
   mod_scene_call_method(ctx, "fixed_step", 1);
   mod_scene_call_all_wired_dt(ctx, "fixed_step", fixed_dt);
   mod_scene_run_entity_fixed_steps(ctx, fixed_dt);
+  if (world_spawn_ok) {
+    ng_jsact_end_fixed_step_spawn();
+    mod_scene_spawn_set_ctx(prev_spawn);
+  }
   duk_set_top(ctx->ctx, stack_top);
   if (!lockstep_view_skip) {
     mod_scene_physics_fixed_step(fixed_dt, mod_scene_is_server(), ctx->is_controller);
@@ -2324,7 +2437,18 @@ bool mod_scene_is_loaded(void) {
 }
 
 const char *mod_scene_current_id(void) {
+  // agent: composer-2.5 | 2026-08-02 | current_id view fallback solo | 4215eb
   mod_scene_runtime_use_server();
+  if (NG_SCENE_ACTIVE()->loaded && NG_SCENE_ACTIVE()->scene_id[0] != '\0') {
+    return NG_SCENE_ACTIVE()->scene_id;
+  }
+#if !defined(NG_SERVER)
+  mod_scene_runtime_use_view();
+  if (NG_SCENE_ACTIVE()->loaded && NG_SCENE_ACTIVE()->scene_id[0] != '\0') {
+    return NG_SCENE_ACTIVE()->scene_id;
+  }
+  mod_scene_runtime_use_server();
+#endif
   return NG_SCENE_ACTIVE()->scene_id;
 }
 
@@ -3379,6 +3503,111 @@ static bool mod_scene_action_dual_peer_id_smoke(void) {
   return ok;
 }
 
+// agent: composer-2.5 | 2026-08-02 | fixed_step spawn idempotent smoke | 9b7f2f
+static int mod_scene_smoke_count_desc(const char *desc) {
+  int n = 0;
+  const int count = mod_scene_graph_inst_count();
+  for (int i = 0; i < count; i++) {
+    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+    if (inst && inst->alive && strcmp(inst->desc_name, desc) == 0) {
+      n++;
+    }
+  }
+  return n;
+}
+
+static bool mod_scene_fixed_step_spawn_smoke(void) {
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+
+  mod_scene_runtime_use_server();
+  if (!mod_scene_begin("stress_spawn", true, true)) {
+    return false;
+  }
+  {
+    ModSceneCtx *ctx = mod_scene_runtime_scene();
+    NgSessionState session = {0};
+    strncpy(session.scene_id, "stress_spawn", sizeof(session.scene_id) - 1);
+    session.lockstep = 2;
+    mod_scene_push_session_obj(ctx, &session);
+    if (!mod_scene_call_start(ctx)) {
+      mod_scene_unload(ctx);
+      return false;
+    }
+    mod_scene_drain_pending_change(ctx);
+    ctx->started = true;
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_HYBRID);
+  }
+
+  mod_scene_runtime_use_view();
+  if (!mod_scene_begin("stress_spawn", false, true)) {
+    mod_scene_runtime_use_server();
+    mod_scene_unload(mod_scene_runtime_scene());
+    return false;
+  }
+  {
+    ModSceneCtx *ctx = mod_scene_runtime_scene();
+    NgSessionState session = {0};
+    strncpy(session.scene_id, "stress_spawn", sizeof(session.scene_id) - 1);
+    session.lockstep = 2;
+    session.your_id = 1;
+    session.controller_id = 1;
+    mod_scene_push_session_obj(ctx, &session);
+    if (!mod_scene_call_start(ctx)) {
+      mod_scene_unload(ctx);
+      mod_scene_runtime_use_server();
+      mod_scene_unload(mod_scene_runtime_scene());
+      return false;
+    }
+    mod_scene_drain_pending_change(ctx);
+    ctx->started = true;
+    mod_scene_physics_set_sim_mode(NG_PHYS_SIM_HYBRID);
+  }
+
+  mod_scene_lockstep_restart(1);
+  mod_lockstep_set_local_peer(1);
+  mod_lockstep_set_clock_owner(true);
+  mod_lockstep_note_roster();
+
+  const uint32_t tick = 5u;
+  mod_lockstep_set_confirmed_tick(tick);
+  mod_lockstep_set_step_tick(tick);
+
+  mod_scene_fixed_step_ctx(&g_scene_server.scene, NG_MOD_FIXED_DT);
+  mod_scene_fixed_step_ctx(&g_scene_view.scene, NG_MOD_FIXED_DT);
+
+  const uint32_t want = mod_scene_graph_pack_sim_id(tick, 0, 0);
+  mod_scene_runtime_use_server();
+  NgSceneInst *sball = mod_scene_graph_inst_by_id(want);
+  const int scount = mod_scene_smoke_count_desc("ball_e");
+  mod_scene_runtime_use_view();
+  NgSceneInst *vball = mod_scene_graph_inst_by_id(want);
+  const int vcount = mod_scene_smoke_count_desc("ball_e");
+
+  bool ok = sball && vball && scount == 1 && vcount == 1 &&
+            strcmp(sball->desc_name, "ball_e") == 0 && strcmp(vball->desc_name, "ball_e") == 0 &&
+            mod_scene_graph_id_is_sim(want);
+
+  /* Resim same confirmed tick — refresh, no second ball. */
+  if (ok) {
+    mod_lockstep_set_step_tick(tick);
+    mod_scene_fixed_step_ctx(&g_scene_server.scene, NG_MOD_FIXED_DT);
+    mod_scene_fixed_step_ctx(&g_scene_view.scene, NG_MOD_FIXED_DT);
+    mod_scene_runtime_use_server();
+    ok = mod_scene_smoke_count_desc("ball_e") == 1 && mod_scene_graph_inst_by_id(want) != NULL;
+    mod_scene_runtime_use_view();
+    ok = ok && mod_scene_smoke_count_desc("ball_e") == 1 && mod_scene_graph_inst_by_id(want) != NULL;
+  }
+
+  mod_scene_runtime_use_view();
+  mod_scene_unload(mod_scene_runtime_scene());
+  mod_scene_runtime_use_server();
+  mod_scene_unload(mod_scene_runtime_scene());
+  mod_lockstep_reset();
+  ng_mod_set_fixed_gate(NULL);
+  return ok;
+}
+
 bool mod_scene_smoke_test(void) {
   // agent: composer-2.5 | 2026-07-30 | lockstep dual channel flush smoke | 26e91c
   if (!mod_scene_smoke_one("cube", "cube_a_e", false)) {
@@ -3396,6 +3625,11 @@ bool mod_scene_smoke_test(void) {
   // agent: composer-2.5 | 2026-08-01 | smoke stacking scene load | e196c4
   if (!mod_scene_smoke_one("stacking", "box_e", true)) {
     fprintf(stderr, "smoke fail: stacking\n");
+    return false;
+  }
+  // agent: composer-2.5 | 2026-08-02 | fixed_step spawn idempotent smoke | 9b7f2f
+  if (!mod_scene_smoke_one("stress_spawn", "box_e", true)) {
+    fprintf(stderr, "smoke fail: stress_spawn\n");
     return false;
   }
   if (!mod_scene_smoke_one("owner", "owner_e", false)) {
@@ -3418,6 +3652,11 @@ bool mod_scene_smoke_test(void) {
   // agent: composer-2.5 | 2026-08-02 | dual peer action id smoke | de07d6
   if (!mod_scene_action_dual_peer_id_smoke()) {
     fprintf(stderr, "smoke fail: action_dual_peer_id\n");
+    return false;
+  }
+  // agent: composer-2.5 | 2026-08-02 | fixed_step spawn idempotent smoke | 9b7f2f
+  if (!mod_scene_fixed_step_spawn_smoke()) {
+    fprintf(stderr, "smoke fail: fixed_step_spawn\n");
     return false;
   }
   return true;
@@ -3510,3 +3749,10 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-08-02 | sim id unpack entity text | 930881
 // agent: composer-2.5 | 2026-08-02 | dual peer action id smoke | de07d6
 // agent: composer-2.5 | 2026-08-02 | action spawn id observe | 3c17d5
+// agent: composer-2.5 | 2026-08-02 | fixed-step spawn ctx wire | 272cf9
+// agent: composer-2.5 | 2026-08-02 | fixed_step spawn idempotent smoke | 9b7f2f
+// agent: composer-2.5 | 2026-08-02 | predict spawn silent skip | 12d9b1
+// agent: composer-2.5 | 2026-08-02 | find_entities by desc sorted | 795149
+// agent: composer-2.5 | 2026-08-02 | pack_sim_id despawn_id binds | 780590
+// agent: composer-2.5 | 2026-08-02 | current_id view fallback solo | 4215eb
+// agent: composer-2.5 | 2026-08-02 | drop view soft session impl | 87a4ee

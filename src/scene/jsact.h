@@ -32,6 +32,11 @@ uint32_t ng_jsact_apply_tick(void);
 /* Next deterministic sim-band entity id for spawn during action apply. */
 uint32_t ng_jsact_next_sim_entity_id(void);
 
+/* World (peer 0) sim ids for confirmed fixed_step — ≤16 spawns/tick. */
+void ng_jsact_begin_fixed_step_spawn(uint32_t tick);
+void ng_jsact_end_fixed_step_spawn(void);
+
 #endif
 // agent: composer-2.5 | 2026-08-01 | jsact registry and apply | ecdc2a
 // agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | e812b7
+// agent: composer-2.5 | 2026-08-02 | world fixed-step sim id API | a36afc

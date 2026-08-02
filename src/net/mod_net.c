@@ -1811,21 +1811,34 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
     /* Lockstep peers load Box3D on the server slot. Leaving lockstep must tear that
      * world down and clear the fixed gate — otherwise cube STALLs forever. */
     if (session.lockstep) {
-      /* Force reload only when scene_gen changes (real scene load). Controller
-       * SESSION has snap_tick=0 — must not tear down a live lockstep world. */
+      /* Force reload on scene_gen or late-join syncing. snap=0 keep-alives
+       * (playout adapt / controller) must not tear down a live world. */
       // agent: cursor-grok-4.5 | 2026-07-31 | scene gen only on load | cebf8b
+      // agent: composer-2.5 | 2026-08-02 | syncing forces server reload | 42078f
+      // agent: composer-2.5 | 2026-08-02 | SESSION keep-alive no reload | b8a0f7
       if (session.syncing) {
-        mod_scene_on_session(&session);
+        /* Join path: rebuild server Box3D slot + view (not soft on_session). */
+        mod_scene_on_session_forced(&session);
+        mod_scene_view_on_session(&session);
       } else if (session.snap_tick != 0u && session.snap_tick != ctx->applied_scene_gen) {
         ctx->applied_scene_gen = session.snap_tick;
         mod_scene_on_session_forced(&session);
+        mod_scene_view_on_session(&session);
       } else {
-        mod_scene_on_session(&session);
+        /* Playout already applied above. Cold-load only if view empty/mismatch. */
+        const char *vid = mod_scene_view_current_id();
+        const bool need_load =
+            !mod_scene_view_is_loaded() || !vid || vid[0] == '\0' ||
+            strcmp(vid, session.scene_id) != 0;
+        if (need_load) {
+          mod_scene_on_session(&session);
+          mod_scene_view_on_session(&session);
+        }
       }
     } else {
       mod_scene_clear_lockstep_server();
+      mod_scene_view_on_session(&session);
     }
-    mod_scene_view_on_session(&session);
     break;
   }
   case NG_PKT_STATE_UPDATE: {
@@ -2055,7 +2068,10 @@ static void mod_net_on_peer(NgNet *net, NgNetPeer *peer, bool connected, void *v
       /* Defer PAUSE until REGISTER — name may rebind a ghost seat (soft PHYS). */
       ps->pending_lock_rejoin = true;
       ps->pending_connect_snap = true;
-      ps->pending_connect_session = true;
+      /* Do not send snap=0 SESSION before REGISTER: client would cold-start
+       * without join_sync, then syncing SESSION cannot rebuild the server slot. */
+      // agent: composer-2.5 | 2026-08-02 | defer mid-sim connect SESSION | 7b8412
+      ps->pending_connect_session = false;
       NG_LOG_INFO("lockstep: connect peer=%u — await REGISTER (rebind or late-join)", ps->peer_id);
       mod_net_send_connect_snapshot(net, peer, ctx);
       ng_net_flush(net);
@@ -3089,3 +3105,6 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-08-01 | per-peer state ack baseline | 7352da
 // agent: composer-2.5 | 2026-08-01 | lock input action net path | f2140a
 // agent: composer-2.5 | 2026-08-01 | session sets local peer early | 416b8e
+// agent: composer-2.5 | 2026-08-02 | defer mid-sim connect SESSION | 7b8412
+// agent: composer-2.5 | 2026-08-02 | SESSION keep-alive no reload | b8a0f7
+// agent: composer-2.5 | 2026-08-02 | syncing forces server reload | 42078f

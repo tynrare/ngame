@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+description: "Brief typed docs on C/JS functions"
+globs:
+  - "**/*.c"
+  - "**/*.h"
+  - "**/*.js"
+---
+Doc new or edited functions lightly: one-line brief, typed params, typed return (or void). Prefer `/** … */` (JSDoc / Doxygen-style). Skip trivial one-liners and vendor.

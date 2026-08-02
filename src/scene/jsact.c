@@ -65,6 +65,20 @@ uint32_t ng_jsact_next_sim_entity_id(void) {
   return mod_scene_graph_pack_sim_id(g_jsact_apply_tick, g_jsact_apply_peer, seq);
 }
 
+// agent: composer-2.5 | 2026-08-02 | world fixed-step sim id begin | 16f0d2
+/* World peer 0 — ≤16 pack seqs per tick (same nibble as action). */
+void ng_jsact_begin_fixed_step_spawn(uint32_t tick) {
+  g_jsact_apply_tick = tick == 0u ? 1u : tick;
+  g_jsact_apply_peer = 0u;
+  g_jsact_spawn_seq = 0;
+}
+
+void ng_jsact_end_fixed_step_spawn(void) {
+  g_jsact_apply_peer = 0;
+  g_jsact_apply_tick = 0;
+  g_jsact_spawn_seq = 0;
+}
+
 static NgJsActEntry *ng_jsact_find(uint16_t id) {
   for (int i = 0; i < g_jsact_n; i++) {
     if (g_jsact[i].used && g_jsact[i].id == id) {
@@ -288,3 +302,4 @@ void ng_jsact_dispatch_tick(duk_context *ctx, uint32_t tick) {
 // agent: composer-2.5 | 2026-08-01 | jsact sim entity id seq | 09de0e
 // agent: composer-2.5 | 2026-08-01 | actions only when confirmed | 1d4a0d
 // agent: composer-2.5 | 2026-08-02 | sim-entity-id playbook header | bec2df
+// agent: composer-2.5 | 2026-08-02 | world fixed-step sim id begin | 16f0d2

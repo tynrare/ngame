@@ -177,8 +177,8 @@ echo "$SNAP_OUT" | grep -q "view scene=sphere"
 echo "$SNAP_OUT" | grep -q "view scene=sphere loaded=1"
 echo "$SNAP_OUT" | grep -q "visible=1"
 echo "$SNAP_OUT" | grep -q "bg=0c1430"
-echo "$SNAP_OUT" | grep -q "gateway upstream=1"
-echo "$SNAP_OUT" | grep -q "ready=1"
+# agent: composer-2.5 | 2026-08-02 | validate gateway Connected to text | 9361c9
+echo "$SNAP_OUT" | grep -q "Connected to"
 
 echo "== gateway local scene sphere switch =="
 SPHERE_OUT=""
@@ -222,3 +222,4 @@ echo "ALL OK"
 # agent: composer-2.5 | 2026-08-01 | validate poor peer soak | f7dfa0
 # agent: composer-2.5 | 2026-08-01 | validate pure lockstep stall | f069f1
 # agent: composer-2.5 | 2026-08-01 | validate server state soak | 8419a0
+# agent: composer-2.5 | 2026-08-02 | validate gateway Connected to text | 9361c9

@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+description: "Short replies; lean code; prefer simplify"
+---
+Prefer brevity. Keep answers short and code changes small. Favor cutting or simplifying over adding complexity.

@@ -1,7 +1,8 @@
 # Scenes
 
 <!-- agent: composer-2.5 | 2026-08-01 | list stacking in scenes docs | fcd0a4 -->
-Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, or **`example`** (helpers demo).
+<!-- agent: composer-2.5 | 2026-08-02 | list stress_spawn scene id | c65956 -->
+Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, or **`example`** (helpers demo).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
@@ -85,7 +86,8 @@ Body scripts on the phys owner apply torque/force from that. Conflicting bits fo
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | 2af883 -->
 <!-- agent: composer-2.5 | 2026-08-02 | docs sim entity phys upsert | 3edf8a -->
-**Spawn contexts / ids (input-sim):** non-`local` `spawn` only in `Scene.start`, confirmed action apply, or join materialize (else refuse). Start/join: low entity ids from SESSION/ordinal. Action apply: sim-band id `pack(tick, peer, seq)` — same on server and view heaps; resim is idempotent. `sync:local`: private id band, any time. Optional spawn `key` is not required for shoot/action creates. Under input-sim, Box3D body names are `e<id>/<desc>` for PHYS export/import; soft PHYS **upserts** missing graph insts by that name and **despawns** unrebound body insts (host snapshot authority). Action propose is view-heap only when both heaps are loaded.
+<!-- agent: composer-2.5 | 2026-08-02 | list stress_spawn scene id | c65956 -->
+**Spawn contexts / ids (input-sim):** non-`local` `spawn` only in `Scene.start`, confirmed action apply, confirmed `fixed_step` (world peer `0`), or join materialize (else refuse). Start/join: low entity ids from SESSION/ordinal. Action apply: sim-band id `pack(tick, peer, seq)`. Confirmed `fixed_step`: `pack(tick, 0, seq)` (≤16/tick); predict skips world spawn (quiet). Same ids on server/view; resim idempotent. `sync:local`: private id band, any time. Optional spawn `key` is not required for shoot/action creates. Under input-sim, Box3D body names are `e<id>/<desc>` for PHYS export/import; soft PHYS **upserts** missing graph insts by that name and **despawns** unrebound body insts (host snapshot authority). Action propose is view-heap only when both heaps are loaded. `global.sim_tick()` / `global.sim_confirmed()` for RNG and confirmed-only churn. See `res/scenes/stress_spawn.js`.
 <!-- agent: composer-2.5 | 2026-07-30 | docs bandwidth lockstep playout | 563455 -->
 **Playout delay:** default `NG_LOCK_PLAYOUT_TICKS` (6 ≈ 100 ms at 60 Hz fixed step) buffers local send-ahead before the first multi-peer sim tick. Runtime: `mod_lockstep_set_playout_ticks` / `mod_lockstep_playout_ticks`.
 
@@ -189,6 +191,6 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-01 | list stacking in scenes docs | fcd0a4 -->
 <!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
 <!-- agent: composer-2.5 | 2026-08-01 | docs lockstep js actions | e26fd2 -->
-<!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 524507 -->
 <!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | 2af883 -->
 <!-- agent: composer-2.5 | 2026-08-02 | docs sim entity phys upsert | 3edf8a -->
+<!-- agent: composer-2.5 | 2026-08-02 | list stress_spawn scene id | c65956 -->

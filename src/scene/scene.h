@@ -32,6 +32,7 @@ void mod_scene_on_session(const NgSessionState *session);
 // agent: cursor-grok-4.5 | 2026-07-31 | scene epoch forces reload | a3917d
 void mod_scene_on_session_forced(const NgSessionState *session);
 void mod_scene_view_on_session(const NgSessionState *session);
+// agent: composer-2.5 | 2026-08-02 | drop view soft session API | 2a60a0
 /* Tear down server lockstep world + fixed gate when SESSION has lockstep=0. */
 void mod_scene_clear_lockstep_server(void);
 void mod_scene_apply_remote(const NgStateUpdate *update);
@@ -74,3 +75,4 @@ bool mod_scene_is_native(void);
 // agent: composer-2.5 | 2026-07-31 | drop mode b comment scene | 4b59ea
 // agent: composer-2.5 | 2026-08-01 | interest origin helper | 79d287
 // agent: composer-2.5 | 2026-08-01 | scene KEY_F constant | 58ea6c
+// agent: composer-2.5 | 2026-08-02 | drop view soft session API | 2a60a0

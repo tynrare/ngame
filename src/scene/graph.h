@@ -19,11 +19,13 @@ struct duk_hthread;
 #define NG_ENTITY_ID_SIM_BASE 0x40000000u
 #define NG_ENTITY_ID_LOCAL_BASE 0x80000000u
 
+// agent: composer-2.5 | 2026-08-02 | add FIXED_STEP spawn ctx | abcd62
 typedef enum NgSpawnCtx {
   NG_SPAWN_CTX_NONE = 0,
   NG_SPAWN_CTX_START,
   NG_SPAWN_CTX_ACTION_APPLY,
   NG_SPAWN_CTX_JOIN_MATERIALIZE,
+  NG_SPAWN_CTX_FIXED_STEP,
 } NgSpawnCtx;
 
 void mod_scene_spawn_set_ctx(NgSpawnCtx ctx);
@@ -200,3 +202,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
 // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 8a078a
 // agent: composer-2.5 | 2026-08-01 | entity id band helpers | 21c51e
+// agent: composer-2.5 | 2026-08-02 | add FIXED_STEP spawn ctx | abcd62

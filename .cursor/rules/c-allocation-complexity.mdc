@@ -1,0 +1,8 @@
+---
+alwaysApply: true
+description: "C — avoid hot-path allocs; keep complexity low"
+globs:
+  - "**/*.c"
+  - "**/*.h"
+---
+Prefer stable buffers and scratch reuse over malloc/strdup in ticks and loops. Early returns, small helpers, less nesting; tables over long if-chains on hot paths. Skip for rare/init code.
