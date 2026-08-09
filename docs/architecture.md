@@ -86,6 +86,9 @@ Remote dedicated host uses the same server module stack (`ng_app_server` / `ng_s
 
 <!-- agent: composer-2.5 | 2026-08-09 | docs dual server entry | ec3ea1 -->
 <!-- agent: cursor-grok-4.5 | 2026-07-31 | gateway sim wall clock note | 64a891 -->
+<!-- agent: composer-2.5 | 2026-08-09 | link instanced draw docs | 25bf96 -->
+Render batches same-model entities via `DrawMeshInstanced` — see [instanced-draw.md](instanced-draw.md).
+
 **Scheduling:** gateway sim/net is **wall-clock paced** (≈60 Hz slices, catch-up when a frame is late). Render is a thin present after the pump — `SetTargetFPS` / swap must not own lockstep input production. An unfocused window must not freeze other peers.
 
 See [scenes.md](scenes.md).
@@ -112,3 +115,4 @@ Net flush runs both when lockstep is active: lockstep inputs/acks/hashes, plus `
 <!-- agent: composer-2.5 | 2026-08-01 | rename input get_local_any_peer | 5df554 -->
 <!-- agent: composer-2.5 | 2026-08-09 | docs dual server entry | ec3ea1 -->
 <!-- agent: composer-2.5 | 2026-08-09 | docs nested proxy facets | 3eab21 -->
+<!-- agent: composer-2.5 | 2026-08-09 | link instanced draw docs | 25bf96 -->

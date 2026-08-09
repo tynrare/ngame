@@ -2,6 +2,7 @@
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 7e0b28
 // agent: composer-2.5 | 2026-08-09 | gbuffer RTs debug blit | 96d6a0
+// agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
 #include "render.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -17,9 +18,11 @@
 #include "ng_viewport.h"
 #include "world/ng_world.h"
 #include <math.h>
+#include <limits.h>
 #include <raylib.h>
 #include <raymath.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef enum NgRenderDebugPass {
@@ -42,6 +45,15 @@ typedef struct RenderAsset {
 } RenderAsset;
 
 #define NG_RENDER_CACHE_MAX 16
+#define NG_RENDER_BATCH_MAX 16
+
+// agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
+typedef struct NgInstanceBatch {
+  char model[32];
+  Matrix *mats;
+  int count;
+  int capacity;
+} NgInstanceBatch;
 
 typedef struct RenderAssetCacheEntry {
   char key[32];
@@ -51,6 +63,8 @@ typedef struct RenderAssetCacheEntry {
 typedef struct ModRenderCtx {
   RenderAssetCacheEntry cache[NG_RENDER_CACHE_MAX];
   int cache_count;
+  NgInstanceBatch batches[NG_RENDER_BATCH_MAX];
+  int batch_count;
   NgSnapshot prev;
   NgSnapshot curr;
   bool have_prev;
@@ -162,11 +176,92 @@ static void mod_render_unload_asset(RenderAsset *a) {
   a->ready = false;
 }
 
+static void mod_render_clear_batches(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
+  for (int i = 0; i < ctx->batch_count; i++) {
+    free(ctx->batches[i].mats);
+    ctx->batches[i].mats = NULL;
+    ctx->batches[i].count = 0;
+    ctx->batches[i].capacity = 0;
+    ctx->batches[i].model[0] = '\0';
+  }
+  ctx->batch_count = 0;
+}
+
 static void mod_render_clear_cache(ModRenderCtx *ctx) {
   for (int i = 0; i < ctx->cache_count; i++) {
     mod_render_unload_asset(&ctx->cache[i].asset);
   }
   ctx->cache_count = 0;
+  mod_render_clear_batches(ctx);
+}
+
+static void mod_render_batches_reset_counts(ModRenderCtx *ctx) {
+  for (int i = 0; i < ctx->batch_count; i++) {
+    ctx->batches[i].count = 0;
+  }
+}
+
+/** Grow batch capacity to at least need (start 1, double). */
+static bool mod_render_batch_ensure(NgInstanceBatch *b, int need) {
+  if (!b || need <= 0) {
+    return false;
+  }
+  if (need <= b->capacity) {
+    return true;
+  }
+  int cap = b->capacity > 0 ? b->capacity : 1;
+  while (cap < need) {
+    if (cap > INT_MAX / 2) {
+      return false;
+    }
+    cap *= 2;
+  }
+  Matrix *next = (Matrix *)realloc(b->mats, (size_t)cap * sizeof(Matrix));
+  if (!next) {
+    return false;
+  }
+  b->mats = next;
+  b->capacity = cap;
+  return true;
+}
+
+static NgInstanceBatch *mod_render_batch_get(ModRenderCtx *ctx, const char *key) {
+  if (!ctx || !key || key[0] == '\0') {
+    return NULL;
+  }
+  for (int i = 0; i < ctx->batch_count; i++) {
+    if (strcmp(ctx->batches[i].model, key) == 0) {
+      return &ctx->batches[i];
+    }
+  }
+  if (ctx->batch_count >= NG_RENDER_BATCH_MAX) {
+    return NULL;
+  }
+  NgInstanceBatch *b = &ctx->batches[ctx->batch_count++];
+  memset(b, 0, sizeof(*b));
+  strncpy(b->model, key, sizeof(b->model) - 1);
+  return b;
+}
+
+/** Append one instance matrix; false on OOM or full batch table. */
+static bool mod_render_batch_push(NgInstanceBatch *b, Matrix m) {
+  if (!b) {
+    return false;
+  }
+  if (!mod_render_batch_ensure(b, b->count + 1)) {
+    return false;
+  }
+  b->mats[b->count++] = m;
+  return true;
+}
+
+/** Build world matrix from pose (quat × scale × translate). */
+static Matrix mod_render_pose_matrix(float x, float y, float z, const float rot[3], float scale) {
+  const float s = scale > 0.0f ? scale : 1.0f;
+  const Quaternion q = QuaternionFromEuler(rot[0], rot[1], rot[2]);
+  return MatrixMultiply(MatrixMultiply(MatrixScale(s, s, s), QuaternionToMatrix(q)),
+                        MatrixTranslate(x, y, z));
 }
 
 static RenderAsset *mod_render_cache_get(ModRenderCtx *ctx, const char *key) {
@@ -413,36 +508,46 @@ static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
   return true;
 }
 
-static void mod_render_draw_entity_gbuf(ModRenderCtx *ctx, const RenderAsset *a, float x, float y,
-                                        float z, const float rot[3], float scale, int mode) {
-  if (!a->ready || !ctx->gbuf_shader_ready) {
+static void mod_render_draw_batch(const RenderAsset *a, NgInstanceBatch *b) {
+  // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
+  if (!a || !a->ready || a->shader.handle.id == 0 || !b || b->count <= 0 || !b->mats) {
     return;
   }
-  Model model = a->model;
-  const Shader prev = model.materials[0].shader;
-  model.materials[0].shader = ctx->gbuf_shader.handle;
-  mod_render_set_gbuf_uniforms(ctx, a, mode);
-  const float s = scale > 0.0f ? scale : 1.0f;
-  const Quaternion q = QuaternionFromEuler(rot[0], rot[1], rot[2]);
-  model.transform =
-      MatrixMultiply(MatrixMultiply(MatrixScale(s, s, s), QuaternionToMatrix(q)),
-                     MatrixTranslate(x, y, z));
-  DrawModel(model, (Vector3){0.0f, 0.0f, 0.0f}, 1.0f, WHITE);
-  model.materials[0].shader = prev;
+  if (a->model.meshCount <= 0) {
+    return;
+  }
+  ng_shader_set_common((NgShader *)&a->shader, (float)GetTime());
+  mod_render_set_material_uniforms(a);
+  DrawMeshInstanced(a->model.meshes[0], a->model.materials[0], b->mats, b->count);
 }
 
-static void mod_render_fill_gbuf_graph(ModRenderCtx *ctx, RenderTexture2D *rt, int mode) {
-  BeginTextureMode(*rt);
-  ClearBackground(BLACK);
-  BeginMode3D(ctx->camera);
+static void mod_render_draw_batch_gbuf(ModRenderCtx *ctx, const RenderAsset *a, NgInstanceBatch *b,
+                                      int mode) {
+  if (!a || !a->ready || !ctx->gbuf_shader_ready || !b || b->count <= 0 || !b->mats) {
+    return;
+  }
+  if (a->model.meshCount <= 0) {
+    return;
+  }
+  Material mat = a->model.materials[0];
+  mat.shader = ctx->gbuf_shader.handle;
+  mod_render_set_gbuf_uniforms(ctx, a, mode);
+  DrawMeshInstanced(a->model.meshes[0], mat, b->mats, b->count);
+}
+
+static void mod_render_collect_graph_batches(ModRenderCtx *ctx) {
+  mod_render_batches_reset_counts(ctx);
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (!inst) {
+    if (!inst || !inst->model[0]) {
       continue;
     }
-    RenderAsset *a = mod_render_asset_for_model(ctx, inst->model);
-    if (!a) {
+    if (!mod_render_asset_for_model(ctx, inst->model)) {
+      continue;
+    }
+    NgInstanceBatch *b = mod_render_batch_get(ctx, inst->model);
+    if (!b) {
       continue;
     }
     float pos[3];
@@ -456,8 +561,41 @@ static void mod_render_fill_gbuf_graph(ModRenderCtx *ctx, RenderTexture2D *rt, i
       rot[1] = inst->rot[1];
       rot[2] = inst->rot[2];
     }
-    mod_render_draw_entity_gbuf(ctx, a, pos[0], pos[1], pos[2], rot, inst->scale, mode);
+    (void)mod_render_batch_push(b, mod_render_pose_matrix(pos[0], pos[1], pos[2], rot, inst->scale));
   }
+}
+
+static void mod_render_flush_batches(ModRenderCtx *ctx) {
+  for (int i = 0; i < ctx->batch_count; i++) {
+    NgInstanceBatch *b = &ctx->batches[i];
+    if (b->count <= 0) {
+      continue;
+    }
+    RenderAsset *a = mod_render_cache_get(ctx, b->model);
+    if (a) {
+      mod_render_draw_batch(a, b);
+    }
+  }
+}
+
+static void mod_render_flush_batches_gbuf(ModRenderCtx *ctx, int mode) {
+  for (int i = 0; i < ctx->batch_count; i++) {
+    NgInstanceBatch *b = &ctx->batches[i];
+    if (b->count <= 0) {
+      continue;
+    }
+    RenderAsset *a = mod_render_cache_get(ctx, b->model);
+    if (a) {
+      mod_render_draw_batch_gbuf(ctx, a, b, mode);
+    }
+  }
+}
+
+static void mod_render_fill_gbuf_graph(ModRenderCtx *ctx, RenderTexture2D *rt, int mode) {
+  BeginTextureMode(*rt);
+  ClearBackground(BLACK);
+  BeginMode3D(ctx->camera);
+  mod_render_flush_batches_gbuf(ctx, mode);
   EndMode3D();
   EndTextureMode();
 }
@@ -468,64 +606,12 @@ static void mod_render_blit_rt(const RenderTexture2D *rt) {
   DrawTexturePro(rt->texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
 }
 
-static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type, float x, float y,
-                                        float z, const float rot[3], float scale, float phase) {
-  (void)type;
-  if (!a->ready || a->shader.handle.id == 0) {
-    return;
-  }
-  const float client_t = (float)GetTime() + phase;
-  ng_shader_set_common((NgShader *)&a->shader, client_t);
-  mod_render_set_material_uniforms(a);
-
-  // agent: composer-2.5 | 2026-07-29 | draw entities via model transform | 1415d8
-  // agent: composer-2.5 | 2026-08-02 | draw via quat not RotateXYZ | 838826
-  /* MatrixRotateXYZ negates angles — mismatches physics XYZ euler/quat. */
-  const float s = scale > 0.0f ? scale : 1.0f;
-  Model model = a->model;
-  const Quaternion q = QuaternionFromEuler(rot[0], rot[1], rot[2]);
-  model.transform =
-      MatrixMultiply(MatrixMultiply(MatrixScale(s, s, s), QuaternionToMatrix(q)),
-                     MatrixTranslate(x, y, z));
-  DrawModel(model, (Vector3){0.0f, 0.0f, 0.0f}, 1.0f, WHITE);
-}
-
-static void mod_render_draw_graph_inst(ModRenderCtx *ctx, const NgSceneInst *inst) {
-  // agent: composer-2.5 | 2026-07-30 | render hermite state samples | f452ba
-  RenderAsset *a = mod_render_asset_for_model(ctx, inst->model);
-  if (!a) {
-    return;
-  }
-  NgSceneResolvedModel resolved;
-  NgEntityType type = NG_ENTITY_CUBE;
-  if (mod_scene_assets_resolve_model(inst->model, &resolved) && resolved.ok) {
-    type = mod_scene_assets_entity_type_for_kind(resolved.mesh_kind);
-  }
-  float pos[3];
-  float rot[3];
-  // agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
-  if (!mod_scene_graph_sample_draw_pose(inst, GetTime(), mod_scene_graph_interp_delay_s(), pos,
-                                        rot)) {
-    pos[0] = inst->pos[0];
-    pos[1] = inst->pos[1];
-    pos[2] = inst->pos[2];
-    rot[0] = inst->rot[0];
-    rot[1] = inst->rot[1];
-    rot[2] = inst->rot[2];
-  }
-  mod_render_draw_entity_live(a, type, pos[0], pos[1], pos[2], rot, inst->scale, inst->phase);
-}
-
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
   mod_scene_runtime_use_view();
-  const int n = mod_scene_graph_inst_count();
+  mod_render_collect_graph_batches(ctx);
   BeginMode3D(ctx->camera);
-  for (int i = 0; i < n; i++) {
-    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (inst) {
-      mod_render_draw_graph_inst(ctx, inst);
-    }
-  }
+  mod_render_flush_batches(ctx);
   EndMode3D();
 }
 
@@ -544,27 +630,53 @@ static void mod_render_draw_waiting(ModRenderCtx *ctx) {
   DrawText(line, 20, 20, 18, RAYWHITE);
 }
 
-static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
-                                   const NgEntitySnap *p, float alpha) {
-  // agent: composer-2.5 | 2026-07-25 | skip draw invalid shader | 9b4abd
-  if (!a->ready || a->shader.handle.id == 0) {
-    return;
+static void mod_render_collect_snapshot_batches(ModRenderCtx *ctx) {
+  mod_render_batches_reset_counts(ctx);
+  for (int i = 0; i < ctx->curr.entity_count; i++) {
+    const NgEntitySnap *e = &ctx->curr.entities[i];
+    const NgEntitySnap *p = e;
+    if (ctx->have_prev) {
+      for (int j = 0; j < ctx->prev.entity_count; j++) {
+        if (ctx->prev.entities[j].id == e->id) {
+          p = &ctx->prev.entities[j];
+          break;
+        }
+      }
+    }
+    const NgSceneMeshKind kind =
+        e->type == NG_ENTITY_SPHERE ? NG_SCENE_MESH_SPHERE : NG_SCENE_MESH_CUBE;
+    char key[16];
+    snprintf(key, sizeof(key), "@%d", (int)kind);
+    if (!mod_render_asset_for_mesh_kind(ctx, kind)) {
+      continue;
+    }
+    NgInstanceBatch *b = mod_render_batch_get(ctx, key);
+    if (!b) {
+      continue;
+    }
+    const float yaw = mod_render_lerp(p ? p->rot_y : e->rot_y, e->rot_y, ctx->alpha);
+    const float pos[3] = {mod_render_lerp(p ? p->pos[0] : e->pos[0], e->pos[0], ctx->alpha),
+                          mod_render_lerp(p ? p->pos[1] : e->pos[1], e->pos[1], ctx->alpha),
+                          mod_render_lerp(p ? p->pos[2] : e->pos[2], e->pos[2], ctx->alpha)};
+    const float rot[3] = {0.0f, yaw, 0.0f};
+    (void)mod_render_batch_push(b, mod_render_pose_matrix(pos[0], pos[1], pos[2], rot, 1.0f));
   }
-  const float client_t = (float)GetTime();
-  const float yaw = mod_render_lerp(p ? p->rot_y : e->rot_y, e->rot_y, alpha);
+}
 
-  ng_shader_set_common((NgShader *)&a->shader, client_t);
-  mod_render_set_material_uniforms(a);
-
-  const Vector3 pos = {mod_render_lerp(p ? p->pos[0] : e->pos[0], e->pos[0], alpha),
-                       mod_render_lerp(p ? p->pos[1] : e->pos[1], e->pos[1], alpha),
-                       mod_render_lerp(p ? p->pos[2] : e->pos[2], e->pos[2], alpha)};
-  if (e->type == NG_ENTITY_CUBE) {
-    DrawModelEx(a->model, pos, (Vector3){0.0f, 1.0f, 0.0f}, yaw * 57.2958f,
-                (Vector3){1.0f, 1.0f, 1.0f}, WHITE);
-  } else {
-    DrawModel(a->model, pos, 1.0f, WHITE);
+static void mod_render_draw_snapshot(ModRenderCtx *ctx) {
+  mod_render_collect_snapshot_batches(ctx);
+  BeginMode3D(ctx->camera);
+  for (int i = 0; i < ctx->batch_count; i++) {
+    NgInstanceBatch *b = &ctx->batches[i];
+    if (b->count <= 0) {
+      continue;
+    }
+    RenderAsset *a = mod_render_cache_get(ctx, b->model);
+    if (a) {
+      mod_render_draw_batch(a, b);
+    }
   }
+  EndMode3D();
 }
 
 static void mod_render_draw_scene(ModRenderCtx *ctx) {
@@ -583,6 +695,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       mod_scene_runtime_use_view();
     }
     if (mod_render_ensure_gbuf(ctx)) {
+      mod_render_collect_graph_batches(ctx);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_albedo, 0);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_normal, 1);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_glow, 2);
@@ -606,52 +719,14 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   if (mod_scene_view_graph_active()) {
     mod_render_draw_scene_graph(ctx);
   } else if (ctx->have_curr && ctx->curr.entity_count > 0) {
-    BeginMode3D(ctx->camera);
-    for (int i = 0; i < ctx->curr.entity_count; i++) {
-      const NgEntitySnap *e = &ctx->curr.entities[i];
-      const NgEntitySnap *p = e;
-      if (ctx->have_prev) {
-        for (int j = 0; j < ctx->prev.entity_count; j++) {
-          if (ctx->prev.entities[j].id == e->id) {
-            p = &ctx->prev.entities[j];
-            break;
-          }
-        }
-      }
-      const NgSceneMeshKind kind =
-          e->type == NG_ENTITY_SPHERE ? NG_SCENE_MESH_SPHERE : NG_SCENE_MESH_CUBE;
-      const RenderAsset *a = mod_render_asset_for_mesh_kind(ctx, kind);
-      if (a) {
-        mod_render_draw_entity(a, e, p, ctx->alpha);
-      }
-    }
-    EndMode3D();
+    mod_render_draw_snapshot(ctx);
   } else if (mod_scene_view_is_loaded()) {
     mod_render_draw_scene_graph(ctx);
   } else if (mod_net_is_authoritative() && mod_scene_is_loaded()) {
     mod_scene_runtime_use_server();
     mod_render_draw_scene_graph(ctx);
   } else if (ctx->have_curr) {
-    BeginMode3D(ctx->camera);
-    for (int i = 0; i < ctx->curr.entity_count; i++) {
-      const NgEntitySnap *e = &ctx->curr.entities[i];
-      const NgEntitySnap *p = e;
-      if (ctx->have_prev) {
-        for (int j = 0; j < ctx->prev.entity_count; j++) {
-          if (ctx->prev.entities[j].id == e->id) {
-            p = &ctx->prev.entities[j];
-            break;
-          }
-        }
-      }
-      const NgSceneMeshKind kind =
-          e->type == NG_ENTITY_SPHERE ? NG_SCENE_MESH_SPHERE : NG_SCENE_MESH_CUBE;
-      const RenderAsset *a = mod_render_asset_for_mesh_kind(ctx, kind);
-      if (a) {
-        mod_render_draw_entity(a, e, p, ctx->alpha);
-      }
-    }
-    EndMode3D();
+    mod_render_draw_snapshot(ctx);
   }
 
   mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
@@ -853,3 +928,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-02 | draw via quat not RotateXYZ | 838826
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 7e0b28
 // agent: composer-2.5 | 2026-08-09 | gbuffer RTs debug blit | 96d6a0
+// agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
