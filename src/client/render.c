@@ -1,5 +1,7 @@
 // agent: composer-2.5 | 2026-07-25 | client render module | g0j28e
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 7e0b28
+// agent: composer-2.5 | 2026-08-09 | gbuffer RTs debug blit | 96d6a0
 #include "render.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -12,6 +14,7 @@
 #include "scene/native.h"
 #include "ng_path.h"
 #include "ng_shader.h"
+#include "ng_viewport.h"
 #include "world/ng_world.h"
 #include <math.h>
 #include <raylib.h>
@@ -19,12 +22,23 @@
 #include <stdio.h>
 #include <string.h>
 
+typedef enum NgRenderDebugPass {
+  NG_RENDER_PASS_FINAL = 0,
+  NG_RENDER_PASS_ALBEDO,
+  NG_RENDER_PASS_NORMAL,
+  NG_RENDER_PASS_GLOW,
+  NG_RENDER_PASS_DEPTH,
+} NgRenderDebugPass;
+
 typedef struct RenderAsset {
   bool ready;
   Model model;
   NgShader shader;
   Color bg;
   Color tint;
+  Color glow;
+  float roughness;
+  float metalness;
 } RenderAsset;
 
 #define NG_RENDER_CACHE_MAX 16
@@ -47,9 +61,62 @@ typedef struct ModRenderCtx {
   NgSyncMode scene_sync;
   Camera3D camera;
   uint16_t last_input_seq;
+  NgRenderDebugPass debug_pass;
+  RenderTexture2D rt_albedo;
+  RenderTexture2D rt_normal;
+  RenderTexture2D rt_glow;
+  RenderTexture2D rt_depth;
+  bool gbuf_ready;
+  int gbuf_w;
+  int gbuf_h;
+  NgShader gbuf_shader;
+  bool gbuf_shader_ready;
 } ModRenderCtx;
 
 static ModRenderCtx g_render_ctx;
+
+static const char *mod_render_pass_name(NgRenderDebugPass pass) {
+  switch (pass) {
+  case NG_RENDER_PASS_ALBEDO:
+    return "albedo";
+  case NG_RENDER_PASS_NORMAL:
+    return "normal";
+  case NG_RENDER_PASS_GLOW:
+    return "glow";
+  case NG_RENDER_PASS_DEPTH:
+    return "depth";
+  case NG_RENDER_PASS_FINAL:
+  default:
+    return "final";
+  }
+}
+
+static bool mod_render_pass_from_name(const char *name, NgRenderDebugPass *out) {
+  if (!name || !out) {
+    return false;
+  }
+  if (strcmp(name, "final") == 0) {
+    *out = NG_RENDER_PASS_FINAL;
+    return true;
+  }
+  if (strcmp(name, "albedo") == 0) {
+    *out = NG_RENDER_PASS_ALBEDO;
+    return true;
+  }
+  if (strcmp(name, "normal") == 0) {
+    *out = NG_RENDER_PASS_NORMAL;
+    return true;
+  }
+  if (strcmp(name, "glow") == 0) {
+    *out = NG_RENDER_PASS_GLOW;
+    return true;
+  }
+  if (strcmp(name, "depth") == 0) {
+    *out = NG_RENDER_PASS_DEPTH;
+    return true;
+  }
+  return false;
+}
 
 static void mod_render_load_asset_mesh(RenderAsset *a, const NgSceneResolvedModel *resolved,
                                        const char *fs_path, const char *vs_path) {
@@ -67,6 +134,14 @@ static void mod_render_load_asset_mesh(RenderAsset *a, const NgSceneResolvedMode
   } else {
     a->tint = WHITE;
   }
+  // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 7e0b28
+  if (resolved->have_glow) {
+    a->glow = (Color){resolved->glow_r, resolved->glow_g, resolved->glow_b, 255};
+  } else {
+    a->glow = (Color){0, 0, 0, 255};
+  }
+  a->roughness = resolved->roughness;
+  a->metalness = resolved->metalness;
   a->bg = BLACK;
   a->model = LoadModelFromMesh(mesh);
   a->shader = ng_shader_load(vs_path, fs_path);
@@ -246,6 +321,153 @@ static void mod_render_draw_overlay(const char *label, int y) {
   }
 }
 
+static void mod_render_set_material_uniforms(const RenderAsset *a) {
+  if (a->shader.loc_tint >= 0) {
+    const float tint[3] = {(float)a->tint.r / 255.0f, (float)a->tint.g / 255.0f,
+                           (float)a->tint.b / 255.0f};
+    SetShaderValue(a->shader.handle, a->shader.loc_tint, tint, SHADER_UNIFORM_VEC3);
+  }
+  if (a->shader.loc_glow >= 0) {
+    const float glow[3] = {(float)a->glow.r / 255.0f, (float)a->glow.g / 255.0f,
+                           (float)a->glow.b / 255.0f};
+    SetShaderValue(a->shader.handle, a->shader.loc_glow, glow, SHADER_UNIFORM_VEC3);
+  }
+  if (a->shader.loc_roughness >= 0) {
+    SetShaderValue(a->shader.handle, a->shader.loc_roughness, &a->roughness, SHADER_UNIFORM_FLOAT);
+  }
+  if (a->shader.loc_metalness >= 0) {
+    SetShaderValue(a->shader.handle, a->shader.loc_metalness, &a->metalness, SHADER_UNIFORM_FLOAT);
+  }
+}
+
+static void mod_render_set_gbuf_uniforms(ModRenderCtx *ctx, const RenderAsset *a, int mode) {
+  NgShader *sh = &ctx->gbuf_shader;
+  ng_shader_set_common(sh, (float)GetTime());
+  if (sh->loc_tint >= 0) {
+    const float tint[3] = {(float)a->tint.r / 255.0f, (float)a->tint.g / 255.0f,
+                           (float)a->tint.b / 255.0f};
+    SetShaderValue(sh->handle, sh->loc_tint, tint, SHADER_UNIFORM_VEC3);
+  }
+  if (sh->loc_glow >= 0) {
+    const float glow[3] = {(float)a->glow.r / 255.0f, (float)a->glow.g / 255.0f,
+                           (float)a->glow.b / 255.0f};
+    SetShaderValue(sh->handle, sh->loc_glow, glow, SHADER_UNIFORM_VEC3);
+  }
+  if (sh->loc_roughness >= 0) {
+    SetShaderValue(sh->handle, sh->loc_roughness, &a->roughness, SHADER_UNIFORM_FLOAT);
+  }
+  if (sh->loc_metalness >= 0) {
+    SetShaderValue(sh->handle, sh->loc_metalness, &a->metalness, SHADER_UNIFORM_FLOAT);
+  }
+  if (sh->loc_gbuf_mode >= 0) {
+    SetShaderValue(sh->handle, sh->loc_gbuf_mode, &mode, SHADER_UNIFORM_INT);
+  }
+}
+
+static void mod_render_unload_gbuf(ModRenderCtx *ctx) {
+  if (ctx->gbuf_ready) {
+    UnloadRenderTexture(ctx->rt_albedo);
+    UnloadRenderTexture(ctx->rt_normal);
+    UnloadRenderTexture(ctx->rt_glow);
+    UnloadRenderTexture(ctx->rt_depth);
+    ctx->gbuf_ready = false;
+    ctx->gbuf_w = 0;
+    ctx->gbuf_h = 0;
+  }
+  if (ctx->gbuf_shader_ready) {
+    ng_shader_unload(&ctx->gbuf_shader);
+    ctx->gbuf_shader_ready = false;
+  }
+}
+
+static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
+  const int w = ng_viewport_width();
+  const int h = ng_viewport_height();
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (!ctx->gbuf_shader_ready) {
+    ctx->gbuf_shader = ng_shader_load(NG_RES_ROOT "shaders/mesh.vs", NG_RES_ROOT "shaders/rc_gbuf.fs");
+    if (ctx->gbuf_shader.handle.id == 0) {
+      return false;
+    }
+    ctx->gbuf_shader_ready = true;
+  }
+  if (ctx->gbuf_ready && ctx->gbuf_w == w && ctx->gbuf_h == h) {
+    return true;
+  }
+  if (ctx->gbuf_ready) {
+    UnloadRenderTexture(ctx->rt_albedo);
+    UnloadRenderTexture(ctx->rt_normal);
+    UnloadRenderTexture(ctx->rt_glow);
+    UnloadRenderTexture(ctx->rt_depth);
+    ctx->gbuf_ready = false;
+  }
+  ctx->rt_albedo = LoadRenderTexture(w, h);
+  ctx->rt_normal = LoadRenderTexture(w, h);
+  ctx->rt_glow = LoadRenderTexture(w, h);
+  ctx->rt_depth = LoadRenderTexture(w, h);
+  ctx->gbuf_w = w;
+  ctx->gbuf_h = h;
+  ctx->gbuf_ready = true;
+  return true;
+}
+
+static void mod_render_draw_entity_gbuf(ModRenderCtx *ctx, const RenderAsset *a, float x, float y,
+                                        float z, const float rot[3], float scale, int mode) {
+  if (!a->ready || !ctx->gbuf_shader_ready) {
+    return;
+  }
+  Model model = a->model;
+  const Shader prev = model.materials[0].shader;
+  model.materials[0].shader = ctx->gbuf_shader.handle;
+  mod_render_set_gbuf_uniforms(ctx, a, mode);
+  const float s = scale > 0.0f ? scale : 1.0f;
+  const Quaternion q = QuaternionFromEuler(rot[0], rot[1], rot[2]);
+  model.transform =
+      MatrixMultiply(MatrixMultiply(MatrixScale(s, s, s), QuaternionToMatrix(q)),
+                     MatrixTranslate(x, y, z));
+  DrawModel(model, (Vector3){0.0f, 0.0f, 0.0f}, 1.0f, WHITE);
+  model.materials[0].shader = prev;
+}
+
+static void mod_render_fill_gbuf_graph(ModRenderCtx *ctx, RenderTexture2D *rt, int mode) {
+  BeginTextureMode(*rt);
+  ClearBackground(BLACK);
+  BeginMode3D(ctx->camera);
+  const int n = mod_scene_graph_inst_count();
+  for (int i = 0; i < n; i++) {
+    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+    if (!inst) {
+      continue;
+    }
+    RenderAsset *a = mod_render_asset_for_model(ctx, inst->model);
+    if (!a) {
+      continue;
+    }
+    float pos[3];
+    float rot[3];
+    if (!mod_scene_graph_sample_draw_pose(inst, GetTime(), mod_scene_graph_interp_delay_s(), pos,
+                                          rot)) {
+      pos[0] = inst->pos[0];
+      pos[1] = inst->pos[1];
+      pos[2] = inst->pos[2];
+      rot[0] = inst->rot[0];
+      rot[1] = inst->rot[1];
+      rot[2] = inst->rot[2];
+    }
+    mod_render_draw_entity_gbuf(ctx, a, pos[0], pos[1], pos[2], rot, inst->scale, mode);
+  }
+  EndMode3D();
+  EndTextureMode();
+}
+
+static void mod_render_blit_rt(const RenderTexture2D *rt) {
+  const Rectangle src = {0.0f, 0.0f, (float)rt->texture.width, -(float)rt->texture.height};
+  const Rectangle dst = {0.0f, 0.0f, (float)GetScreenWidth(), (float)GetScreenHeight()};
+  DrawTexturePro(rt->texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+}
+
 static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type, float x, float y,
                                         float z, const float rot[3], float scale, float phase) {
   (void)type;
@@ -254,11 +476,7 @@ static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type,
   }
   const float client_t = (float)GetTime() + phase;
   ng_shader_set_common((NgShader *)&a->shader, client_t);
-  if (a->shader.loc_tint >= 0) {
-    const float tint[3] = {(float)a->tint.r / 255.0f, (float)a->tint.g / 255.0f,
-                           (float)a->tint.b / 255.0f};
-    SetShaderValue(a->shader.handle, a->shader.loc_tint, tint, SHADER_UNIFORM_VEC3);
-  }
+  mod_render_set_material_uniforms(a);
 
   // agent: composer-2.5 | 2026-07-29 | draw entities via model transform | 1415d8
   // agent: composer-2.5 | 2026-08-02 | draw via quat not RotateXYZ | 838826
@@ -336,11 +554,7 @@ static void mod_render_draw_entity(const RenderAsset *a, const NgEntitySnap *e,
   const float yaw = mod_render_lerp(p ? p->rot_y : e->rot_y, e->rot_y, alpha);
 
   ng_shader_set_common((NgShader *)&a->shader, client_t);
-  if (a->shader.loc_tint >= 0) {
-    const float tint[3] = {(float)a->tint.r / 255.0f, (float)a->tint.g / 255.0f,
-                           (float)a->tint.b / 255.0f};
-    SetShaderValue(a->shader.handle, a->shader.loc_tint, tint, SHADER_UNIFORM_VEC3);
-  }
+  mod_render_set_material_uniforms(a);
 
   const Vector3 pos = {mod_render_lerp(p ? p->pos[0] : e->pos[0], e->pos[0], alpha),
                        mod_render_lerp(p ? p->pos[1] : e->pos[1], e->pos[1], alpha),
@@ -358,6 +572,37 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   mod_render_update_camera(ctx);
 
   mod_scene_runtime_use_view();
+  const bool graph = mod_scene_view_graph_active() ||
+                     (mod_scene_view_is_loaded() && mod_scene_graph_inst_count() > 0) ||
+                     (mod_net_is_authoritative() && mod_scene_is_loaded());
+
+  if (ctx->debug_pass != NG_RENDER_PASS_FINAL && graph) {
+    if (mod_net_is_authoritative() && !mod_scene_view_graph_active() && mod_scene_is_loaded()) {
+      mod_scene_runtime_use_server();
+    } else {
+      mod_scene_runtime_use_view();
+    }
+    if (mod_render_ensure_gbuf(ctx)) {
+      mod_render_fill_gbuf_graph(ctx, &ctx->rt_albedo, 0);
+      mod_render_fill_gbuf_graph(ctx, &ctx->rt_normal, 1);
+      mod_render_fill_gbuf_graph(ctx, &ctx->rt_glow, 2);
+      mod_render_fill_gbuf_graph(ctx, &ctx->rt_depth, 3);
+      ClearBackground(BLACK);
+      if (ctx->debug_pass == NG_RENDER_PASS_ALBEDO) {
+        mod_render_blit_rt(&ctx->rt_albedo);
+      } else if (ctx->debug_pass == NG_RENDER_PASS_NORMAL) {
+        mod_render_blit_rt(&ctx->rt_normal);
+      } else if (ctx->debug_pass == NG_RENDER_PASS_GLOW) {
+        mod_render_blit_rt(&ctx->rt_glow);
+      } else {
+        mod_render_blit_rt(&ctx->rt_depth);
+      }
+      mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
+      DrawText(TextFormat("pass=%s", mod_render_pass_name(ctx->debug_pass)), 10, 34, 18, LIME);
+      return;
+    }
+  }
+
   if (mod_scene_view_graph_active()) {
     mod_render_draw_scene_graph(ctx);
   } else if (ctx->have_curr && ctx->curr.entity_count > 0) {
@@ -503,6 +748,7 @@ static bool mod_render_init(void *vctx) {
   ModRenderCtx *ctx = (ModRenderCtx *)vctx;
   memset(ctx, 0, sizeof(*ctx));
   ctx->scene_label[0] = '\0';
+  ctx->debug_pass = NG_RENDER_PASS_FINAL;
   mod_render_init_camera(ctx);
   return true;
 }
@@ -510,6 +756,7 @@ static bool mod_render_init(void *vctx) {
 static void mod_render_shutdown(void *vctx) {
   ModRenderCtx *ctx = (ModRenderCtx *)vctx;
   mod_render_clear_cache(ctx);
+  mod_render_unload_gbuf(ctx);
 }
 
 // agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 220dba
@@ -567,6 +814,32 @@ void mod_render_visibility_text(char *out, size_t cap) {
   }
 }
 
+bool mod_render_set(const char *path, const char *value) {
+  if (!path || !value) {
+    return false;
+  }
+  if (strcmp(path, "debug.render.pass") == 0) {
+    NgRenderDebugPass pass;
+    if (!mod_render_pass_from_name(value, &pass)) {
+      return false;
+    }
+    g_render_ctx.debug_pass = pass;
+    return true;
+  }
+  return false;
+}
+
+bool mod_render_get(const char *path, char *out, size_t cap) {
+  if (!path || !out || cap == 0) {
+    return false;
+  }
+  if (strcmp(path, "debug.render.pass") == 0) {
+    snprintf(out, cap, "%s", mod_render_pass_name(g_render_ctx.debug_pass));
+    return true;
+  }
+  return false;
+}
+
 // agent: composer-2.5 | 2026-07-29 | snapshot before empty graph | 57ca7b
 // agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
@@ -578,3 +851,5 @@ void mod_render_visibility_text(char *out, size_t cap) {
 // agent: composer-2.5 | 2026-07-30 | render hermite state samples | f452ba
 // agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
 // agent: composer-2.5 | 2026-08-02 | draw via quat not RotateXYZ | 838826
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 7e0b28
+// agent: composer-2.5 | 2026-08-09 | gbuffer RTs debug blit | 96d6a0

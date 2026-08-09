@@ -19,7 +19,7 @@
     "2": {
       "ping": {
         "last_ok": {
-          "ping": 0,
+          "ping": 5000,
           "loss": 0,
           "throttle": 0,
           "desync_pct": 0.0,
@@ -29,18 +29,8 @@
           "infra": false,
           "launch_attempts": 1
         },
-        "fail": {
-          "ping": 25,
-          "loss": 0,
-          "throttle": 0,
-          "desync_pct": 0.0,
-          "desync_samples": 0,
-          "total_samples": 7,
-          "reason": "tick_frozen",
-          "infra": false,
-          "launch_attempts": 1
-        },
-        "survived": false,
+        "fail": null,
+        "survived": true,
         "infra_blocked": false
       },
       "loss": {
@@ -63,52 +53,32 @@
         "last_ok": {
           "ping": 0,
           "loss": 0,
-          "throttle": 20,
+          "throttle": 90,
           "desync_pct": 0.0,
           "desync_samples": 0,
-          "total_samples": 15,
+          "total_samples": 8,
           "reason": "",
           "infra": false,
           "launch_attempts": 1
         },
-        "fail": {
-          "ping": 0,
-          "loss": 0,
-          "throttle": 30,
-          "desync_pct": 100.0,
-          "desync_samples": 8,
-          "total_samples": 8,
-          "reason": "phys_resync_exhausted",
-          "infra": false,
-          "launch_attempts": 3
-        },
-        "survived": false,
+        "fail": null,
+        "survived": true,
         "infra_blocked": false
       },
       "combined": {
         "last_ok": {
-          "ping": 1000,
-          "loss": 70,
+          "ping": 5000,
+          "loss": 90,
           "throttle": 90,
           "desync_pct": 0.0,
           "desync_samples": 0,
-          "total_samples": 9,
+          "total_samples": 8,
           "reason": "",
           "infra": false,
           "launch_attempts": 1
         },
-        "fail": {
-          "ping": 2000,
-          "loss": 80,
-          "throttle": 90,
-          "desync_pct": 0.0,
-          "desync_samples": 0,
-          "total_samples": 5,
-          "reason": "tick_frozen",
-          "infra": false,
-          "launch_attempts": 1
-        },
-        "survived": false,
+        "fail": null,
+        "survived": true,
         "infra_blocked": false
       }
     }
@@ -124,7 +94,7 @@
         "ok": true,
         "scene": "stacking",
         "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=693/conf=698/zf=0/pred=0/play=6/graph=61 | c1:tick=695/conf=699/zf=0/pred=0/play=6/graph=61",
+        "notes": "calm peers=2 tick=310; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=769/conf=774/zf=0/pred=0/play=6/graph=61 | c1:tick=776/conf=775/zf=0/pred=1/play=6/graph=61",
         "desync_pct": 0.0,
         "desync_samples": 0,
         "total_samples": 15,
@@ -133,8 +103,8 @@
         "samples": [
           {
             "tick": [
-              248,
-              248
+              322,
+              322
             ],
             "hash_desync": false,
             "graph": [
@@ -144,8 +114,8 @@
           },
           {
             "tick": [
-              347,
-              347
+              421,
+              421
             ],
             "hash_desync": false,
             "graph": [
@@ -155,8 +125,8 @@
           },
           {
             "tick": [
-              446,
-              446
+              520,
+              520
             ],
             "hash_desync": false,
             "graph": [
@@ -166,8 +136,8 @@
           },
           {
             "tick": [
-              545,
-              545
+              619,
+              619
             ],
             "hash_desync": false,
             "graph": [
@@ -177,8 +147,8 @@
           },
           {
             "tick": [
-              637,
-              637
+              714,
+              714
             ],
             "hash_desync": false,
             "graph": [
@@ -194,107 +164,10 @@
         "ping": 25,
         "loss": 0,
         "throttle": 0,
-        "ok": false,
-        "scene": "stacking",
-        "break_reason": "tick_frozen",
-        "notes": "tick\u0394=0 conf\u0394=0 over 3.4s; desync=0.0% (0/7); actions=7; softPHYS=0; hashMM=0; c0:tick=33/conf=24/zf=0/pred=9/play=10/graph=31 | c1:tick=33/conf=24/zf=0/pred=9/play=10/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 7,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              33,
-              33
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              33,
-              33
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              33,
-              33
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              33,
-              33
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              33,
-              33
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              33,
-              33
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              33,
-              33
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      }
-    ],
-    "2-client loss-only": [
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 0,
-        "throttle": 0,
         "ok": true,
         "scene": "stacking",
         "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=707/conf=709/zf=0/pred=0/play=6/graph=60 | c1:tick=706/conf=711/zf=0/pred=0/play=6/graph=60",
+        "notes": "calm peers=2 tick=266; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=732/conf=729/zf=0/pred=3/play=6/graph=59 | c1:tick=727/conf=730/zf=0/pred=0/play=6/graph=61",
         "desync_pct": 0.0,
         "desync_samples": 0,
         "total_samples": 15,
@@ -303,8 +176,8 @@
         "samples": [
           {
             "tick": [
-              254,
-              254
+              278,
+              278
             ],
             "hash_desync": false,
             "graph": [
@@ -314,8 +187,8 @@
           },
           {
             "tick": [
-              353,
-              353
+              378,
+              378
             ],
             "hash_desync": false,
             "graph": [
@@ -325,8 +198,8 @@
           },
           {
             "tick": [
-              452,
-              452
+              477,
+              477
             ],
             "hash_desync": false,
             "graph": [
@@ -336,81 +209,8 @@
           },
           {
             "tick": [
-              550,
-              551
-            ],
-            "hash_desync": false,
-            "graph": [
-              50,
-              50
-            ]
-          },
-          {
-            "tick": [
-              646,
-              646
-            ],
-            "hash_desync": false,
-            "graph": [
-              56,
-              56
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 5,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=698/conf=698/zf=0/pred=0/play=6/graph=60 | c1:tick=693/conf=698/zf=0/pred=0/play=6/graph=61",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              252,
-              253
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              351,
-              352
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              450,
-              451
-            ],
-            "hash_desync": false,
-            "graph": [
-              45,
-              45
-            ]
-          },
-          {
-            "tick": [
-              548,
-              547
+              575,
+              575
             ],
             "hash_desync": false,
             "graph": [
@@ -420,8 +220,8 @@
           },
           {
             "tick": [
-              641,
-              639
+              668,
+              667
             ],
             "hash_desync": false,
             "graph": [
@@ -433,1293 +233,37 @@
       },
       {
         "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 10,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=706/conf=710/zf=0/pred=0/play=6/graph=61 | c1:tick=706/conf=711/zf=0/pred=0/play=6/graph=61",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              253,
-              254
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              352,
-              353
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              450,
-              451
-            ],
-            "hash_desync": false,
-            "graph": [
-              45,
-              45
-            ]
-          },
-          {
-            "tick": [
-              548,
-              549
-            ],
-            "hash_desync": false,
-            "graph": [
-              51,
-              51
-            ]
-          },
-          {
-            "tick": [
-              642,
-              643
-            ],
-            "hash_desync": false,
-            "graph": [
-              57,
-              57
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 15,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=710/conf=713/zf=0/pred=0/play=6/graph=60 | c1:tick=714/conf=716/zf=0/pred=0/play=6/graph=60",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              256,
-              257
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              355,
-              356
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              454,
-              455
-            ],
-            "hash_desync": false,
-            "graph": [
-              44,
-              44
-            ]
-          },
-          {
-            "tick": [
-              551,
-              553
-            ],
-            "hash_desync": false,
-            "graph": [
-              50,
-              50
-            ]
-          },
-          {
-            "tick": [
-              649,
-              652
-            ],
-            "hash_desync": false,
-            "graph": [
-              56,
-              56
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 20,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=758/conf=763/zf=0/pred=0/play=6/graph=59 | c1:tick=759/conf=763/zf=0/pred=0/play=6/graph=59",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              304,
-              305
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              403,
-              404
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              502,
-              503
-            ],
-            "hash_desync": false,
-            "graph": [
-              45,
-              45
-            ]
-          },
-          {
-            "tick": [
-              601,
-              601
-            ],
-            "hash_desync": false,
-            "graph": [
-              50,
-              50
-            ]
-          },
-          {
-            "tick": [
-              695,
-              696
-            ],
-            "hash_desync": false,
-            "graph": [
-              56,
-              56
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 25,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=759/conf=762/zf=0/pred=0/play=6/graph=59 | c1:tick=759/conf=762/zf=0/pred=0/play=6/graph=59",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              303,
-              304
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              403,
-              404
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              502,
-              503
-            ],
-            "hash_desync": false,
-            "graph": [
-              44,
-              44
-            ]
-          },
-          {
-            "tick": [
-              601,
-              601
-            ],
-            "hash_desync": false,
-            "graph": [
-              49,
-              49
-            ]
-          },
-          {
-            "tick": [
-              699,
-              699
-            ],
-            "hash_desync": false,
-            "graph": [
-              55,
-              55
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 30,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=712/conf=712/zf=0/pred=0/play=6/graph=31 | c1:tick=712/conf=712/zf=0/pred=0/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              250,
-              250
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              349,
-              349
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              448,
-              448
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              547,
-              547
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              646,
-              646
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 40,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=765/conf=766/zf=0/pred=0/play=6/graph=43 | c1:tick=766/conf=766/zf=0/pred=0/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              302,
-              303
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              401,
-              402
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              500,
-              501
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              599,
-              600
-            ],
-            "hash_desync": false,
-            "graph": [
-              34,
-              31
-            ]
-          },
-          {
-            "tick": [
-              699,
-              700
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 50,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=764/conf=762/zf=0/pred=2/play=6/graph=31 | c1:tick=764/conf=762/zf=0/pred=2/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              302,
-              302
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              401,
-              401
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              500,
-              500
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              599,
-              599
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              698,
-              698
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 60,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=709/conf=706/zf=0/pred=3/play=6/graph=31 | c1:tick=709/conf=708/zf=0/pred=1/play=6/graph=32",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              246,
-              246
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              345,
-              345
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              445,
-              445
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              32
-            ]
-          },
-          {
-            "tick": [
-              544,
-              544
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              32
-            ]
-          },
-          {
-            "tick": [
-              643,
-              643
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              32
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 70,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=713/conf=711/zf=0/pred=2/play=6/graph=31 | c1:tick=713/conf=712/zf=0/pred=1/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              249,
-              249
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              349,
-              350
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              449,
-              449
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              548,
-              548
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              647,
-              647
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 80,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=750/conf=743/zf=0/pred=7/play=6/graph=31 | c1:tick=750/conf=743/zf=0/pred=7/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              293,
-              294
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              392,
-              393
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              486,
-              486
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              585,
-              585
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              684,
-              684
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "loss",
-        "ping": 0,
-        "loss": 90,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=717/conf=710/zf=0/pred=7/play=6/graph=31 | c1:tick=717/conf=710/zf=0/pred=7/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              249,
-              251
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              349,
-              351
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              452,
-              454
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              552,
-              554
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              651,
-              652
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      }
-    ],
-    "2-client throttle-only": [
-      {
-        "clients": 2,
-        "mode": "throttle",
-        "ping": 0,
-        "loss": 0,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=698/conf=700/zf=0/pred=0/play=6/graph=60 | c1:tick=696/conf=701/zf=0/pred=0/play=6/graph=60",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              247,
-              247
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              346,
-              346
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              446,
-              447
-            ],
-            "hash_desync": false,
-            "graph": [
-              44,
-              44
-            ]
-          },
-          {
-            "tick": [
-              544,
-              544
-            ],
-            "hash_desync": false,
-            "graph": [
-              50,
-              50
-            ]
-          },
-          {
-            "tick": [
-              639,
-              638
-            ],
-            "hash_desync": false,
-            "graph": [
-              56,
-              56
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "throttle",
-        "ping": 0,
-        "loss": 0,
-        "throttle": 10,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=26.7% (4/15); actions=15; softPHYS=2; hashMM=10; c0:tick=647/conf=647/zf=0/pred=0/play=6/graph=41 | c1:tick=642/conf=647/zf=0/pred=0/play=6/graph=61",
-        "desync_pct": 26.666666666666668,
-        "desync_samples": 4,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              223,
-              222
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              33
-            ]
-          },
-          {
-            "tick": [
-              313,
-              312
-            ],
-            "hash_desync": true,
-            "graph": [
-              35,
-              39
-            ]
-          },
-          {
-            "tick": [
-              407,
-              402
-            ],
-            "hash_desync": true,
-            "graph": [
-              41,
-              45
-            ]
-          },
-          {
-            "tick": [
-              497,
-              492
-            ],
-            "hash_desync": false,
-            "graph": [
-              41,
-              51
-            ]
-          },
-          {
-            "tick": [
-              587,
-              582
-            ],
-            "hash_desync": false,
-            "graph": [
-              41,
-              57
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "throttle",
-        "ping": 0,
-        "loss": 0,
-        "throttle": 20,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=3; c0:tick=570/conf=575/zf=0/pred=0/play=6/graph=60 | c1:tick=570/conf=575/zf=0/pred=0/play=6/graph=60",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              201,
-              201
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              280,
-              280
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              358,
-              358
-            ],
-            "hash_desync": false,
-            "graph": [
-              44,
-              44
-            ]
-          },
-          {
-            "tick": [
-              437,
-              437
-            ],
-            "hash_desync": false,
-            "graph": [
-              50,
-              50
-            ]
-          },
-          {
-            "tick": [
-              517,
-              517
-            ],
-            "hash_desync": false,
-            "graph": [
-              56,
-              56
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "throttle",
-        "ping": 0,
-        "loss": 0,
-        "throttle": 30,
-        "ok": false,
-        "scene": "stacking",
-        "break_reason": "phys_resync_exhausted",
-        "notes": "th_s_stacking_2_throttle_0_0_30_1785705801.log; desync=100.0% (8/8); actions=8; softPHYS=3; hashMM=16; c0:tick=362/conf=364/zf=0/pred=0/play=6/graph=44 | c1:tick=365/conf=365/zf=0/pred=0/play=6/graph=46",
-        "desync_pct": 100.0,
-        "desync_samples": 8,
-        "total_samples": 8,
-        "infra": false,
-        "launch_attempts": 3,
-        "samples": [
-          {
-            "tick": [
-              185,
-              185
-            ],
-            "hash_desync": true,
-            "graph": [
-              31,
-              32
-            ]
-          },
-          {
-            "tick": [
-              235,
-              235
-            ],
-            "hash_desync": true,
-            "graph": [
-              35,
-              36
-            ]
-          },
-          {
-            "tick": [
-              287,
-              285
-            ],
-            "hash_desync": true,
-            "graph": [
-              38,
-              40
-            ]
-          },
-          {
-            "tick": [
-              337,
-              335
-            ],
-            "hash_desync": true,
-            "graph": [
-              42,
-              44
-            ]
-          }
-        ]
-      }
-    ],
-    "2-client combined": [
-      {
-        "clients": 2,
-        "mode": "combined",
-        "ping": 0,
-        "loss": 0,
-        "throttle": 0,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/15); actions=15; softPHYS=2; hashMM=0; c0:tick=699/conf=695/zf=0/pred=4/play=6/graph=57 | c1:tick=690/conf=695/zf=0/pred=0/play=6/graph=60",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              245,
-              245
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              33
-            ]
-          },
-          {
-            "tick": [
-              344,
-              344
-            ],
-            "hash_desync": false,
-            "graph": [
-              39,
-              39
-            ]
-          },
-          {
-            "tick": [
-              443,
-              443
-            ],
-            "hash_desync": false,
-            "graph": [
-              45,
-              45
-            ]
-          },
-          {
-            "tick": [
-              541,
-              540
-            ],
-            "hash_desync": false,
-            "graph": [
-              51,
-              51
-            ]
-          },
-          {
-            "tick": [
-              636,
-              633
-            ],
-            "hash_desync": false,
-            "graph": [
-              57,
-              57
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
-        "ping": 25,
-        "loss": 5,
-        "throttle": 10,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=53.3% (8/15); actions=15; softPHYS=3; hashMM=10; c0:tick=584/conf=585/zf=0/pred=0/play=6/graph=41 | c1:tick=585/conf=585/zf=0/pred=0/play=6/graph=41",
-        "desync_pct": 53.333333333333336,
-        "desync_samples": 8,
-        "total_samples": 15,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              165,
-              164
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              254,
-              254
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              32
-            ]
-          },
-          {
-            "tick": [
-              345,
-              345
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              36
-            ]
-          },
-          {
-            "tick": [
-              435,
-              436
-            ],
-            "hash_desync": true,
-            "graph": [
-              31,
-              36
-            ]
-          },
-          {
-            "tick": [
-              525,
-              525
-            ],
-            "hash_desync": true,
-            "graph": [
-              33,
-              38
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
+        "mode": "ping",
         "ping": 50,
-        "loss": 10,
-        "throttle": 20,
+        "loss": 0,
+        "throttle": 0,
         "ok": true,
         "scene": "stacking",
         "break_reason": "",
-        "notes": "desync=73.3% (11/15); actions=15; softPHYS=4; hashMM=18; c0:tick=527/conf=526/zf=0/pred=1/play=6/graph=44 | c1:tick=526/conf=527/zf=0/pred=0/play=6/graph=45",
-        "desync_pct": 73.33333333333333,
-        "desync_samples": 11,
+        "notes": "calm peers=2 tick=263; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=737/conf=730/zf=0/pred=7/play=6/graph=55 | c1:tick=728/conf=730/zf=0/pred=0/play=6/graph=60",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
         "total_samples": 15,
         "infra": false,
         "launch_attempts": 1,
         "samples": [
           {
             "tick": [
-              151,
-              151
+              275,
+              276
             ],
             "hash_desync": false,
             "graph": [
-              31,
-              31
+              33,
+              33
             ]
           },
           {
             "tick": [
-              230,
-              230
+              374,
+              375
             ],
-            "hash_desync": true,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              310,
-              311
-            ],
-            "hash_desync": true,
-            "graph": [
-              38,
-              38
-            ]
-          },
-          {
-            "tick": [
-              391,
-              392
-            ],
-            "hash_desync": true,
+            "hash_desync": false,
             "graph": [
               39,
               39
@@ -1728,36 +272,350 @@
           {
             "tick": [
               473,
-              473
+              474
             ],
             "hash_desync": false,
             "graph": [
-              44,
-              40
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              572,
+              573
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              672,
+              670
+            ],
+            "hash_desync": false,
+            "graph": [
+              55,
+              57
             ]
           }
         ]
       },
       {
         "clients": 2,
-        "mode": "combined",
+        "mode": "ping",
         "ping": 75,
-        "loss": 15,
-        "throttle": 30,
+        "loss": 0,
+        "throttle": 0,
         "ok": true,
         "scene": "stacking",
         "break_reason": "",
-        "notes": "desync=50.0% (7/14); actions=14; softPHYS=3; hashMM=10; c0:tick=482/conf=482/zf=0/pred=0/play=6/graph=42 | c1:tick=482/conf=483/zf=0/pred=0/play=6/graph=45",
-        "desync_pct": 50.0,
-        "desync_samples": 7,
+        "notes": "calm peers=2 tick=265; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=739/conf=740/zf=0/pred=0/play=6/graph=61 | c1:tick=741/conf=740/zf=0/pred=1/play=6/graph=42",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              277,
+              278
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              31
+            ]
+          },
+          {
+            "tick": [
+              376,
+              377
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              31
+            ]
+          },
+          {
+            "tick": [
+              475,
+              476
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              35
+            ]
+          },
+          {
+            "tick": [
+              575,
+              576
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              41
+            ]
+          },
+          {
+            "tick": [
+              674,
+              675
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              42
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 100,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=264; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=738/conf=737/zf=0/pred=1/play=6/graph=31 | c1:tick=738/conf=737/zf=0/pred=1/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              276,
+              276
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              375,
+              375
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              474,
+              474
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              573,
+              573
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              672,
+              672
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 150,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=261 stall_ok; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=736/conf=732/zf=0/pred=4/play=6/graph=31 | c1:tick=737/conf=733/zf=0/pred=4/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              273,
+              274
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              372,
+              373
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              471,
+              472
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              571,
+              572
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              670,
+              671
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 200,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=284 stall_ok; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=758/conf=751/zf=0/pred=7/play=6/graph=31 | c1:tick=759/conf=752/zf=0/pred=7/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              296,
+              297
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              395,
+              396
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              494,
+              495
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              593,
+              594
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              692,
+              693
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 300,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=31 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=53/conf=49/zf=0/pred=4/play=12/graph=31 | c1:tick=53/conf=49/zf=0/pred=4/play=12/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
         "total_samples": 14,
         "infra": false,
         "launch_attempts": 1,
         "samples": [
           {
             "tick": [
-              156,
-              156
+              31,
+              31
             ],
             "hash_desync": false,
             "graph": [
@@ -1767,143 +625,8 @@
           },
           {
             "tick": [
-              231,
-              231
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              32
-            ]
-          },
-          {
-            "tick": [
-              306,
-              307
-            ],
-            "hash_desync": true,
-            "graph": [
-              31,
-              40
-            ]
-          },
-          {
-            "tick": [
-              381,
-              382
-            ],
-            "hash_desync": true,
-            "graph": [
-              31,
-              40
-            ]
-          },
-          {
-            "tick": [
-              457,
-              457
-            ],
-            "hash_desync": true,
-            "graph": [
-              42,
-              40
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
-        "ping": 100,
-        "loss": 20,
-        "throttle": 40,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/13); actions=13; softPHYS=1; hashMM=3; c0:tick=404/conf=405/zf=0/pred=0/play=6/graph=33 | c1:tick=405/conf=405/zf=0/pred=0/play=6/graph=40",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 13,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              133,
-              133
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              32
-            ]
-          },
-          {
-            "tick": [
-              199,
-              200
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              34
-            ]
-          },
-          {
-            "tick": [
-              267,
-              268
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
+              36,
               36
-            ]
-          },
-          {
-            "tick": [
-              335,
-              337
-            ],
-            "hash_desync": false,
-            "graph": [
-              32,
-              40
-            ]
-          },
-          {
-            "tick": [
-              404,
-              405
-            ],
-            "hash_desync": false,
-            "graph": [
-              33,
-              40
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
-        "ping": 150,
-        "loss": 25,
-        "throttle": 50,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/13); actions=13; softPHYS=0; hashMM=0; c0:tick=655/conf=648/zf=0/pred=7/play=6/graph=31 | c1:tick=657/conf=650/zf=0/pred=7/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 13,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              200,
-              202
             ],
             "hash_desync": false,
             "graph": [
@@ -1913,8 +636,8 @@
           },
           {
             "tick": [
-              314,
-              314
+              41,
+              41
             ],
             "hash_desync": false,
             "graph": [
@@ -1924,8 +647,8 @@
           },
           {
             "tick": [
-              427,
-              429
+              46,
+              46
             ],
             "hash_desync": false,
             "graph": [
@@ -1935,19 +658,8 @@
           },
           {
             "tick": [
-              541,
-              543
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              655,
-              657
+              51,
+              51
             ],
             "hash_desync": false,
             "graph": [
@@ -1959,170 +671,24 @@
       },
       {
         "clients": 2,
-        "mode": "combined",
-        "ping": 200,
-        "loss": 30,
-        "throttle": 60,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/13); actions=13; softPHYS=0; hashMM=0; c0:tick=516/conf=510/zf=0/pred=6/play=6/graph=31 | c1:tick=517/conf=510/zf=0/pred=7/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 13,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              156,
-              158
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              246,
-              248
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              336,
-              338
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              426,
-              428
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              516,
-              517
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
-        "ping": 300,
-        "loss": 40,
-        "throttle": 70,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/13); actions=13; softPHYS=0; hashMM=0; c0:tick=437/conf=431/zf=0/pred=6/play=6/graph=31 | c1:tick=440/conf=431/zf=0/pred=9/play=6/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 13,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              133,
-              133
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              208,
-              208
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              286,
-              286
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              361,
-              361
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              437,
-              440
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
+        "mode": "ping",
         "ping": 400,
-        "loss": 50,
-        "throttle": 80,
+        "loss": 0,
+        "throttle": 0,
         "ok": true,
         "scene": "stacking",
         "break_reason": "",
-        "notes": "desync=0.0% (0/11); actions=11; softPHYS=0; hashMM=0; c0:tick=334/conf=328/zf=0/pred=6/play=6/graph=31 | c1:tick=334/conf=328/zf=0/pred=6/play=6/graph=31",
+        "notes": "calm peers=2 tick=30 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=52/conf=48/zf=0/pred=4/play=12/graph=31 | c1:tick=52/conf=48/zf=0/pred=4/play=12/graph=31",
         "desync_pct": 0.0,
         "desync_samples": 0,
-        "total_samples": 11,
+        "total_samples": 14,
         "infra": false,
         "launch_attempts": 1,
         "samples": [
           {
             "tick": [
-              113,
-              113
+              31,
+              31
             ],
             "hash_desync": false,
             "graph": [
@@ -2132,8 +698,8 @@
           },
           {
             "tick": [
-              154,
-              154
+              36,
+              36
             ],
             "hash_desync": false,
             "graph": [
@@ -2143,8 +709,8 @@
           },
           {
             "tick": [
-              199,
-              199
+              41,
+              41
             ],
             "hash_desync": false,
             "graph": [
@@ -2154,8 +720,8 @@
           },
           {
             "tick": [
-              244,
-              244
+              45,
+              46
             ],
             "hash_desync": false,
             "graph": [
@@ -2165,19 +731,8 @@
           },
           {
             "tick": [
-              289,
-              289
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              334,
-              334
+              50,
+              50
             ],
             "hash_desync": false,
             "graph": [
@@ -2189,170 +744,24 @@
       },
       {
         "clients": 2,
-        "mode": "combined",
+        "mode": "ping",
         "ping": 500,
-        "loss": 60,
-        "throttle": 90,
+        "loss": 0,
+        "throttle": 0,
         "ok": true,
         "scene": "stacking",
         "break_reason": "",
-        "notes": "desync=0.0% (0/9); actions=9; softPHYS=0; hashMM=0; c0:tick=279/conf=272/zf=0/pred=7/play=6/graph=31 | c1:tick=279/conf=272/zf=0/pred=7/play=6/graph=31",
+        "notes": "calm peers=2 tick=31 stall_ok; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=55/conf=51/zf=0/pred=4/play=12/graph=31 | c1:tick=55/conf=51/zf=0/pred=4/play=12/graph=31",
         "desync_pct": 0.0,
         "desync_samples": 0,
-        "total_samples": 9,
+        "total_samples": 15,
         "infra": false,
         "launch_attempts": 1,
         "samples": [
           {
             "tick": [
-              99,
-              99
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              144,
-              144
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              189,
-              189
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              234,
-              234
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              279,
-              279
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
-        "ping": 1000,
-        "loss": 70,
-        "throttle": 90,
-        "ok": true,
-        "scene": "stacking",
-        "break_reason": "",
-        "notes": "desync=0.0% (0/9); actions=9; softPHYS=0; hashMM=0; c0:tick=84/conf=76/zf=0/pred=8/play=6/graph=31 | c1:tick=83/conf=76/zf=0/pred=7/play=7/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 9,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              57,
-              56
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              72,
-              71
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              75,
-              75
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              79,
-              79
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          },
-          {
-            "tick": [
-              84,
-              83
-            ],
-            "hash_desync": false,
-            "graph": [
-              31,
-              31
-            ]
-          }
-        ]
-      },
-      {
-        "clients": 2,
-        "mode": "combined",
-        "ping": 2000,
-        "loss": 80,
-        "throttle": 90,
-        "ok": false,
-        "scene": "stacking",
-        "break_reason": "tick_frozen",
-        "notes": "tick\u0394=7 conf\u0394=6 over 3.3s; desync=0.0% (0/5); actions=5; softPHYS=0; hashMM=0; c0:tick=42/conf=34/zf=0/pred=8/play=7/graph=31 | c1:tick=42/conf=34/zf=0/pred=8/play=7/graph=31",
-        "desync_pct": 0.0,
-        "desync_samples": 0,
-        "total_samples": 5,
-        "infra": false,
-        "launch_attempts": 1,
-        "samples": [
-          {
-            "tick": [
-              35,
-              35
+              32,
+              32
             ],
             "hash_desync": false,
             "graph": [
@@ -2373,8 +782,143 @@
           },
           {
             "tick": [
-              39,
-              39
+              42,
+              42
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              46,
+              46
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              51,
+              51
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 750,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=30 stall_ok; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=54/conf=50/zf=0/pred=4/play=12/graph=31 | c1:tick=54/conf=50/zf=0/pred=4/play=12/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              31,
+              31
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              36,
+              36
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              40,
+              41
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              45,
+              45
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              50,
+              50
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 1000,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=30 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=52/conf=48/zf=0/pred=4/play=12/graph=31 | c1:tick=52/conf=48/zf=0/pred=4/play=12/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              31,
+              31
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              36,
+              36
             ],
             "hash_desync": false,
             "graph": [
@@ -2395,8 +939,2901 @@
           },
           {
             "tick": [
-              42,
+              45,
+              45
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              50,
+              50
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 1500,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=30 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=52/conf=48/zf=0/pred=4/play=12/graph=31 | c1:tick=52/conf=48/zf=0/pred=4/play=12/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              31,
+              31
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              36,
+              36
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              41,
+              41
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              46,
+              46
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              50,
+              51
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 2000,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=30 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=52/conf=48/zf=0/pred=4/play=12/graph=31 | c1:tick=52/conf=48/zf=0/pred=4/play=12/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              31,
+              31
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              36,
+              36
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              41,
+              41
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              46,
+              46
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              51,
+              51
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 3000,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=30 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=52/conf=48/zf=0/pred=4/play=12/graph=31 | c1:tick=52/conf=48/zf=0/pred=4/play=12/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              31,
+              31
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              36,
+              36
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              40,
+              40
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              45,
+              45
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              50,
+              50
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "ping",
+        "ping": 5000,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=30 stall_ok; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=53/conf=49/zf=0/pred=4/play=12/graph=31 | c1:tick=53/conf=49/zf=0/pred=4/play=12/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              31,
+              31
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              36,
+              36
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              40,
+              41
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              45,
+              45
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              50,
+              50
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      }
+    ],
+    "2-client loss-only": [
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=309; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=767/conf=772/zf=0/pred=0/play=6/graph=61 | c1:tick=771/conf=773/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              321,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              420,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              519,
+              520
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              617,
+              618
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              710,
+              711
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 5,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=310; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=768/conf=771/zf=0/pred=0/play=6/graph=60 | c1:tick=777/conf=774/zf=0/pred=3/play=6/graph=59",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              322,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              421,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              520,
+              520
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              620,
+              620
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              714,
+              715
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 10,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=311; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=776/conf=775/zf=0/pred=1/play=6/graph=59 | c1:tick=770/conf=775/zf=0/pred=0/play=6/graph=60",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              323,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              423,
+              422
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              522,
+              521
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              620,
+              619
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              713,
+              711
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 15,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=310; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=778/conf=773/zf=0/pred=5/play=6/graph=58 | c1:tick=768/conf=773/zf=0/pred=0/play=6/graph=60",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              322,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              421,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              520,
+              520
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              619,
+              619
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              715,
+              714
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 20,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=311; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=778/conf=777/zf=0/pred=1/play=6/graph=59 | c1:tick=772/conf=777/zf=0/pred=0/play=6/graph=60",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              323,
+              324
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              424,
+              424
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              522,
+              522
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              619,
+              620
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              713,
+              714
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 25,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=311; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=775/conf=770/zf=0/pred=5/play=6/graph=59 | c1:tick=766/conf=770/zf=0/pred=0/play=6/graph=60",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              323,
+              323
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              422,
+              422
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              521,
+              521
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              618,
+              619
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              712,
+              712
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 30,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=310; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=770/conf=772/zf=0/pred=0/play=6/graph=61 | c1:tick=768/conf=772/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              322,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              421,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              520,
+              520
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              618,
+              619
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              711,
+              710
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 40,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=309; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=768/conf=771/zf=0/pred=0/play=6/graph=60 | c1:tick=774/conf=774/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              321,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              420,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              519,
+              520
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              618,
+              618
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              711,
+              713
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 50,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=310; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=779/conf=782/zf=0/pred=0/play=6/graph=61 | c1:tick=777/conf=782/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              322,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              421,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              521,
+              521
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              620,
+              620
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              717,
+              716
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 60,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=311; desync=13.3% (2/15); actions=15; softPHYS=1; hashMM=4; c0:tick=784/conf=782/zf=0/pred=2/play=6/graph=61 | c1:tick=781/conf=782/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 13.333333333333334,
+        "desync_samples": 2,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              323,
+              323
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              422,
+              422
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              521,
+              521
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              620,
+              620
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              717,
+              717
+            ],
+            "hash_desync": false,
+            "graph": [
+              55,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 70,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=311; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=783/conf=782/zf=0/pred=1/play=6/graph=55 | c1:tick=780/conf=782/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              323,
+              323
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              422,
+              422
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              521,
+              521
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              620,
+              620
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              718,
+              717
+            ],
+            "hash_desync": false,
+            "graph": [
+              55,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 80,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=309; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=783/conf=781/zf=0/pred=2/play=6/graph=31 | c1:tick=784/conf=781/zf=0/pred=3/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              321,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              420,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              519,
+              520
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              618,
+              619
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              717,
+              718
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "loss",
+        "ping": 0,
+        "loss": 90,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=305; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=763/conf=756/zf=0/pred=7/play=6/graph=31 | c1:tick=763/conf=756/zf=0/pred=7/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              312,
+              316
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              414,
+              415
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              504,
+              504
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              605,
+              605
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              697,
+              697
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      }
+    ],
+    "2-client throttle-only": [
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=309; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=765/conf=757/zf=0/pred=8/play=6/graph=57 | c1:tick=752/conf=757/zf=0/pred=0/play=6/graph=60",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              321,
+              321
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              420,
+              420
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              518,
+              519
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              613,
+              614
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              702,
+              699
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 10,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=273; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=704/conf=709/zf=0/pred=0/play=6/graph=61 | c1:tick=704/conf=709/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              284,
+              285
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              374,
+              375
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              464,
+              465
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              554,
+              555
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              644,
+              645
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 20,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=252; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=641/conf=646/zf=0/pred=0/play=6/graph=61 | c1:tick=642/conf=647/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              262,
+              263
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              343,
+              344
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              425,
+              426
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              506,
+              507
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              587,
+              588
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 30,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=233; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=573/conf=577/zf=0/pred=0/play=6/graph=61 | c1:tick=574/conf=578/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              242,
+              243
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              311,
+              312
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              382,
+              383
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              454,
+              455
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              526,
+              527
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 40,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=207 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=492/conf=496/zf=0/pred=0/play=6/graph=59 | c1:tick=493/conf=497/zf=0/pred=0/play=6/graph=59",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              216,
+              217
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              282,
+              283
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              345,
+              346
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              408,
+              409
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              471,
+              472
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 50,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=336 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=818/conf=823/zf=0/pred=0/play=6/graph=59 | c1:tick=818/conf=823/zf=0/pred=0/play=6/graph=59",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              352,
+              352
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              462,
+              462
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              570,
+              570
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              676,
+              676
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              782,
+              782
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 60,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=256 stall_ok; desync=0.0% (0/13); actions=13; softPHYS=0; hashMM=0; c0:tick=630/conf=633/zf=0/pred=0/play=6/graph=57 | c1:tick=630/conf=635/zf=0/pred=0/play=6/graph=57",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 13,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              270,
+              270
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              360,
+              360
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              450,
+              450
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              540,
+              540
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              630,
+              630
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 70,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=290 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=705/conf=709/zf=0/pred=0/play=6/graph=59 | c1:tick=707/conf=709/zf=0/pred=0/play=6/graph=59",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              305,
+              305
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              399,
+              400
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              492,
+              493
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              582,
+              584
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              675,
+              675
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 80,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=266 stall_ok; desync=0.0% (0/11); actions=11; softPHYS=0; hashMM=0; c0:tick=646/conf=641/zf=0/pred=5/play=6/graph=31 | c1:tick=646/conf=641/zf=0/pred=5/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 11,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              286,
+              286
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              358,
+              358
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              430,
+              430
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              502,
+              502
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              574,
+              574
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              646,
+              646
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "throttle",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 90,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=142 stall_ok; desync=0.0% (0/8); actions=8; softPHYS=0; hashMM=0; c0:tick=326/conf=321/zf=0/pred=5/play=6/graph=31 | c1:tick=326/conf=321/zf=0/pred=5/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 8,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              158,
+              158
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              206,
+              206
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              254,
+              254
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              302,
+              302
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      }
+    ],
+    "2-client combined": [
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 0,
+        "loss": 0,
+        "throttle": 0,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=310; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=773/conf=770/zf=0/pred=3/play=6/graph=59 | c1:tick=765/conf=770/zf=0/pred=0/play=6/graph=60",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              322,
+              322
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              421,
+              421
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              520,
+              520
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              619,
+              620
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              712,
+              712
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 25,
+        "loss": 5,
+        "throttle": 10,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=247; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=679/conf=681/zf=0/pred=0/play=6/graph=61 | c1:tick=680/conf=683/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              258,
+              259
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              348,
+              349
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              438,
+              439
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              528,
+              529
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              618,
+              619
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 50,
+        "loss": 10,
+        "throttle": 20,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=215; desync=0.0% (0/15); actions=15; softPHYS=0; hashMM=0; c0:tick=603/conf=605/zf=0/pred=0/play=6/graph=61 | c1:tick=603/conf=605/zf=0/pred=0/play=6/graph=61",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 15,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              225,
+              225
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              306,
+              306
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              39
+            ]
+          },
+          {
+            "tick": [
+              387,
+              387
+            ],
+            "hash_desync": false,
+            "graph": [
+              45,
+              45
+            ]
+          },
+          {
+            "tick": [
+              468,
+              468
+            ],
+            "hash_desync": false,
+            "graph": [
+              51,
+              51
+            ]
+          },
+          {
+            "tick": [
+              549,
+              549
+            ],
+            "hash_desync": false,
+            "graph": [
+              57,
+              57
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 75,
+        "loss": 15,
+        "throttle": 30,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=214; desync=71.4% (10/14); actions=14; softPHYS=0; hashMM=3; c0:tick=540/conf=540/zf=0/pred=0/play=6/graph=56 | c1:tick=541/conf=543/zf=0/pred=0/play=6/graph=48",
+        "desync_pct": 71.42857142857143,
+        "desync_samples": 10,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              224,
+              225
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              31
+            ]
+          },
+          {
+            "tick": [
+              299,
+              300
+            ],
+            "hash_desync": false,
+            "graph": [
+              39,
+              37
+            ]
+          },
+          {
+            "tick": [
+              372,
+              373
+            ],
+            "hash_desync": true,
+            "graph": [
+              44,
               42
+            ]
+          },
+          {
+            "tick": [
+              444,
+              445
+            ],
+            "hash_desync": true,
+            "graph": [
+              49,
+              45
+            ]
+          },
+          {
+            "tick": [
+              516,
+              517
+            ],
+            "hash_desync": true,
+            "graph": [
+              54,
+              46
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 100,
+        "loss": 20,
+        "throttle": 40,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=179 stall_ok; desync=57.1% (8/14); actions=14; softPHYS=2; hashMM=8; c0:tick=465/conf=463/zf=0/pred=2/play=6/graph=55 | c1:tick=466/conf=463/zf=0/pred=3/play=6/graph=55",
+        "desync_pct": 57.142857142857146,
+        "desync_samples": 8,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              188,
+              189
+            ],
+            "hash_desync": false,
+            "graph": [
+              33,
+              33
+            ]
+          },
+          {
+            "tick": [
+              254,
+              255
+            ],
+            "hash_desync": false,
+            "graph": [
+              37,
+              36
+            ]
+          },
+          {
+            "tick": [
+              317,
+              318
+            ],
+            "hash_desync": true,
+            "graph": [
+              39,
+              38
+            ]
+          },
+          {
+            "tick": [
+              381,
+              382
+            ],
+            "hash_desync": true,
+            "graph": [
+              44,
+              43
+            ]
+          },
+          {
+            "tick": [
+              444,
+              445
+            ],
+            "hash_desync": true,
+            "graph": [
+              55,
+              55
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 150,
+        "loss": 25,
+        "throttle": 50,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=255 stall_ok; desync=0.0% (0/13); actions=13; softPHYS=0; hashMM=0; c0:tick=727/conf=722/zf=0/pred=5/play=6/graph=31 | c1:tick=729/conf=722/zf=0/pred=7/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 13,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              271,
+              273
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              385,
+              387
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              499,
+              501
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              613,
+              615
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              727,
+              729
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 200,
+        "loss": 30,
+        "throttle": 60,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=235 stall_ok; desync=0.0% (0/14); actions=14; softPHYS=0; hashMM=0; c0:tick=611/conf=605/zf=0/pred=6/play=6/graph=31 | c1:tick=611/conf=605/zf=0/pred=6/play=6/graph=33",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 14,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              247,
+              247
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              331,
+              331
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              415,
+              415
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              499,
+              499
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              583,
+              583
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 300,
+        "loss": 40,
+        "throttle": 70,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=195 stall_ok; desync=0.0% (0/12); actions=12; softPHYS=0; hashMM=0; c0:tick=513/conf=507/zf=0/pred=6/play=6/graph=31 | c1:tick=516/conf=511/zf=0/pred=5/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 12,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              210,
+              210
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              292,
+              295
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              375,
+              375
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              460,
+              462
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 400,
+        "loss": 50,
+        "throttle": 80,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=145 stall_ok; desync=0.0% (0/11); actions=11; softPHYS=0; hashMM=0; c0:tick=378/conf=370/zf=0/pred=8/play=6/graph=32 | c1:tick=378/conf=373/zf=0/pred=5/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 11,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              160,
+              160
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              206,
+              206
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              251,
+              251
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              296,
+              296
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              336,
+              339
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              378,
+              378
+            ],
+            "hash_desync": false,
+            "graph": [
+              32,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 500,
+        "loss": 60,
+        "throttle": 90,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=118 stall_ok; desync=0.0% (0/8); actions=8; softPHYS=0; hashMM=0; c0:tick=290/conf=285/zf=0/pred=5/play=6/graph=31 | c1:tick=290/conf=285/zf=0/pred=5/play=6/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 8,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              133,
+              133
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              178,
+              178
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              223,
+              223
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              268,
+              268
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 1000,
+        "loss": 70,
+        "throttle": 90,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=53 stall_ok; desync=0.0% (0/8); actions=8; softPHYS=0; hashMM=0; c0:tick=80/conf=72/zf=0/pred=8/play=7/graph=31 | c1:tick=80/conf=72/zf=0/pred=8/play=7/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 8,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              54,
+              54
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              70,
+              70
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              74,
+              74
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              78,
+              78
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 2000,
+        "loss": 80,
+        "throttle": 90,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=28 stall_ok; desync=0.0% (0/8); actions=8; softPHYS=0; hashMM=0; c0:tick=43/conf=36/zf=0/pred=7/play=7/graph=31 | c1:tick=43/conf=36/zf=0/pred=7/play=7/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 8,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              29,
+              29
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              33,
+              33
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              37,
+              37
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              41,
+              41
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          }
+        ]
+      },
+      {
+        "clients": 2,
+        "mode": "combined",
+        "ping": 5000,
+        "loss": 90,
+        "throttle": 90,
+        "ok": true,
+        "scene": "stacking",
+        "break_reason": "",
+        "notes": "calm peers=2 tick=53 stall_ok; desync=0.0% (0/8); actions=8; softPHYS=0; hashMM=0; c0:tick=103/conf=95/zf=0/pred=8/play=7/graph=31 | c1:tick=103/conf=95/zf=0/pred=8/play=7/graph=31",
+        "desync_pct": 0.0,
+        "desync_samples": 0,
+        "total_samples": 8,
+        "infra": false,
+        "launch_attempts": 1,
+        "samples": [
+          {
+            "tick": [
+              56,
+              56
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              71,
+              71
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              84,
+              84
+            ],
+            "hash_desync": false,
+            "graph": [
+              31,
+              31
+            ]
+          },
+          {
+            "tick": [
+              95,
+              95
             ],
             "hash_desync": false,
             "graph": [

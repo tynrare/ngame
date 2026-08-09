@@ -10,14 +10,16 @@ Harness: `scripts/stacking_throttle_sweep.py`. Matrix: `docs/throttle-test.md` +
 
 ## Launch reliability first
 
+# agent: composer-2.5 | 2026-08-09 | stability before matrix | fd2494
+
 Before publishing ping/loss/throttle limits:
 
-1. **`--launch-soak N`** at stacking 2c `0/0/0` — stop on first bring-up fail (up to N).
-2. Fix harness and/or client/server from logs.
-3. Repeat until **N consecutive** successes (default N=100).
-4. Only then run the matrix sweep.
+1. **`--stability-gate N`** (default N=20) at stacking 2c — consecutive bring-ups @ `0/0/0`, then short soaks @ `0/0/0` and `thr=10`. Stop on first fail.
+2. Or **`--launch-soak N`** alone for bring-up only.
+3. Fix harness and/or client/server from logs.
+4. Repeat until gate passes; only then run the matrix sweep.
 
-Bring-up = server ready + scene loaded + N clients MCP connected + lockstep peers/ticks advancing. Not a soak.
+Bring-up = server ready + N clients MCP connected (boot scene) + **then** load lockstep scene (shared cold epoch) + peers/ticks advancing + calm window before input. Not a soak. Reject `LATE JOIN` at 0/0/0.
 
 High-ping `clients_not_ready` is a separate gate (optional second launch-soak with `--ping`).
 
@@ -44,7 +46,7 @@ Do **not** use `entity_desync` (graph Δ) as a hard fail.
 ## Bring-up requirements
 
 - Wait for prior processes and UDP **27015** / agent ports to clear
-- Warm window before soak samples count
+- Spawn remotes back-to-back (cold join); warm + calm before `wire_input`
 - Longer ready timeout under impairment
 
 ## Validity gate
@@ -54,3 +56,5 @@ A **2c** matrix run is **invalid** if baseline fails as infra after retries, or 
 ## Matrix
 
 Highest step that passed product criteria. Show desync%. Tag `INFRA@` separately.
+
+# agent: composer-2.5 | 2026-08-09 | stability before matrix | fd2494

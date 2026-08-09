@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 9bd320
 #ifndef MOD_SCENE_ASSETS_H
 #define MOD_SCENE_ASSETS_H
 
@@ -36,6 +37,12 @@ typedef struct NgSceneShaderDesc {
   uint8_t tint_r;
   uint8_t tint_g;
   uint8_t tint_b;
+  bool have_glow;
+  uint8_t glow_r;
+  uint8_t glow_g;
+  uint8_t glow_b;
+  float roughness;
+  float metalness;
 } NgSceneShaderDesc;
 
 typedef struct NgSceneModelDesc {
@@ -72,6 +79,12 @@ typedef struct NgSceneResolvedModel {
   uint8_t tint_r;
   uint8_t tint_g;
   uint8_t tint_b;
+  bool have_glow;
+  uint8_t glow_r;
+  uint8_t glow_g;
+  uint8_t glow_b;
+  float roughness;
+  float metalness;
 } NgSceneResolvedModel;
 
 void mod_scene_assets_reset(void);
@@ -79,7 +92,9 @@ bool mod_scene_assets_describe_mesh(const char *name, const char *shape, float w
                                     float d);
 bool mod_scene_assets_describe_shader(const char *name, const char *fragment, const char *vertex,
                                       uint8_t tint_r, uint8_t tint_g, uint8_t tint_b,
-                                      bool have_tint);
+                                      bool have_tint, uint8_t glow_r, uint8_t glow_g,
+                                      uint8_t glow_b, bool have_glow, float roughness,
+                                      float metalness);
 bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader);
 bool mod_scene_assets_describe_view(const NgSceneViewMeta *view);
 bool mod_scene_assets_dispose(const char *kind, const char *name);
@@ -91,3 +106,4 @@ NgEntityType mod_scene_assets_entity_type_for_kind(NgSceneMeshKind kind);
 #endif
 
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 9bd320

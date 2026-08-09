@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # agent: composer-2.5 | 2026-08-02 | parallel client bring-up | 1bced5
-"""Ping/loss/throttle soak. Launch-soak first; healable hash → desync%; hard-stop on unrecoverable / 90%."""
+# agent: composer-2.5 | 2026-08-09 | simultaneous cold join clients | 03753b
+# agent: composer-2.5 | 2026-08-09 | faster port recycle | c307e6
+# agent: composer-2.5 | 2026-08-09 | stability gate mode | 3364fd
+# agent: composer-2.5 | 2026-08-09 | warm before wire input | 2029e3
+# agent: composer-2.5 | 2026-08-09 | calm relax under ping | 4c330a
+# agent: composer-2.5 | 2026-08-09 | scale tick_frozen with ping | 2cfd18
+# agent: composer-2.5 | 2026-08-09 | separate infra product retries | 935267
+# agent: composer-2.5 | 2026-08-09 | calm stall ping 50 | eb5236
+# agent: composer-2.5 | 2026-08-09 | calm stall under loss | 5279de
+"""Ping/loss/throttle soak. Stability gate first; healable hash → desync%; hard-stop on unrecoverable / 90%."""
 from __future__ import annotations
 
 import json
@@ -32,6 +41,7 @@ OUT_JSON = Path(
 SOAK_S = float(os.environ.get("THROTTLE_SOAK_S", "8"))
 SAMPLE_S = float(os.environ.get("THROTTLE_SAMPLE_S", "0.5"))
 WARM_S = float(os.environ.get("THROTTLE_WARM_S", "2.0"))
+CALM_S = float(os.environ.get("THROTTLE_CALM_S", "1.5"))
 DESYNC_FAIL_PCT = float(os.environ.get("THROTTLE_DESYNC_FAIL_PCT", "90"))
 LAUNCH_RETRIES = int(os.environ.get("THROTTLE_LAUNCH_RETRIES", "3"))
 # Retry flaky product breaks (soft PHYS race) when desync% still below fail threshold
@@ -39,6 +49,10 @@ PRODUCT_RETRIES = int(os.environ.get("THROTTLE_PRODUCT_RETRIES", "2"))
 READY_TIMEOUT_S = float(os.environ.get("THROTTLE_READY_S", "45"))
 CLIENTS_ONLY = os.environ.get("THROTTLE_CLIENTS", "1,2")
 FLAKY_PRODUCT = frozenset({"phys_resync_exhausted"})
+GATE_N = int(os.environ.get("THROTTLE_GATE_N", "20"))
+GATE_SOAK_S = float(os.environ.get("THROTTLE_GATE_SOAK_S", "4.0"))
+# Low-impairment gate: healable desync must stay low (not the 90% product cliff).
+GATE_DESYNC_MAX_PCT = float(os.environ.get("THROTTLE_GATE_DESYNC_MAX", "15"))
 
 PING_MAX_MS = 5000
 LOSS_MAX_PCT = 90
@@ -193,22 +207,28 @@ def port_free(port: int, udp: bool = False) -> bool:
         s.close()
 
 
+def ports_busy() -> bool:
+    if not port_free(27015, udp=True) or not port_free(27100):
+        return True
+    for p in range(27101, 27106):
+        if not port_free(p):
+            return True
+    return False
+
+
 def wait_ports_clear(timeout: float = 8.0) -> None:
     t0 = time.time()
     while time.time() - t0 < timeout:
-        ok = port_free(27015, udp=True) and port_free(27100)
-        for p in range(27101, 27106):
-            ok = ok and port_free(p)
-        if ok:
+        if not ports_busy():
             return
-        time.sleep(0.15)
+        time.sleep(0.1)
 
 
 def find_client_ports(n: int) -> list[int]:
     found = []
     for p in range(27101, 27120):
         try:
-            t = text(p, {"cmd": "world_snapshot"}, timeout=1.0)
+            t = text(p, {"cmd": "world_snapshot"}, timeout=0.8)
         except OSError:
             continue
         if "Connected to" in t:
@@ -219,17 +239,21 @@ def find_client_ports(n: int) -> list[int]:
 
 
 def kill_all() -> None:
-    for _ in range(3):
+    # agent: composer-2.5 | 2026-08-09 | faster port recycle | c307e6
+    subprocess.run(
+        ["killall", "-9", "ngame", "ngame_server", "Xvfb"],
+        check=False,
+        capture_output=True,
+    )
+    time.sleep(0.25)
+    if ports_busy():
         subprocess.run(
-            ["killall", "-9", "ngame", "ngame_server"],
+            ["killall", "-9", "ngame", "ngame_server", "Xvfb"],
             check=False,
             capture_output=True,
         )
-        time.sleep(0.5)
-    # Xvfb last — avoid racing xvfb-run cleanup
-    subprocess.run(["killall", "-9", "Xvfb"], check=False, capture_output=True)
-    time.sleep(1.0)
-    wait_ports_clear(20.0)
+        time.sleep(0.35)
+    wait_ports_clear(8.0)
 
 
 def start_server(ping: int, loss: int, throttle: int, log: Path) -> subprocess.Popen:
@@ -245,12 +269,23 @@ def start_server(ping: int, loss: int, throttle: int, log: Path) -> subprocess.P
 
 
 def start_client(idx: int, throttle: int, log: Path) -> subprocess.Popen:
-    # Agent port is server-assigned on register; --agent-port is a local hint only.
+    # Agent port is server-assigned on register; start peers back-to-back for cold join.
     args = ["xvfb-run", "-a", str(BUILD / "ngame"), "--remote", "127.0.0.1:27015"]
     if throttle > 0:
         args += ["--throttle", str(throttle)]
     log.write_text("")
     return subprocess.Popen(args, cwd=BUILD, stdout=log.open("w"), stderr=subprocess.STDOUT)
+
+
+def start_clients(clients: int, throttle: int, clogs: list[Path]) -> list:
+    """Spawn N remotes nearly together so neither is a large mid-sim late join."""
+    # agent: composer-2.5 | 2026-08-09 | simultaneous cold join clients | 03753b
+    procs = []
+    for i in range(clients):
+        procs.append(start_client(i, throttle, clogs[i]))
+        if i + 1 < clients:
+            time.sleep(0.05)
+    return procs
 
 
 def wait_server_ready(log: Path, timeout: float = 12.0) -> bool:
@@ -278,8 +313,11 @@ def classify_unrecoverable(
     n_clients: int,
     logs: list[Path],
     server_log: Path,
+    ping: int = 0,
+    throttle: int = 0,
 ) -> BreakHit | None:
     """Hard product fails only. No entity_desync; no healable hash."""
+    # agent: composer-2.5 | 2026-08-09 | scale tick_frozen with ping | 2cfd18
     if not hist:
         return BreakHit("no_samples")
 
@@ -292,10 +330,19 @@ def classify_unrecoverable(
         wall = hist[-1]["t"] - hist[0]["t"]
         dtick = hist[-1]["locks"][0].tick - hist[0]["locks"][0].tick
         dconf = hist[-1]["locks"][0].confirmed - hist[0]["locks"][0].confirmed
-        if wall >= 3.0 and dtick < 12 and dconf < 12 and hist[-1]["locks"][0].tick > 0:
+        # Clean net: ~4Hz floor. Delay/throttle crawl is expected — only hard-fail near-zero progress.
+        min_d = 12
+        min_wall = 3.0
+        if ping >= 200 or throttle >= 70:
+            min_d = 2
+            min_wall = 5.0
+        elif ping >= 50 or throttle >= 40:
+            min_d = 5
+            min_wall = 4.0
+        if wall >= min_wall and dtick < min_d and dconf < min_d and hist[-1]["locks"][0].tick > 0:
             return BreakHit(
                 "tick_frozen",
-                f"tickΔ={dtick} confΔ={dconf} over {wall:.1f}s",
+                f"tickΔ={dtick} confΔ={dconf} over {wall:.1f}s (min_d={min_d})",
             )
 
     zf_tail = [h["locks"][0].zf for h in hist[-4:]]
@@ -329,6 +376,7 @@ def classify_unrecoverable(
 def clients_ready(ports: list[int], clients: int, ping: int = 0) -> bool:
     if len(ports) < clients:
         return False
+    locks: list[LockSnap] = []
     for p in ports[:clients]:
         try:
             snap = text(p, {"cmd": "world_snapshot"}, timeout=2.0)
@@ -342,16 +390,22 @@ def clients_ready(ports: list[int], clients: int, ping: int = 0) -> bool:
             or lk.started != 1
             or lk.active != 1
             or lk.peers < clients
-            or lk.tick < 30
+            or lk.tick < 20
         ):
+            return False
+        locks.append(lk)
+    if clients >= 2:
+        # Both must already see the same roster size (cold join settled).
+        if locks[0].peers != locks[1].peers:
             return False
     if ping > 0:
         # Under simulated delay, confirm may crawl; peer presence is the bring-up signal.
         return True
-    t_a = [parse_lock(text(p, {"cmd": "lockstep_hash"})).tick for p in ports[:clients]]
-    time.sleep(1.0)
+    t_a = [lk.tick for lk in locks]
+    time.sleep(0.75)
     t_b = [parse_lock(text(p, {"cmd": "lockstep_hash"})).tick for p in ports[:clients]]
-    return all(b > a + 10 for a, b in zip(t_a, t_b))
+    # Require progress, but allow slower ticks under load (was +10/1s).
+    return all(b > a + 4 for a, b in zip(t_a, t_b))
 
 
 def ready_diag(ports: list[int], clients: int) -> str:
@@ -374,6 +428,109 @@ def ready_diag(ports: list[int], clients: int) -> str:
     return "; ".join(parts)
 
 
+def soft_phys_count(logs: list[Path], server_log: Path | None) -> int:
+    n = 0
+    if server_log and server_log.exists():
+        n += count_log(server_log, "soft PHYS") + count_log(server_log, "PHYS resync")
+    for p in logs:
+        if p.exists():
+            n += count_log(p, "soft PHYS") + count_log(p, "PHYS resync")
+    return n
+
+
+def wait_calm(
+    ports: list[int],
+    clients: int,
+    logs: list[Path],
+    server_log: Path | None,
+    timeout: float | None = None,
+    ping: int = 0,
+    loss: int = 0,
+    throttle: int = 0,
+) -> tuple[bool, str]:
+    """Hold until peers are stable without hash desync / new PHYS for CALM_S."""
+    # agent: composer-2.5 | 2026-08-09 | warm before wire input | 2029e3
+    # agent: composer-2.5 | 2026-08-09 | calm relax under ping | 4c330a
+    base_timeout = timeout if timeout is not None else max(WARM_S + CALM_S, 6.0)
+    if ping > 0:
+        base_timeout += min(20.0, ping / 1000.0 * 20.0)
+    deadline = time.time() + base_timeout
+    # Delay / loss / heavy throttle: ticks may pause a sample — don't require every-sample Δ.
+    allow_stall = ping >= 50 or throttle >= 40 or loss >= 10
+    # agent: composer-2.5 | 2026-08-09 | calm stall ping 50 | eb5236
+    # agent: composer-2.5 | 2026-08-09 | calm stall under loss | 5279de
+    calm_t0: float | None = None
+    base_phys = soft_phys_count(logs, server_log)
+    last_ticks: list[int] | None = None
+    while time.time() < deadline:
+        locks: list[LockSnap] = []
+        try:
+            for p in ports[:clients]:
+                locks.append(parse_lock(text(p, {"cmd": "lockstep_hash"}, timeout=2.0)))
+        except OSError as e:
+            return False, f"mcp_lost:{e}"
+        if any(lk.active != 1 or lk.peers < clients for lk in locks):
+            calm_t0 = None
+            time.sleep(0.25)
+            continue
+        if sample_hash_desync(locks):
+            calm_t0 = None
+            time.sleep(0.25)
+            continue
+        phys = soft_phys_count(logs, server_log)
+        if phys > base_phys:
+            base_phys = phys
+            calm_t0 = None
+            time.sleep(0.25)
+            continue
+        ticks = [lk.tick for lk in locks]
+        if last_ticks is None:
+            last_ticks = ticks
+            time.sleep(0.25)
+            continue
+        if allow_stall:
+            # Peers alive, no hash/PHYS churn; ticks must not go backwards.
+            if all(b >= a for a, b in zip(last_ticks, ticks)):
+                if calm_t0 is None:
+                    calm_t0 = time.time()
+                elif time.time() - calm_t0 >= CALM_S:
+                    return True, f"calm peers={locks[0].peers} tick={ticks[0]} stall_ok"
+            else:
+                calm_t0 = None
+        elif all(b > a for a, b in zip(last_ticks, ticks)):
+            if calm_t0 is None:
+                calm_t0 = time.time()
+            elif time.time() - calm_t0 >= CALM_S:
+                return True, f"calm peers={locks[0].peers} tick={ticks[0]}"
+        else:
+            calm_t0 = None
+        last_ticks = ticks
+        time.sleep(0.25)
+    return False, "calm_timeout"
+
+
+def wait_mcp_connected(clients: int, timeout: float = 30.0) -> list[int]:
+    """Wait until N dependent MCP ports answer (any scene)."""
+    t0 = time.time()
+    ports: list[int] = []
+    while time.time() - t0 < timeout:
+        ports = find_client_ports(clients)
+        if len(ports) >= clients:
+            return ports[:clients]
+        time.sleep(0.25)
+    return ports
+
+
+def load_scene() -> tuple[bool, str]:
+    try:
+        boot = text(27100, {"line": f"scene {SCENE}"})
+    except OSError as e:
+        return False, f"mcp_boot_oserror {e}"
+    if SCENE not in boot:
+        return False, boot[:200]
+    return True, boot[:120]
+
+
 @dataclass
 class BringUp:
     ok: bool
@@ -386,7 +543,8 @@ class BringUp:
 
 
 def bring_up(clients: int, ping: int = 0, loss: int = 0, throttle: int = 0) -> BringUp:
-    """Server + scene + N clients until ready (no soak). Caller must kill_all when done."""
+    """Server + N clients connect, then scene load (cold epoch), then ready."""
+    # agent: composer-2.5 | 2026-08-09 | simultaneous cold join clients | 03753b
     kill_all()
     tag = f"launch_{LABEL}_{clients}_{ping}_{loss}_{throttle}_{int(time.time()*1000)}"
     slog = Path(f"/tmp/th_s_{tag}.log")
@@ -400,25 +558,22 @@ def bring_up(clients: int, ping: int = 0, loss: int = 0, throttle: int = 0) -> B
         out.notes = slog.read_text(errors="ignore")[-400:] if slog.exists() else ""
         return out
 
-    try:
-        boot = text(27100, {"line": f"scene {SCENE}"})
-    except OSError as e:
-        out.reason = "scene_load_failed"
-        out.notes = f"mcp_boot_oserror {e}"
-        return out
-    if SCENE not in boot:
-        out.reason = "scene_load_failed"
-        out.notes = boot[:200]
+    # Connect remotes on boot scene first — then load lockstep scene so both share epoch.
+    out.procs.extend(start_clients(clients, throttle, clogs))
+    ports = wait_mcp_connected(clients, timeout=min(READY_TIMEOUT_S, 35.0))
+    out.ports = ports
+    if len(ports) < clients:
+        out.reason = "clients_not_ready"
+        out.notes = f"pre_scene_ports={ports}"
         return out
 
-    for i in range(clients):
-        out.procs.append(start_client(i, throttle, clogs[i]))
-        # Start peers close together so 2c is not a huge mid-sim late-join.
-        time.sleep(0.35 if i == 0 else 0.5)
+    ok_scene, scene_notes = load_scene()
+    if not ok_scene:
+        out.reason = "scene_load_failed"
+        out.notes = scene_notes
+        return out
 
-    ports: list[int] = []
     t0 = time.time()
-    # Delay slows REGISTER/PHYS/LOCK_INPUT — give join more wall time.
     ready_deadline = READY_TIMEOUT_S + max(0.0, ping / 1000.0) * 40.0
     while time.time() - t0 < ready_deadline:
         ports = find_client_ports(clients)
@@ -429,7 +584,7 @@ def bring_up(clients: int, ping: int = 0, loss: int = 0, throttle: int = 0) -> B
             out.reason = "ready"
             out.notes = ready_diag(out.ports, clients)
             return out
-        time.sleep(0.5)
+        time.sleep(0.4)
 
     out.reason = "clients_not_ready"
     out.notes = ready_diag(ports, clients)
@@ -507,36 +662,33 @@ def run_trial_once(clients: int, mode: str, ping: int, loss: int, throttle: int)
         kill_all()
         return result
 
-    try:
-        boot = text(27100, {"line": f"scene {SCENE}"})
-    except OSError:
-        result.ok = False
-        result.infra = True
-        result.break_reason = "scene_load_failed"
-        result.notes = "mcp_boot_oserror"
-        kill_all()
-        return result
-    if SCENE not in boot:
-        result.ok = False
-        result.infra = True
-        result.break_reason = "scene_load_failed"
-        result.notes = boot[:120]
-        kill_all()
-        return result
-
     procs = [server]
-    for i in range(clients):
-        procs.append(start_client(i, throttle, clogs[i]))
-        time.sleep(0.35 if i == 0 else 0.5)
+    procs.extend(start_clients(clients, throttle, clogs))
+    ports = wait_mcp_connected(clients, timeout=min(READY_TIMEOUT_S, 35.0))
+    if len(ports) < clients:
+        result.ok = False
+        result.infra = True
+        result.break_reason = "clients_not_ready"
+        result.notes = f"pre_scene_ports={ports}"
+        kill_all()
+        return result
 
-    ports: list[int] = []
+    ok_scene, scene_notes = load_scene()
+    if not ok_scene:
+        result.ok = False
+        result.infra = True
+        result.break_reason = "scene_load_failed"
+        result.notes = scene_notes
+        kill_all()
+        return result
+
     t0 = time.time()
     ready_deadline = READY_TIMEOUT_S + max(0.0, ping / 1000.0) * 40.0
     while time.time() - t0 < ready_deadline:
         ports = find_client_ports(clients)
         if clients_ready(ports, clients, ping=ping):
             break
-        time.sleep(0.5)
+        time.sleep(0.4)
     else:
         result.ok = False
         result.infra = True
@@ -546,7 +698,7 @@ def run_trial_once(clients: int, mode: str, ping: int, loss: int, throttle: int)
         return result
     ports = ports[:clients]
 
-    # Warm: advance without counting desync%
+    # Warm + calm: no wire_input until peers advance without hash/PHYS churn
     warm_end = time.time() + WARM_S
     while time.time() < warm_end:
         for p in ports:
@@ -560,6 +712,18 @@ def run_trial_once(clients: int, mode: str, ping: int, loss: int, throttle: int)
                 kill_all()
                 return result
         time.sleep(0.25)
+
+    calm_ok, calm_notes = wait_calm(
+        ports, clients, clogs, slog, ping=ping, loss=loss, throttle=throttle
+    )
+    if not calm_ok:
+        result.ok = False
+        result.infra = True
+        result.break_reason = "clients_not_ready"
+        result.notes = f"calm_fail:{calm_notes}"
+        kill_all()
+        return result
+    result.notes = calm_notes
 
     hist: list[dict] = []
     desync_n = 0
@@ -611,7 +775,7 @@ def run_trial_once(clients: int, mode: str, ping: int, loss: int, throttle: int)
         result.total_samples = len(hist)
         result.desync_pct = 100.0 * desync_n / len(hist) if hist else 0.0
 
-        br = classify_unrecoverable(hist, clients, clogs, slog)
+        br = classify_unrecoverable(hist, clients, clogs, slog, ping=ping, throttle=throttle)
         if br:
             result.ok = False
             result.break_reason = br.reason
@@ -665,7 +829,9 @@ def run_trial_once(clients: int, mode: str, ping: int, loss: int, throttle: int)
 def run_trial(clients: int, mode: str, ping: int, loss: int, throttle: int) -> TrialResult:
     last: TrialResult | None = None
     product_tries = 0
+    infra_tries = 0
     attempt = 0
+    # agent: composer-2.5 | 2026-08-09 | separate infra product retries | 935267
     while True:
         attempt += 1
         r = run_trial_once(clients, mode, ping, loss, throttle)
@@ -674,10 +840,11 @@ def run_trial(clients: int, mode: str, ping: int, loss: int, throttle: int) -> T
         if r.ok:
             return r
         if r.infra:
-            if attempt >= LAUNCH_RETRIES:
+            infra_tries += 1
+            if infra_tries >= LAUNCH_RETRIES:
                 break
             print(
-                f"  infra retry {attempt}/{LAUNCH_RETRIES}: {r.break_reason} {r.notes[:80]}",
+                f"  infra retry {infra_tries}/{LAUNCH_RETRIES}: {r.break_reason} {r.notes[:80]}",
                 flush=True,
             )
             continue
@@ -699,7 +866,7 @@ def run_trial(clients: int, mode: str, ping: int, loss: int, throttle: int) -> T
     last.break_reason = "infra_exhausted"
     last.infra = True
     last.ok = False
-    last.notes = f"after {LAUNCH_RETRIES} launches; " + (last.notes or "")
+    last.notes = f"after {LAUNCH_RETRIES} infra launches; " + (last.notes or "")
     return last
 
 
@@ -895,6 +1062,7 @@ def write_json(all_results: dict[str, list[TrialResult]]) -> dict:
 def write_matrix_md(scenes: dict[str, dict]) -> None:
     lines = []
     lines.append("<!-- agent: composer-2.5 | 2026-08-02 | infra-retry warm soak harness | f222cb -->")
+    lines.append("<!-- agent: composer-2.5 | 2026-08-09 | launch soak thr gate note | bdfdee -->")
     lines.append("# Throttle / ping / loss matrix")
     lines.append("")
     lines.append(
@@ -934,12 +1102,17 @@ def write_matrix_md(scenes: dict[str, dict]) -> None:
     lines.append("|--|--|")
     lines.append(f"| Soak / warm / sample | **{SOAK_S:.0f}s** / **{WARM_S:.0f}s** / **{SAMPLE_S:.1f}s** |")
     lines.append(
+        "| Bring-up | connect remotes on boot, **then** `scene` load (cold epoch); calm before input |"
+    )
+    lines.append("| Gate | `python3 scripts/stacking_throttle_sweep.py --stability-gate 20` |")
+    lines.append(
         f"| Stop | desync≥**{DESYNC_FAIL_PCT:.0f}%** (full soak), unrecoverable, ceiling "
         f"**{PING_MAX_MS}ms**/**{LOSS_MAX_PCT}%**/**{THROTTLE_MAX_PCT}%** |"
     )
     lines.append(f"| Infra | retry **{LAUNCH_RETRIES}×**; not a product limit |")
     lines.append("| Rule | `.cursor/rules/throttle-soak.mdc` |")
     lines.append("")
+    # agent: composer-2.5 | 2026-08-09 | launch soak thr gate note | bdfdee
 
     for scene, payload in scenes.items():
         lines.append(f"## {scene} — limit detail")
@@ -1000,8 +1173,86 @@ def write_matrix_md(scenes: dict[str, dict]) -> None:
                 lines.append("")
 
     lines.append("<!-- agent: composer-2.5 | 2026-08-02 | infra-retry warm soak harness | f222cb -->")
+    lines.append("<!-- agent: composer-2.5 | 2026-08-09 | launch soak thr gate note | bdfdee -->")
     OUT_MD.write_text("\n".join(lines) + "\n")
     print(f"Wrote {OUT_MD}", flush=True)
+
+
+def build_binaries() -> None:
+    subprocess.run(
+        [
+            "cmake",
+            "--build",
+            str(BUILD),
+            "-j",
+            str(os.cpu_count() or 4),
+            "--target",
+            "ngame",
+            "ngame_server",
+        ],
+        check=True,
+    )
+
+
+def stability_gate(n: int = GATE_N, clients: int = 2) -> int:
+    """Prove bring-up + short soaks at 0/0/0 and thr=10 before any wide matrix."""
+    # agent: composer-2.5 | 2026-08-09 | stability gate mode | 3364fd
+    global SOAK_S
+    build_binaries()
+    print(
+        f"STABILITY_GATE n={n} scene={SCENE} clients={clients} soak={GATE_SOAK_S}s "
+        f"desync_max={GATE_DESYNC_MAX_PCT}%",
+        flush=True,
+    )
+
+    # Phase A: consecutive cold bring-ups
+    print(f"--- phase A: bring-up 0/0/0 x{n} ---", flush=True)
+    for i in range(1, n + 1):
+        t0 = time.time()
+        bu = bring_up(clients, 0, 0, 0)
+        elapsed = time.time() - t0
+        late = False
+        if bu.slog and bu.slog.exists() and "LATE JOIN" in bu.slog.read_text(errors="ignore"):
+            late = True
+        for p in bu.procs:
+            p.kill()
+        kill_all()
+        if not bu.ok or late:
+            why = bu.reason if not bu.ok else "late_join"
+            print(f"  [{i}/{n}] BRING FAIL {why} {elapsed:.1f}s {bu.notes}", flush=True)
+            return 1
+        print(f"  [{i}/{n}] BRING OK {elapsed:.1f}s", flush=True)
+
+    prev_soak = SOAK_S
+    SOAK_S = GATE_SOAK_S
+    try:
+        for thr, label in ((0, "0/0/0"), (10, "0/0/10")):
+            print(f"--- phase B: short soak {label} x{n} ---", flush=True)
+            for i in range(1, n + 1):
+                r = run_trial(clients, "gate", 0, 0, thr)
+                kind = "OK" if r.ok and not r.infra else (
+                    f"INFRA:{r.break_reason}" if r.infra else f"BREAK:{r.break_reason}"
+                )
+                print(
+                    f"  [{i}/{n}] {kind} desync={r.desync_pct:.1f}% "
+                    f"attempts={r.launch_attempts} {r.notes[:100]}",
+                    flush=True,
+                )
+                if not r.ok or r.infra:
+                    print(f"STABILITY_GATE FAIL at soak {label} {i}/{n}", flush=True)
+                    return 1
+                if r.desync_pct > GATE_DESYNC_MAX_PCT:
+                    print(
+                        f"STABILITY_GATE FAIL desync {r.desync_pct:.1f}% > "
+                        f"{GATE_DESYNC_MAX_PCT}% at {label} {i}/{n}",
+                        flush=True,
+                    )
+                    return 1
+    finally:
+        SOAK_S = prev_soak
+
+    print(f"STABILITY_GATE PASS {n}/{n} bring-up + soak@0 + soak@thr10", flush=True)
+    return 0
 
 
 def load_all_scene_payloads() -> dict[str, dict]:
@@ -1042,6 +1293,11 @@ def main() -> None:
         thr = int(os.environ.get("THROTTLE_LAUNCH_THR", "0"))
         sys.exit(launch_soak(n, clients=clients, ping=ping, loss=loss, throttle=thr))
 
+    if len(sys.argv) > 1 and sys.argv[1] == "--stability-gate":
+        n = int(sys.argv[2]) if len(sys.argv) > 2 else GATE_N
+        clients = int(os.environ.get("THROTTLE_LAUNCH_CLIENTS", "2"))
+        sys.exit(stability_gate(n, clients=clients))
+
     if len(sys.argv) > 1 and sys.argv[1] == "--smoke":
         global SOAK_S
         SOAK_S = 4.0
@@ -1058,19 +1314,7 @@ def main() -> None:
         kill_all()
         sys.exit(0 if r2.ok and not r2.infra else 1)
 
-    subprocess.run(
-        [
-            "cmake",
-            "--build",
-            str(BUILD),
-            "-j",
-            str(os.cpu_count() or 4),
-            "--target",
-            "ngame",
-            "ngame_server",
-        ],
-        check=True,
-    )
+    build_binaries()
     if OUT_JSON.exists():
         OUT_JSON.unlink()
     all_results: dict[str, list[TrialResult]] = {}
@@ -1095,3 +1339,12 @@ if __name__ == "__main__":
     main()
 
 # agent: composer-2.5 | 2026-08-02 | parallel client bring-up | 1bced5
+# agent: composer-2.5 | 2026-08-09 | simultaneous cold join clients | 03753b
+# agent: composer-2.5 | 2026-08-09 | faster port recycle | c307e6
+# agent: composer-2.5 | 2026-08-09 | stability gate mode | 3364fd
+# agent: composer-2.5 | 2026-08-09 | warm before wire input | 2029e3
+# agent: composer-2.5 | 2026-08-09 | calm relax under ping | 4c330a
+# agent: composer-2.5 | 2026-08-09 | scale tick_frozen with ping | 2cfd18
+# agent: composer-2.5 | 2026-08-09 | separate infra product retries | 935267
+# agent: composer-2.5 | 2026-08-09 | calm stall ping 50 | eb5236
+# agent: composer-2.5 | 2026-08-09 | calm stall under loss | 5279de

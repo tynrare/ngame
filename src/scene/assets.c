@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-07-29 | assets use active runtime | ce9266
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | c86521
 #include "assets.h"
 #include "scene/runtime.h"
 #include <stdio.h>
@@ -110,7 +111,9 @@ bool mod_scene_assets_describe_mesh(const char *name, const char *shape, float w
 
 bool mod_scene_assets_describe_shader(const char *name, const char *fragment, const char *vertex,
                                       uint8_t tint_r, uint8_t tint_g, uint8_t tint_b,
-                                      bool have_tint) {
+                                      bool have_tint, uint8_t glow_r, uint8_t glow_g,
+                                      uint8_t glow_b, bool have_glow, float roughness,
+                                      float metalness) {
   if (!name || !fragment) {
     return false;
   }
@@ -124,6 +127,12 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
     existing->tint_r = tint_r;
     existing->tint_g = tint_g;
     existing->tint_b = tint_b;
+    existing->have_glow = have_glow;
+    existing->glow_r = glow_r;
+    existing->glow_g = glow_g;
+    existing->glow_b = glow_b;
+    existing->roughness = roughness;
+    existing->metalness = metalness;
     return true;
   }
   if (GASSETS().shader_count >= NG_SCENE_ASSET_MAX) {
@@ -143,6 +152,12 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
   s->tint_r = tint_r;
   s->tint_g = tint_g;
   s->tint_b = tint_b;
+  s->have_glow = have_glow;
+  s->glow_r = glow_r;
+  s->glow_g = glow_g;
+  s->glow_b = glow_b;
+  s->roughness = roughness;
+  s->metalness = metalness;
   return true;
 }
 
@@ -236,6 +251,12 @@ static bool mod_scene_assets_fill_resolved(const NgSceneModelDesc *model, NgScen
   out->tint_r = shader->tint_r;
   out->tint_g = shader->tint_g;
   out->tint_b = shader->tint_b;
+  out->have_glow = shader->have_glow;
+  out->glow_r = shader->glow_r;
+  out->glow_g = shader->glow_g;
+  out->glow_b = shader->glow_b;
+  out->roughness = shader->roughness;
+  out->metalness = shader->metalness;
   return true;
 }
 
@@ -266,3 +287,4 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
 
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-07-28 | parse mesh shape from js field | a4b5c6
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | c86521

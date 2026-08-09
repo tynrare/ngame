@@ -2,9 +2,13 @@
 
 <!-- agent: composer-2.5 | 2026-08-01 | list stacking in scenes docs | fcd0a4 -->
 <!-- agent: composer-2.5 | 2026-08-02 | list stress_spawn scene id | c65956 -->
-Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, or **`example`** (helpers demo).
+<!-- agent: composer-2.5 | 2026-08-09 | list rc shader describe keys | cac3e8 -->
+<!-- agent: composer-2.5 | 2026-08-09 | CLI debug pass note docs | 3147b2 -->
+Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, or **`example`** (helpers demo).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
+
+Tab console (JS `res/bus.js` / `res/cli/`): `?`, `? set debug.render.pass`, `set debug.render.pass albedo|normal|glow|depth|final`.
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
 
@@ -12,13 +16,20 @@ Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot 
 
 ```javascript
 global.describe("mesh", "cube_a_m", { shape: "cube", width: 1, height: 1, depth: 1 });
-global.describe("shader", "cube_a_s", { fragment: "shaders/cube.fs", vertex: "shaders/mesh.vs", tint: { r, g, b } });
+global.describe("shader", "cube_a_s", {
+  fragment: "shaders/cube.fs",
+  vertex: "shaders/mesh.vs",
+  tint: { r, g, b },
+  glow: { r, g, b },   // optional; rc.fs / ng_glow
+  roughness: 0.5,      // optional 0..1
+  metalness: 0.0,      // optional 0..1
+});
 global.describe("model", "cube_a_mo", { mesh: "cube_a_m", shader: "cube_a_s" });
 global.describe("entity", "cube_a_e", { model: "cube_a_mo", func: Cube, sync: "shared" });
 global.describe("scene", "view", { bg: { r, g, b }, camera: { ... } });
 ```
 
-See `res/scenes/cube.js` and `res/scenes/sphere.js`.
+See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (material demo).
 
 ## Body / shape (physics)
 
@@ -194,3 +205,5 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-01 | docs entity identity scopes | 2af883 -->
 <!-- agent: composer-2.5 | 2026-08-02 | docs sim entity phys upsert | 3edf8a -->
 <!-- agent: composer-2.5 | 2026-08-02 | list stress_spawn scene id | c65956 -->
+<!-- agent: composer-2.5 | 2026-08-09 | list rc shader describe keys | cac3e8 -->
+<!-- agent: composer-2.5 | 2026-08-09 | CLI debug pass note docs | 3147b2 -->

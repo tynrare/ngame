@@ -353,10 +353,15 @@ static duk_ret_t bind_describe(duk_context *ctx) {
       // agent: composer-2.5 | 2026-07-28 | wire js shape into mesh describe | f1a2b3
       mod_scene_assets_describe_mesh(name, shape, w, h, d);
     } else if (strcmp(kind, "shader") == 0) {
+      // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | d4690f
       const char *fragment = NULL;
       const char *vertex = NULL;
       uint8_t tr = 255, tg = 255, tb = 255;
       bool have_tint = false;
+      uint8_t gr = 0, gg = 0, gb = 0;
+      bool have_glow = false;
+      float roughness = 0.5f;
+      float metalness = 0.0f;
       duk_get_prop_string(ctx, 2, "fragment");
       if (duk_is_string(ctx, -1)) {
         fragment = duk_get_string(ctx, -1);
@@ -376,7 +381,37 @@ static duk_ret_t bind_describe(duk_context *ctx) {
         have_tint = true;
       }
       duk_pop(ctx);
-      mod_scene_assets_describe_shader(name, fragment, vertex, tr, tg, tb, have_tint);
+      duk_get_prop_string(ctx, 2, "glow");
+      if (duk_is_object(ctx, -1)) {
+        const int gidx = duk_get_top_index(ctx);
+        gr = (uint8_t)mod_scene_read_opt_number(ctx, gidx, "r", 0.0f);
+        gg = (uint8_t)mod_scene_read_opt_number(ctx, gidx, "g", 0.0f);
+        gb = (uint8_t)mod_scene_read_opt_number(ctx, gidx, "b", 0.0f);
+        have_glow = true;
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "roughness");
+      if (duk_is_number(ctx, -1)) {
+        roughness = (float)duk_get_number(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "metalness");
+      if (duk_is_number(ctx, -1)) {
+        metalness = (float)duk_get_number(ctx, -1);
+      }
+      duk_pop(ctx);
+      if (roughness < 0.0f) {
+        roughness = 0.0f;
+      } else if (roughness > 1.0f) {
+        roughness = 1.0f;
+      }
+      if (metalness < 0.0f) {
+        metalness = 0.0f;
+      } else if (metalness > 1.0f) {
+        metalness = 1.0f;
+      }
+      mod_scene_assets_describe_shader(name, fragment, vertex, tr, tg, tb, have_tint, gr, gg, gb,
+                                       have_glow, roughness, metalness);
     } else if (strcmp(kind, "model") == 0) {
       const char *mesh = NULL;
       const char *shader = NULL;
@@ -3756,3 +3791,4 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-08-02 | pack_sim_id despawn_id binds | 780590
 // agent: composer-2.5 | 2026-08-02 | current_id view fallback solo | 4215eb
 // agent: composer-2.5 | 2026-08-02 | drop view soft session impl | 87a4ee
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | d4690f

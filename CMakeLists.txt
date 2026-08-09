@@ -101,7 +101,9 @@ set(NG_SERVER_SOURCES
 
 if(EMSCRIPTEN)
   # agent: composer-2.5 | 2026-07-30 | link agent stubs on web | 1fca96
-  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_loopback.c src/server/agent_web.c)
+  # agent: composer-2.5 | 2026-08-09 | link web ws stubs | 2cadd9
+  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_loopback.c src/server/agent_web.c
+       src/net/ng_ws_server_web.c)
   set(NG_NET_DEFS NG_HAS_EMBEDDED GRAPHICS_API_OPENGL_ES3)
   set(NG_RES_ROOT_DEF NG_RES_ROOT=\"/res/\")
 else()
@@ -222,3 +224,4 @@ endif()
 # agent: composer-2.5 | 2026-08-01 | cmake add jsmod source | b1ae4c
 # agent: composer-2.5 | 2026-08-01 | add jsact to cmake | f0e545
 # agent: composer-2.5 | 2026-08-09 | link server into ngame | 3ae9cf
+# agent: composer-2.5 | 2026-08-09 | link web ws stubs | 2cadd9

@@ -538,12 +538,13 @@ static void mod_net_catchup_peer_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
       conf < ps->catchup_sent_tick + (uint32_t)NG_LOCK_CATCHUP_TICKS) {
     return;
   }
-  /* Hash resync: allow retry after one CATCHUP window, max 2 attempts. */
+  /* Hash resync: allow retry after one CATCHUP window; budget soft PHYS under churn. */
+  // agent: composer-2.5 | 2026-08-09 | raise soft PHYS resync budget | 462260
   if (cc->force && ps->catchup_sent_tick != 0u &&
       conf < ps->catchup_sent_tick + (uint32_t)NG_LOCK_CATCHUP_TICKS / 2u) {
     return;
   }
-  if (cc->force && ps->phys_resync_retries >= 2u) {
+  if (cc->force && ps->phys_resync_retries >= 6u) {
     NG_LOG_ERROR("lockstep: PHYS resync exhausted peer=%u — giving up", ps->peer_id);
     ps->force_phys_resync = false;
     return;
@@ -3520,3 +3521,4 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-08-09 | upstream tick allows proxy | eebefe
 // agent: composer-2.5 | 2026-08-09 | uplink independent clocks | 9ff6f9
 // agent: composer-2.5 | 2026-08-09 | proxy ack parent PHYS join | 274443
+// agent: composer-2.5 | 2026-08-09 | raise soft PHYS resync budget | 462260

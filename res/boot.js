@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-08-01 | boot registers scene modules | f6ec11
 // agent: composer-2.5 | 2026-08-02 | register stress_spawn scene | adb274
+// agent: composer-2.5 | 2026-08-09 | register rc scene | fbdaa0
 global.register("sphere", "scenes/sphere.js");
 global.register("cube", "scenes/cube.js");
 global.register("physics", "scenes/physics.js");
@@ -7,6 +8,7 @@ global.register("lockstep", "scenes/lockstep.js");
 global.register("solar", "scenes/solar.js");
 global.register("stacking", "scenes/stacking.js");
 global.register("stress_spawn", "scenes/stress_spawn.js");
+global.register("rc", "scenes/rc.js");
 global.register("example", "scenes/example.js");
 
 function Boot() {}
@@ -38,3 +40,4 @@ Boot.prototype.dispose = function () {};
 global.module(Boot);
 // agent: composer-2.5 | 2026-08-01 | boot registers scene modules | f6ec11
 // agent: composer-2.5 | 2026-08-02 | register stress_spawn scene | adb274
+// agent: composer-2.5 | 2026-08-09 | register rc scene | fbdaa0

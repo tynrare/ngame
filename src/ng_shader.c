@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-25 | shader load and uniforms | 2d8f6b
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 170240
 #include "ng_shader.h"
 #include "ng_viewport.h"
 #include <raylib.h>
@@ -83,6 +84,12 @@ NgShader ng_shader_load(const char *vs_path, const char *fs_path) {
   out.loc_time = GetShaderLocation(out.handle, "ng_time");
   out.loc_resolution = GetShaderLocation(out.handle, "ng_resolution");
   out.loc_tint = GetShaderLocation(out.handle, "ng_tint");
+  // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 170240
+  out.loc_glow = GetShaderLocation(out.handle, "ng_glow");
+  out.loc_roughness = GetShaderLocation(out.handle, "ng_roughness");
+  out.loc_metalness = GetShaderLocation(out.handle, "ng_metalness");
+  // agent: composer-2.5 | 2026-08-09 | gbuffer mode loc shader | 8d4ca0
+  out.loc_gbuf_mode = GetShaderLocation(out.handle, "ng_gbuf_mode");
 
   return out;
 }
@@ -112,3 +119,8 @@ void ng_shader_set_common(NgShader *shader, float time) {
 void ng_shader_poll(void) {
   /* hot-reload hook for later */
 }
+// agent: composer-2.5 | 2026-07-25 | shader load and uniforms | 2d8f6b
+// agent: composer-2.5 | 2026-07-25 | ES3 shader path detection | 4a9a01
+// agent: composer-2.5 | 2026-07-25 | use equilized viewport size | e1f2a3
+// agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 170240
+// agent: composer-2.5 | 2026-08-09 | gbuffer mode loc shader | 8d4ca0
