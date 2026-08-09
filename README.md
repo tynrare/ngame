@@ -21,12 +21,22 @@ Requires [raylib](https://www.raylib.com/) at `RAYLIB_DIR` in `CMakeLists.txt`.
 
 Aliases: `--connect HOST:PORT` (same as `--remote`).
 
+Sim / pacing (client and server):
+
+| Flag | Unit | Effect |
+|------|------|--------|
+| `--ping MS` | milliseconds | one-way LOCK_INPUT latency (server; `--local` forwards to spawned server) |
+| `--loss PCT` | percent 0..100 | drop unreliable LOCK_INPUT (server inbound / client uplink) |
+| `--throttle PCT` | percent 0..100 | drop FPS from 60Hz baseline (50 → ~30Hz) |
+
 Examples:
 
 ```bash
 ./build/ngame --local                    # explicit local spawn
 ./build/ngame --remote 127.0.0.1:27015 # remote
 ./build/ngame --embedded               # in-process (native)
+./build/ngame --local --ping 80 --loss 10 --throttle 50
+./build/ngame_server --ping 80 --loss 10 --throttle 25
 ./build/ngame --help
 ```
 

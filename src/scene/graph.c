@@ -750,6 +750,62 @@ static float mod_scene_graph_hermite1(float p0, float v0, float p1, float v1, fl
   return h00 * p0 + h10 * dt * v0 + h01 * p1 + h11 * dt * v1;
 }
 
+// agent: composer-2.5 | 2026-08-02 | sample rot nlerp not hermite | c0c970
+/* Match physics / ng_proto XYZ euler ↔ quat (ang_vel is not d(euler)/dt). */
+static void mod_scene_graph_euler_to_quat(const float e[3], float q[4]) {
+  const float cx = cosf(e[0] * 0.5f);
+  const float sx = sinf(e[0] * 0.5f);
+  const float cy = cosf(e[1] * 0.5f);
+  const float sy = sinf(e[1] * 0.5f);
+  const float cz = cosf(e[2] * 0.5f);
+  const float sz = sinf(e[2] * 0.5f);
+  q[0] = sx * cy * cz - cx * sy * sz;
+  q[1] = cx * sy * cz + sx * cy * sz;
+  q[2] = cx * cy * sz - sx * sy * cz;
+  q[3] = cx * cy * cz + sx * sy * sz;
+}
+
+static void mod_scene_graph_quat_to_euler(const float q[4], float e[3]) {
+  const float x = q[0];
+  const float y = q[1];
+  const float z = q[2];
+  const float w = q[3];
+  const float sinr_cosp = 2.0f * (w * x + y * z);
+  const float cosr_cosp = 1.0f - 2.0f * (x * x + y * y);
+  e[0] = atan2f(sinr_cosp, cosr_cosp);
+  float sinp = 2.0f * (w * y - z * x);
+  if (sinp > 1.0f) {
+    sinp = 1.0f;
+  }
+  if (sinp < -1.0f) {
+    sinp = -1.0f;
+  }
+  e[1] = asinf(sinp);
+  const float siny_cosp = 2.0f * (w * z + x * y);
+  const float cosy_cosp = 1.0f - 2.0f * (y * y + z * z);
+  e[2] = atan2f(siny_cosp, cosy_cosp);
+}
+
+static void mod_scene_graph_quat_nlerp(const float a[4], const float b[4], float t, float out[4]) {
+  float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  const float s = (dot < 0.0f) ? -1.0f : 1.0f;
+  if (dot < 0.0f) {
+    dot = -dot;
+  }
+  out[0] = a[0] + t * (s * b[0] - a[0]);
+  out[1] = a[1] + t * (s * b[1] - a[1]);
+  out[2] = a[2] + t * (s * b[2] - a[2]);
+  out[3] = a[3] + t * (s * b[3] - a[3]);
+  const float n = sqrtf(out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]);
+  if (n > 1e-8f) {
+    const float inv = 1.0f / n;
+    out[0] *= inv;
+    out[1] *= inv;
+    out[2] *= inv;
+    out[3] *= inv;
+  }
+}
+
 bool mod_scene_graph_sample_draw_pose(const NgSceneInst *inst, double now, float delay_s,
                                       float out_pos[3], float out_rot[3]) {
   if (!inst || !out_pos || !out_rot) {
@@ -814,8 +870,14 @@ bool mod_scene_graph_sample_draw_pose(const NgSceneInst *inst, double now, float
   for (int i = 0; i < 3; i++) {
     out_pos[i] = mod_scene_graph_hermite1(a->pos[i], a->lin_vel[i], b->pos[i], b->lin_vel[i], dt,
                                           alpha);
-    out_rot[i] = mod_scene_graph_hermite1(a->rot[i], a->ang_vel[i], b->rot[i], b->ang_vel[i], dt,
-                                          alpha);
+  }
+  // agent: composer-2.5 | 2026-08-02 | sample rot nlerp not hermite | c0c970
+  {
+    float qa[4], qb[4], qm[4];
+    mod_scene_graph_euler_to_quat(a->rot, qa);
+    mod_scene_graph_euler_to_quat(b->rot, qb);
+    mod_scene_graph_quat_nlerp(qa, qb, alpha, qm);
+    mod_scene_graph_quat_to_euler(qm, out_rot);
   }
   return true;
 }
@@ -1215,3 +1277,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 6af17e
 // agent: composer-2.5 | 2026-08-01 | entity id band helpers | b89ff8
 // agent: composer-2.5 | 2026-08-02 | sim id unpack entity text | adca75
+// agent: composer-2.5 | 2026-08-02 | sample rot nlerp not hermite | c0c970

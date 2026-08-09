@@ -95,7 +95,8 @@ void ng_app_client_init(int argc, char **argv) {
 
 #if !defined(__EMSCRIPTEN__)
   if (g_launch.mode == NG_LAUNCH_LOCAL) {
-    if (!ng_launch_spawn_server(g_launch.port)) {
+    // agent: composer-2.5 | 2026-08-02 | client apply sim throttle flags | 895b64
+    if (!ng_launch_spawn_server(&g_launch)) {
       NG_LOG_ERROR("failed to spawn ngame_server");
       snprintf(g_init_error, sizeof(g_init_error), "spawn ngame_server failed port=%u", g_launch.port);
       return;
@@ -104,6 +105,10 @@ void ng_app_client_init(int argc, char **argv) {
 #endif
 
   mod_net_set_gateway(true);
+  // agent: composer-2.5 | 2026-08-02 | client apply sim throttle flags | 895b64
+  if (g_launch.ping_ms > 0 || g_launch.loss_pct > 0) {
+    mod_net_sim_configure(g_launch.ping_ms, g_launch.loss_pct);
+  }
   if (g_launch.use_upstream) {
     mod_net_configure_upstream(g_launch.host, g_launch.port);
   } else {
@@ -227,9 +232,18 @@ void ng_app_client_frame(void) {
 
 #if !defined(__EMSCRIPTEN__)
   /* Pad to ~60Hz wall when the frame was fast. After a slow swap/unfocus stall,
-   * spent already exceeds the budget — skip wait and catch up next frame. */
+   * spent already exceeds the budget — skip wait and catch up next frame.
+   * --throttle PCT drops FPS from the 60Hz baseline (50 → ~30Hz). */
+  // agent: composer-2.5 | 2026-08-02 | client apply sim throttle flags | 895b64
   const double spent = GetTime() - frame_t0;
-  const double target = (double)NG_CLIENT_FRAME_DT;
+  double target = (double)NG_CLIENT_FRAME_DT;
+  if (g_launch.throttle_pct > 0) {
+    int fps = 60 * (100 - g_launch.throttle_pct) / 100;
+    if (fps < 1) {
+      fps = 1;
+    }
+    target = 1.0 / (double)fps;
+  }
   if (spent < target) {
     WaitTime(target - spent);
   }
@@ -265,3 +279,4 @@ void ng_app_client_shutdown(void) {
 // agent: composer-2.5 | 2026-07-30 | remote connect no freeze | c52f96
 // agent: composer-2.5 | 2026-07-30 | sample input after BeginDrawing | e28250
 // agent: cursor-grok-4.5 | 2026-07-31 | wall clock gateway sim pump | e39666
+// agent: composer-2.5 | 2026-08-02 | client apply sim throttle flags | 895b64

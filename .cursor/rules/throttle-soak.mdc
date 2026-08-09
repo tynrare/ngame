@@ -1,0 +1,56 @@
+---
+description: Throttle/ping/loss soak break rules and matrix reporting
+globs: scripts/stacking_throttle_sweep.py,docs/throttle*
+alwaysApply: false
+---
+
+# Throttle soak criteria
+
+Harness: `scripts/stacking_throttle_sweep.py`. Matrix: `docs/throttle-test.md` + `docs/throttle-*.json`.
+
+## Launch reliability first
+
+Before publishing ping/loss/throttle limits:
+
+1. **`--launch-soak N`** at stacking 2c `0/0/0` — stop on first bring-up fail (up to N).
+2. Fix harness and/or client/server from logs.
+3. Repeat until **N consecutive** successes (default N=100).
+4. Only then run the matrix sweep.
+
+Bring-up = server ready + scene loaded + N clients MCP connected + lockstep peers/ticks advancing. Not a soak.
+
+High-ping `clients_not_ready` is a separate gate (optional second launch-soak with `--ping`).
+
+## Infra vs product
+
+**Infra** (launch/settle) — **not** a product limit:
+
+- `server_not_ready`, `scene_load_failed`, `clients_not_ready`, `mcp_lost` before soak, `wire_input_failed` at t≈0
+- Retry each matrix trial **≥3** times after full kill + port wait
+- Do **not** treat a single infra fail as the axis ceiling
+
+**Product** — real stop:
+
+1. **desync time ≥ 90%** over the **full soak**, or
+2. **unrecoverable**: `tick_frozen`, `lockstep_dead`, `zf_spiral`, `predict_death`, `tick_desync`, `await_stuck`, `phys_resync_exhausted`, or
+3. Axis ceiling: **ping 5000 ms** / **loss 90%** / **throttle 90%**
+
+## Healable hash
+
+Peer `last_hash` mismatch at equal `last_tick` is healable (soft PHYS). Count toward **desync%** only; never instant-fail.
+
+Do **not** use `entity_desync` (graph Δ) as a hard fail.
+
+## Bring-up requirements
+
+- Wait for prior processes and UDP **27015** / agent ports to clear
+- Warm window before soak samples count
+- Longer ready timeout under impairment
+
+## Validity gate
+
+A **2c** matrix run is **invalid** if baseline fails as infra after retries, or combined `0/0/0` is not product-OK. Fix and re-run.
+
+## Matrix
+
+Highest step that passed product criteria. Show desync%. Tag `INFRA@` separately.

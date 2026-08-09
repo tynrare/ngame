@@ -58,10 +58,33 @@ void ng_launch_print_usage(const char *prog) {
           "\n"
           "Options:\n"
           "  --agent-port PORT           MCP port (solo default 27100; upstream uses root-assigned)\n"
+          "  --ping MS                   simulated one-way latency in milliseconds\n"
+          "  --loss PCT                  unreliable packet loss percent (0..100)\n"
+          "  --throttle PCT              FPS drop percent from 60Hz (0..100)\n"
           "\n"
           "Native default: --local (spawn ngame_server + gateway upstream)\n"
           "Web default: --solo\n",
           name);
+}
+
+static int ng_launch_clamp_pct(int v) {
+  if (v < 0) {
+    return 0;
+  }
+  if (v > 100) {
+    return 100;
+  }
+  return v;
+}
+
+static int ng_launch_clamp_ping_ms(int v) {
+  if (v < 0) {
+    return 0;
+  }
+  if (v > 2000) {
+    return 2000;
+  }
+  return v;
 }
 
 bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
@@ -69,6 +92,7 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
     return false;
   }
   // agent: composer-2.5 | 2026-07-30 | web default solo mode | 74296b
+  // agent: composer-2.5 | 2026-08-02 | parse ping loss throttle spawn | 921e81
   cfg->mode =
 #if defined(__EMSCRIPTEN__)
       NG_LAUNCH_SOLO;
@@ -80,6 +104,9 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
   cfg->port = NG_NET_DEFAULT_PORT;
   cfg->agent_port = NG_AGENT_DEFAULT_PORT;
   cfg->use_upstream = false;
+  cfg->ping_ms = 0;
+  cfg->loss_pct = 0;
+  cfg->throttle_pct = 0;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -105,6 +132,12 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
       cfg->port = (uint16_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--agent-port") == 0 && i + 1 < argc) {
       cfg->agent_port = (uint16_t)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--ping") == 0 && i + 1 < argc) {
+      cfg->ping_ms = ng_launch_clamp_ping_ms(atoi(argv[++i]));
+    } else if (strcmp(argv[i], "--loss") == 0 && i + 1 < argc) {
+      cfg->loss_pct = ng_launch_clamp_pct(atoi(argv[++i]));
+    } else if (strcmp(argv[i], "--throttle") == 0 && i + 1 < argc) {
+      cfg->throttle_pct = ng_launch_clamp_pct(atoi(argv[++i]));
     }
   }
 
@@ -206,8 +239,9 @@ static void ng_launch_detach_stdio(void) {
 }
 #endif
 
-bool ng_launch_spawn_server(uint16_t port) {
+bool ng_launch_spawn_server(const NgLaunchConfig *cfg) {
 #if defined(__linux__)
+  const uint16_t port = cfg && cfg->port ? cfg->port : NG_NET_DEFAULT_PORT;
   if (g_server_pid > 0) {
     return ng_launch_port_open(port);
   }
@@ -230,10 +264,35 @@ bool ng_launch_spawn_server(uint16_t port) {
     return false;
   }
   if (pid == 0) {
+    // agent: composer-2.5 | 2026-08-02 | parse ping loss throttle spawn | 921e81
     ng_launch_detach_stdio();
     char port_arg[16];
-    snprintf(port_arg, sizeof(port_arg), "%u", port ? port : NG_NET_DEFAULT_PORT);
-    execl(server_path, "ngame_server", "--port", port_arg, (char *)NULL);
+    char ping_arg[16];
+    char loss_arg[16];
+    char throttle_arg[16];
+    snprintf(port_arg, sizeof(port_arg), "%u", port);
+    const char *args[16];
+    int n = 0;
+    args[n++] = "ngame_server";
+    args[n++] = "--port";
+    args[n++] = port_arg;
+    if (cfg && cfg->ping_ms > 0) {
+      snprintf(ping_arg, sizeof(ping_arg), "%d", cfg->ping_ms);
+      args[n++] = "--ping";
+      args[n++] = ping_arg;
+    }
+    if (cfg && cfg->loss_pct > 0) {
+      snprintf(loss_arg, sizeof(loss_arg), "%d", cfg->loss_pct);
+      args[n++] = "--loss";
+      args[n++] = loss_arg;
+    }
+    if (cfg && cfg->throttle_pct > 0) {
+      snprintf(throttle_arg, sizeof(throttle_arg), "%d", cfg->throttle_pct);
+      args[n++] = "--throttle";
+      args[n++] = throttle_arg;
+    }
+    args[n] = NULL;
+    execv(server_path, (char *const *)args);
     _exit(1);
   }
 
@@ -247,7 +306,7 @@ bool ng_launch_spawn_server(uint16_t port) {
   NG_LOG_INFO("local server pid %d", (int)g_server_pid);
   return true;
 #else
-  (void)port;
+  (void)cfg;
   return false;
 #endif
 }
@@ -276,3 +335,4 @@ bool ng_launch_server_spawned(void) { return g_server_pid > 0; }
 // agent: composer-2.5 | 2026-07-29 | reuse running server | a3c7e4
 // agent: composer-2.5 | 2026-07-29 | default local sets upstream | c2d01b
 // agent: composer-2.5 | 2026-07-30 | web default solo mode | 74296b
+// agent: composer-2.5 | 2026-08-02 | parse ping loss throttle spawn | 921e81

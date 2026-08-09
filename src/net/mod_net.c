@@ -42,9 +42,32 @@
 #endif
 
 #if defined(NG_SERVER)
-/* CI soak: drop % of unreliable LOCK_INPUT (env NG_LOCK_SIM_DROP=0..100). */
+/* CI soak / launch: drop % of unreliable LOCK_INPUT (env NG_LOCK_SIM_DROP or --loss). */
 // agent: composer-2.5 | 2026-07-31 | lock sim drop input hook | 6098a8
+// agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
 static int g_lock_sim_drop_pct = -1;
+static int g_lock_sim_delay_ms = -1;
+
+void mod_net_sim_configure(int ping_ms, int loss_pct) {
+  if (ping_ms < 0) {
+    ping_ms = 0;
+  }
+  if (ping_ms > 2000) {
+    ping_ms = 2000;
+  }
+  if (loss_pct < 0) {
+    loss_pct = 0;
+  }
+  if (loss_pct > 100) {
+    loss_pct = 100;
+  }
+  g_lock_sim_delay_ms = ping_ms;
+  g_lock_sim_drop_pct = loss_pct;
+  if (ping_ms > 0 || loss_pct > 0) {
+    srand(1u);
+    NG_LOG_INFO("lockstep: sim ping=%dms loss=%d%%", ping_ms, loss_pct);
+  }
+}
 
 static int mod_net_lock_sim_drop_pct(void) {
   if (g_lock_sim_drop_pct < 0) {
@@ -76,7 +99,7 @@ static bool mod_net_lock_sim_should_drop_input(uint8_t channel) {
   return (rand() % 100) < pct;
 }
 
-/* Host: delay unreliable LOCK_INPUT delivery (env NG_LOCK_SIM_DELAY_MS). */
+/* Host: delay unreliable LOCK_INPUT delivery (env NG_LOCK_SIM_DELAY_MS or --ping). */
 // agent: composer-2.5 | 2026-07-31 | lock input sim delay queue | 566450
 #define NG_LOCK_SIM_DELAY_Q 64
 typedef struct {
@@ -85,7 +108,6 @@ typedef struct {
   uint8_t from_peer_id;
 } NgLockSimDelaySlot;
 
-static int g_lock_sim_delay_ms = -1;
 static NgLockSimDelaySlot g_lock_sim_delay_q[NG_LOCK_SIM_DELAY_Q];
 static int g_lock_sim_delay_n;
 
@@ -122,6 +144,13 @@ static bool mod_net_lock_sim_delay_enqueue(uint8_t channel, const NgLockInputPkt
   if (ms <= 0 || !pkt) {
     return false;
   }
+  // agent: composer-2.5 | 2026-08-02 | heartbeat on delay enqueue | 906c85
+  /* Prove liveness on wire arrival — deliver may wait `ms` and must not look silent. */
+  if (from_peer_id != 0) {
+    mod_lockstep_peer_heartbeat(from_peer_id);
+  } else if (pkt->peer_id != 0) {
+    mod_lockstep_peer_heartbeat(pkt->peer_id);
+  }
   if (g_lock_sim_delay_n >= NG_LOCK_SIM_DELAY_Q) {
     /* Queue full: drop oldest. */
     memmove(&g_lock_sim_delay_q[0], &g_lock_sim_delay_q[1],
@@ -133,6 +162,38 @@ static bool mod_net_lock_sim_delay_enqueue(uint8_t channel, const NgLockInputPkt
   s->pkt = *pkt;
   s->from_peer_id = from_peer_id;
   return true;
+}
+#else
+/* Client/gateway: optional uplink loss on LOCK_INPUT send (--loss / configure). */
+// agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
+static int g_client_sim_loss_pct = -1;
+
+void mod_net_sim_configure(int ping_ms, int loss_pct) {
+  if (loss_pct < 0) {
+    loss_pct = 0;
+  }
+  if (loss_pct > 100) {
+    loss_pct = 100;
+  }
+  g_client_sim_loss_pct = loss_pct;
+  if (ping_ms > 0) {
+    NG_LOG_INFO("net: --ping=%d (one-way ms) — forwarded to spawned server; use ngame_server --ping",
+                ping_ms);
+  }
+  if (loss_pct > 0) {
+    srand(1u);
+    NG_LOG_INFO("net: client sim loss=%d%% on LOCK_INPUT uplink", loss_pct);
+  }
+}
+
+static bool mod_net_client_sim_should_drop_tx(void) {
+  if (g_client_sim_loss_pct < 0) {
+    g_client_sim_loss_pct = 0;
+  }
+  if (g_client_sim_loss_pct <= 0) {
+    return false;
+  }
+  return (rand() % 100) < g_client_sim_loss_pct;
 }
 #endif
 
@@ -570,10 +631,27 @@ static void mod_net_kick_peer_id_cb(NgNet *net, NgNetPeer *peer, void *vctx) {
 
 /* Clock owner: silent through stall grace ⇒ leave (Gaffer: don't invent input). */
 // agent: cursor-grok-4.5 | 2026-07-31 | host prune silent call roster | 1f23a2
+// agent: composer-2.5 | 2026-08-02 | skip silent prune during join | 9f5be7
 static void mod_net_lockstep_prune_silent(ModNetCtx *ctx, NgNet *net) {
   if (!ctx || !net || !mod_lockstep_active() || !mod_lockstep_is_clock_owner()) {
     return;
   }
+  /* Late-join PHYS + delayed LOCK_INPUT can exceed PRUNE_SEC without a true leave. */
+  if (ctx->lock_join_pending || mod_lockstep_syncing() || mod_lockstep_awaiting_phys()) {
+    return;
+  }
+#if defined(NG_SERVER)
+  /* Delay queue holds undelivered INPUT — keep peers alive until deliver_at. */
+  for (int i = 0; i < g_lock_sim_delay_n; i++) {
+    uint8_t id = g_lock_sim_delay_q[i].from_peer_id;
+    if (id == 0) {
+      id = g_lock_sim_delay_q[i].pkt.peer_id;
+    }
+    if (id != 0) {
+      mod_lockstep_peer_heartbeat(id);
+    }
+  }
+#endif
   uint32_t dropped[NG_LOCK_PEER_MAX];
   const int n = mod_lockstep_prune_silent_peers(dropped, NG_LOCK_PEER_MAX);
   if (n <= 0) {
@@ -2747,6 +2825,10 @@ static void mod_net_send_lock_tx(ModNetCtx *ctx) {
     ng_net_flush(ctx->net);
   }
 #elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+  // agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
+  if (mod_net_client_sim_should_drop_tx()) {
+    return;
+  }
 #if defined(NG_HAS_EMBEDDED)
   if (ctx->gateway && ctx->net) {
     ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
@@ -3108,3 +3190,6 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-08-02 | defer mid-sim connect SESSION | 7b8412
 // agent: composer-2.5 | 2026-08-02 | SESSION keep-alive no reload | b8a0f7
 // agent: composer-2.5 | 2026-08-02 | syncing forces server reload | 42078f
+// agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
+// agent: composer-2.5 | 2026-08-02 | skip silent prune during join | 9f5be7
+// agent: composer-2.5 | 2026-08-02 | heartbeat on delay enqueue | 906c85

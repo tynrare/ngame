@@ -42,6 +42,9 @@ void mod_net_root_mirror_text(char *out, size_t cap);
 void mod_net_endpoint(char *host, size_t host_cap, uint16_t *port);
 double mod_net_connect_elapsed(void);
 void mod_net_flush_scene_updates(void);
+/* Optional launch/env override: ping=one-way ms, loss=unreliable drop %. */
+// agent: composer-2.5 | 2026-08-02 | net sim configure ping loss API | d61c66
+void mod_net_sim_configure(int ping_ms, int loss_pct);
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
 void mod_net_poll_recv(void);
 #endif
@@ -49,3 +52,4 @@ void mod_net_poll_recv(void);
 #endif
 // agent: composer-2.5 | 2026-07-29 | upstream endpoint accessor | 0a7d3c
 // agent: composer-2.5 | 2026-07-29 | gateway sync view helper | 124fc1
+// agent: composer-2.5 | 2026-08-02 | net sim configure ping loss API | d61c66

@@ -261,12 +261,14 @@ static void mod_render_draw_entity_live(const RenderAsset *a, NgEntityType type,
   }
 
   // agent: composer-2.5 | 2026-07-29 | draw entities via model transform | 1415d8
-  // Use described Model + transform (DrawModel). Local scale/rotate, then world translate.
+  // agent: composer-2.5 | 2026-08-02 | draw via quat not RotateXYZ | 838826
+  /* MatrixRotateXYZ negates angles — mismatches physics XYZ euler/quat. */
   const float s = scale > 0.0f ? scale : 1.0f;
   Model model = a->model;
-  model.transform = MatrixMultiply(
-      MatrixMultiply(MatrixScale(s, s, s), MatrixRotateXYZ((Vector3){rot[0], rot[1], rot[2]})),
-      MatrixTranslate(x, y, z));
+  const Quaternion q = QuaternionFromEuler(rot[0], rot[1], rot[2]);
+  model.transform =
+      MatrixMultiply(MatrixMultiply(MatrixScale(s, s, s), QuaternionToMatrix(q)),
+                     MatrixTranslate(x, y, z));
   DrawModel(model, (Vector3){0.0f, 0.0f, 0.0f}, 1.0f, WHITE);
 }
 
@@ -575,3 +577,4 @@ void mod_render_visibility_text(char *out, size_t cap) {
 // agent: composer-2.5 | 2026-07-30 | render pose vel extrapolate | 25c348
 // agent: composer-2.5 | 2026-07-30 | render hermite state samples | f452ba
 // agent: composer-2.5 | 2026-08-01 | adaptive interp delay API | 5b890f
+// agent: composer-2.5 | 2026-08-02 | draw via quat not RotateXYZ | 838826

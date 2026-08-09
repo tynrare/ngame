@@ -105,6 +105,8 @@ void mod_lockstep_note_desync(void);
 NgLockGate mod_lockstep_gate(void);
 void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash);
 
+// agent: composer-2.5 | 2026-08-02 | peer heartbeat decl | 9598fb
+void mod_lockstep_peer_heartbeat(uint32_t peer_id);
 void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits,
                                      const NgLockAction *action);
 void mod_lockstep_store_ack(uint32_t peer_id, uint32_t ack_tick);
@@ -186,3 +188,4 @@ void mod_lockstep_on_soft_phys(uint32_t tick);
 // agent: composer-2.5 | 2026-08-01 | per-peer playout APIs | 92b5dd
 // agent: composer-2.5 | 2026-08-01 | predict allow budget API | 9b2bad
 // agent: composer-2.5 | 2026-08-01 | hybrid flag lockstep API | dcbe5b
+// agent: composer-2.5 | 2026-08-02 | peer heartbeat decl | 9598fb

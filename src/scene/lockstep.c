@@ -568,6 +568,16 @@ void mod_lockstep_add_peer(uint32_t peer_id) {
   p->last_input_wall = mod_lockstep_wall_now();
 }
 
+// agent: composer-2.5 | 2026-08-02 | peer heartbeat API | 35dfd4
+void mod_lockstep_peer_heartbeat(uint32_t peer_id) {
+  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
+  if (!p || !p->alive) {
+    return;
+  }
+  p->got_input = true;
+  p->last_input_wall = mod_lockstep_wall_now();
+}
+
 void mod_lockstep_remove_peer(uint32_t peer_id) {
   // agent: composer-2.5 | 2026-07-30 | remove peer on disconnect | 98511c
   if (peer_id == 0 || peer_id == g_lock.local_peer_id) {
@@ -1477,15 +1487,16 @@ uint8_t mod_lockstep_last_bits(uint32_t peer_id) {
 bool mod_lockstep_propose_local_action(uint16_t action_id, uint8_t argc, const float *argv) {
   // agent: composer-2.5 | 2026-08-01 | propose future tip only | e6c793
   // agent: composer-2.5 | 2026-08-02 | refuse propose on confirmed tip | ea6352
+  // agent: composer-2.5 | 2026-08-09 | propose next unsent tip | 5a28ac
   if (argc > NG_LOCK_ACTION_FLOATS || (argc > 0 && !argv)) {
     return false;
   }
   if (!g_lock.active || g_lock.local_peer_id == 0) {
     return false;
   }
-  /* Prefer sendahead tip; never attach to an already-stepped or already-confirmed
-   * tick (confirm-without-action + late propose spawned client-only balls → soft
-   * PHYS despawn storm). */
+  /* Never attach to an already-stepped/confirmed tip. Also skip an existing
+   * sendahead tip that has no action yet — it was (or will be) flushed bits-only,
+   * and remote CONFIRM then clears a late propose (client-only balls / mismatch). */
   uint32_t tick = g_lock.local_send_tick;
   if (tick <= g_lock.sim_tick) {
     tick = g_lock.sim_tick + 1u;
@@ -1495,6 +1506,12 @@ bool mod_lockstep_propose_local_action(uint16_t action_id, uint8_t argc, const f
   }
   if (tick == 0u) {
     tick = 1u;
+  } else {
+    NgLockPeer *curp = mod_lockstep_find_peer(g_lock.local_peer_id);
+    if (curp && mod_lockstep_slot_has(curp, tick) &&
+        !curp->slots[tick % NG_LOCK_RING].has_action) {
+      tick += 1u;
+    }
   }
   mod_lockstep_gen_local(tick);
   NgLockPeer *self = mod_lockstep_find_peer(g_lock.local_peer_id);
@@ -1502,8 +1519,7 @@ bool mod_lockstep_propose_local_action(uint16_t action_id, uint8_t argc, const f
     return false;
   }
   NgLockSlot *s = &self->slots[tick % NG_LOCK_RING];
-  // agent: composer-2.5 | 2026-08-01 | propose view only tip overwrite | cab054
-  /* Tip may be re-proposed (same tick, view wins over stale); overwrite. */
+  /* Same tip may be re-proposed (camera refine); overwrite. */
   s->has_action = true;
   s->action_id = action_id;
   s->action_argc = argc;
@@ -1616,3 +1632,5 @@ int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers) {
 // agent: composer-2.5 | 2026-08-01 | propose future tip only | e6c793
 // agent: composer-2.5 | 2026-08-01 | keep wire action on adopt | 0b6b21
 // agent: composer-2.5 | 2026-08-01 | hash only confirmed tips | 2c31a3
+// agent: composer-2.5 | 2026-08-02 | peer heartbeat API | 35dfd4
+// agent: composer-2.5 | 2026-08-09 | propose next unsent tip | 5a28ac

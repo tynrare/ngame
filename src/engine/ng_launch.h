@@ -18,12 +18,18 @@ typedef struct NgLaunchConfig {
   uint16_t port;
   uint16_t agent_port;
   bool use_upstream;
+  // agent: composer-2.5 | 2026-08-02 | launch ping loss throttle flags | 33c549
+  int ping_ms;      /* simulated one-way latency (ms); 0 = off */
+  int loss_pct;     /* unreliable packet loss percent 0..100 */
+  int throttle_pct; /* FPS drop percent from 60Hz baseline; 0 = off */
 } NgLaunchConfig;
 
 bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg);
 void ng_launch_print_usage(const char *prog);
-bool ng_launch_spawn_server(uint16_t port);
+bool ng_launch_spawn_server(const NgLaunchConfig *cfg);
 void ng_launch_stop_server(void);
 bool ng_launch_server_spawned(void);
 
 #endif
+// agent: composer-2.5 | 2026-07-28 | gateway agent upstream ports | 2cac03
+// agent: composer-2.5 | 2026-08-02 | launch ping loss throttle flags | 33c549

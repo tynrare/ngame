@@ -20,6 +20,9 @@ If `validate.sh` fails, fix the first failing section before moving on.
 - `--local` (native default): starts `ngame_server`, gateway connects upstream to `127.0.0.1:27015`
 - `--remote HOST:PORT`: gateway connects to existing upstream server
 - `--solo` / `--embedded`: no upstream root; local authoritative loopback runtime
+- `--ping MS`: simulated one-way latency (ms); on `--local` forwarded to spawned server
+- `--loss PCT`: unreliable LOCK_INPUT loss percent (0..100)
+- `--throttle PCT`: FPS drop percent from 60Hz baseline (0..100)
 
 Use console `status` to confirm mode labels:
 
