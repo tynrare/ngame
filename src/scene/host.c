@@ -1,6 +1,8 @@
 // agent: composer-2.5 | 2026-07-27 | js scene lifecycle host | f3a4b5
 // agent: composer-2.5 | 2026-07-29 | host server view split | 1b39ad
 // agent: composer-2.5 | 2026-08-02 | view only action propose | 880881
+// agent: composer-2.5 | 2026-08-09 | mouse left set_view_camera | 3e4dbc
+// agent: composer-2.5 | 2026-08-09 | shared soft skip last sent | 6a5eb6
 #include "scene.h"
 #include "scene/runtime.h"
 #include "engine/ng_fs.h"
@@ -254,6 +256,18 @@ static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
       mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
     } else if (strcmp(sim, "hybrid") == 0) {
       mod_scene_physics_set_sim_mode(NG_PHYS_SIM_HYBRID);
+    }
+  }
+  duk_pop(ctx);
+  // agent: composer-2.5 | 2026-08-09 | parse scene render mode | 9251e7
+  view.render_mode = NG_SCENE_RENDER_SIMPLE;
+  duk_get_prop_string(ctx, obj_idx, "render");
+  if (duk_is_string(ctx, -1)) {
+    const char *rm = duk_get_string(ctx, -1);
+    if (strcmp(rm, "gbuffer") == 0) {
+      view.render_mode = NG_SCENE_RENDER_GBUFFER;
+    } else if (strcmp(rm, "rc") == 0) {
+      view.render_mode = NG_SCENE_RENDER_RC;
     }
   }
   duk_pop(ctx);
@@ -1048,6 +1062,11 @@ bool mod_scene_raycast_plane_y(float plane_y, float *out_x, float *out_y, float 
   if (t < 0.0f) {
     return false;
   }
+  // agent: composer-2.5 | 2026-08-09 | clamp plane raycast range | ea77c0
+  /* Far hits (cursor off-window) push shared cubes past interest and hung flush. */
+  if (t > 80.0f) {
+    return false;
+  }
   if (out_x) {
     *out_x = ray.position.x + ray.direction.x * t;
   }
@@ -1100,7 +1119,11 @@ static duk_ret_t bind_raycast_plane_y(duk_context *ctx) {
 }
 
 // agent: composer-2.5 | 2026-07-29 | expose JS mouse position | 8a4c2f
+// agent: composer-2.5 | 2026-08-09 | mouse left set_view_camera | 3e4dbc
+// agent: composer-2.5 | 2026-08-09 | drop null mouse on unfocus | b5e3ef
 static duk_ret_t bind_get_mouse_pos(duk_context *ctx) {
+  /* Do not null on !IsWindowFocused — focus flags can stick false and kill
+   * mouse forever. Far teleports are handled by raycast clamp + flush defer. */
   float mx = 0.0f, my = 0.0f;
   (void)mod_input_mouse_pos(&mx, &my);
   duk_push_object(ctx);
@@ -1108,6 +1131,75 @@ static duk_ret_t bind_get_mouse_pos(duk_context *ctx) {
   duk_put_prop_string(ctx, -2, "x");
   duk_push_number(ctx, my);
   duk_put_prop_string(ctx, -2, "y");
+#if defined(NG_SERVER)
+  duk_push_false(ctx);
+  duk_put_prop_string(ctx, -2, "left");
+  duk_push_false(ctx);
+  duk_put_prop_string(ctx, -2, "right");
+#else
+  duk_push_boolean(ctx, IsMouseButtonDown(MOUSE_BUTTON_LEFT) ? 1 : 0);
+  duk_put_prop_string(ctx, -2, "left");
+  duk_push_boolean(ctx, IsMouseButtonDown(MOUSE_BUTTON_RIGHT) ? 1 : 0);
+  duk_put_prop_string(ctx, -2, "right");
+#endif
+  return 1;
+}
+
+/** Read {x,y,z} object at stack idx into out; returns false if missing. */
+static bool mod_scene_read_xyz(duk_context *ctx, duk_idx_t idx, float out[3]) {
+  if (!duk_is_object(ctx, idx)) {
+    return false;
+  }
+  duk_get_prop_string(ctx, idx, "x");
+  if (!duk_is_number(ctx, -1)) {
+    duk_pop(ctx);
+    return false;
+  }
+  out[0] = (float)duk_get_number(ctx, -1);
+  duk_pop(ctx);
+  duk_get_prop_string(ctx, idx, "y");
+  if (!duk_is_number(ctx, -1)) {
+    duk_pop(ctx);
+    return false;
+  }
+  out[1] = (float)duk_get_number(ctx, -1);
+  duk_pop(ctx);
+  duk_get_prop_string(ctx, idx, "z");
+  if (!duk_is_number(ctx, -1)) {
+    duk_pop(ctx);
+    return false;
+  }
+  out[2] = (float)duk_get_number(ctx, -1);
+  duk_pop(ctx);
+  return true;
+}
+
+static duk_ret_t bind_set_view_camera(duk_context *ctx) {
+  NgSceneRuntime *prev = mod_scene_runtime_active();
+  mod_scene_runtime_use_view();
+  float pos[3] = {0.0f, 0.0f, 0.0f};
+  float target[3] = {0.0f, 0.0f, 0.0f};
+  const float *pos_p = NULL;
+  const float *target_p = NULL;
+  if (duk_is_object(ctx, 0)) {
+    duk_get_prop_string(ctx, 0, "position");
+    if (mod_scene_read_xyz(ctx, -1, pos)) {
+      pos_p = pos;
+    }
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, 0, "target");
+    if (mod_scene_read_xyz(ctx, -1, target)) {
+      target_p = target;
+    }
+    duk_pop(ctx);
+  }
+  const bool ok = mod_scene_assets_set_view_camera(pos_p, target_p);
+  if (prev == &g_scene_server) {
+    mod_scene_runtime_use_server();
+  } else {
+    mod_scene_runtime_use_view();
+  }
+  duk_push_boolean(ctx, ok ? 1 : 0);
   return 1;
 }
 
@@ -1129,6 +1221,7 @@ static duk_ret_t bind_set_position(duk_context *ctx) {
     duk_pop(ctx);
   }
   // agent: composer-2.5 | 2026-07-29 | position dirty deadband | 2c6e8a
+  // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
   const float dx = x - inst->pos[0];
   const float dy = y - inst->pos[1];
   const float dz = z - inst->pos[2];
@@ -1138,6 +1231,7 @@ static duk_ret_t bind_set_position(duk_context *ctx) {
   inst->pos[0] = x;
   inst->pos[1] = y;
   inst->pos[2] = z;
+  inst->prefer_live_draw = 1;
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   if (ng_sync_posts_wire(inst->sync)) {
     mod_scene_graph_mark_dirty(inst, NG_COMP_POS);
@@ -1181,6 +1275,8 @@ static duk_ret_t bind_set_rotation(duk_context *ctx) {
     inst->rot[1] = (float)duk_get_number(ctx, 2);
     inst->rot[2] = (float)duk_get_number(ctx, 3);
   }
+  // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
+  inst->prefer_live_draw = 1;
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
   return 0;
@@ -1192,6 +1288,8 @@ static duk_ret_t bind_set_rotation_y(duk_context *ctx) {
     return 0;
   }
   inst->rot[1] = (float)duk_get_number(ctx, 1);
+  // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
+  inst->prefer_live_draw = 1;
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
   return 0;
@@ -1228,6 +1326,8 @@ static duk_ret_t bind_set_rotation_x(duk_context *ctx) {
     return 0;
   }
   inst->rot[0] = (float)duk_get_number(ctx, 1);
+  // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
+  inst->prefer_live_draw = 1;
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
   return 0;
@@ -1602,6 +1702,8 @@ static void mod_scene_bind_global(duk_context *ctx) {
   BIND("raycast_plane_y", bind_raycast_plane_y, 1);
   // agent: composer-2.5 | 2026-07-29 | expose JS mouse position | 8a4c2f
   BIND("get_mouse_pos", bind_get_mouse_pos, 0);
+  // agent: composer-2.5 | 2026-08-09 | mouse left set_view_camera | 3e4dbc
+  BIND("set_view_camera", bind_set_view_camera, 1);
   BIND("set_position", bind_set_position, 2);
   // agent: composer-2.5 | 2026-07-29 | js get_position binding | 9b4d7e
   BIND("get_position", bind_get_position, 1);
@@ -2671,46 +2773,72 @@ void mod_scene_view_apply_remote(const NgStateUpdate *update) {
   ModSceneCtx *ctx = NG_SCENE_ACTIVE();
   NgSceneInst *inst = mod_scene_graph_inst_by_id(update->entity_id);
   // agent: composer-2.5 | 2026-08-01 | owner reconcile skip small err | ea4522
+  // agent: composer-2.5 | 2026-08-09 | shared soft skip last sent | 6a5eb6
   bool skip_apply = false;
-  if (inst && inst->sync == NG_SYNC_OWNER && ctx->is_controller && !inst->phys_proxy &&
-      (update->comp_mask & NG_COMP_FLAGS) == 0) {
-    float pos_err = 0.0f;
-    float rot_err = 0.0f;
-    if (update->comp_mask & NG_COMP_POS) {
-      const float dx = inst->pos[0] - update->pos[0];
-      const float dy = inst->pos[1] - update->pos[1];
-      const float dz = inst->pos[2] - update->pos[2];
-      pos_err = sqrtf(dx * dx + dy * dy + dz * dz);
-    }
-    if (update->comp_mask & NG_COMP_ROT) {
-      rot_err = fabsf(inst->rot[0] - update->rot[0]);
-      if (fabsf(inst->rot[1] - update->rot[1]) > rot_err) {
-        rot_err = fabsf(inst->rot[1] - update->rot[1]);
+  if (inst && (update->comp_mask & NG_COMP_FLAGS) == 0) {
+    if (inst->sync == NG_SYNC_OWNER && ctx->is_controller && !inst->phys_proxy) {
+      float pos_err = 0.0f;
+      float rot_err = 0.0f;
+      if (update->comp_mask & NG_COMP_POS) {
+        const float dx = inst->pos[0] - update->pos[0];
+        const float dy = inst->pos[1] - update->pos[1];
+        const float dz = inst->pos[2] - update->pos[2];
+        pos_err = sqrtf(dx * dx + dy * dy + dz * dz);
       }
-      if (fabsf(inst->rot[2] - update->rot[2]) > rot_err) {
-        rot_err = fabsf(inst->rot[2] - update->rot[2]);
+      if (update->comp_mask & NG_COMP_ROT) {
+        rot_err = fabsf(inst->rot[0] - update->rot[0]);
+        if (fabsf(inst->rot[1] - update->rot[1]) > rot_err) {
+          rot_err = fabsf(inst->rot[1] - update->rot[1]);
+        }
+        if (fabsf(inst->rot[2] - update->rot[2]) > rot_err) {
+          rot_err = fabsf(inst->rot[2] - update->rot[2]);
+        }
       }
-    }
-    if (pos_err < 0.05f && rot_err < 0.05f) {
-      skip_apply = true;
+      if (pos_err < 0.05f && rot_err < 0.05f) {
+        skip_apply = true;
+      }
+    } else if (inst->sync == NG_SYNC_SHARED && inst->last_sent_seq != 0) {
+      /* Echo of our last flush — host rewrites seq so compare pose. */
+      float pos_err = 0.0f;
+      float rot_err = 0.0f;
+      if (update->comp_mask & NG_COMP_POS) {
+        const float dx = inst->last_sent_pos[0] - update->pos[0];
+        const float dy = inst->last_sent_pos[1] - update->pos[1];
+        const float dz = inst->last_sent_pos[2] - update->pos[2];
+        pos_err = sqrtf(dx * dx + dy * dy + dz * dz);
+      }
+      if (update->comp_mask & NG_COMP_ROT) {
+        rot_err = fabsf(inst->last_sent_rot[0] - update->rot[0]);
+        if (fabsf(inst->last_sent_rot[1] - update->rot[1]) > rot_err) {
+          rot_err = fabsf(inst->last_sent_rot[1] - update->rot[1]);
+        }
+        if (fabsf(inst->last_sent_rot[2] - update->rot[2]) > rot_err) {
+          rot_err = fabsf(inst->last_sent_rot[2] - update->rot[2]);
+        }
+      }
+      if (pos_err < 0.02f && rot_err < 0.02f) {
+        skip_apply = true;
+      }
     }
   }
   if (!skip_apply) {
     mod_scene_graph_apply_update(update);
-  }
 #if !defined(NG_SERVER)
-  // agent: composer-2.5 | 2026-07-30 | view apply push sample drive | 62a9c2
-  inst = mod_scene_graph_inst_by_id(update->entity_id);
-  if (inst) {
-    const double now = GetTime();
-    mod_scene_graph_push_sample(inst, now);
-    mod_scene_graph_note_state_arrival(now);
-    if (inst->phys_proxy) {
-      mod_scene_physics_drive_proxy(inst->handle, inst->pos, inst->rot, inst->lin_vel,
-                                    inst->ang_vel);
+    // agent: composer-2.5 | 2026-07-30 | view apply push sample drive | 62a9c2
+    // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
+    inst = mod_scene_graph_inst_by_id(update->entity_id);
+    if (inst) {
+      inst->prefer_live_draw = 0;
+      const double now = GetTime();
+      mod_scene_graph_push_sample(inst, now);
+      mod_scene_graph_note_state_arrival(now);
+      if (inst->phys_proxy) {
+        mod_scene_physics_drive_proxy(inst->handle, inst->pos, inst->rot, inst->lin_vel,
+                                      inst->ang_vel);
+      }
     }
-  }
 #endif
+  }
 }
 
 // agent: composer-2.5 | 2026-08-01 | interest origin helper | 79d287
@@ -3792,3 +3920,9 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-08-02 | current_id view fallback solo | 4215eb
 // agent: composer-2.5 | 2026-08-02 | drop view soft session impl | 87a4ee
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | d4690f
+// agent: composer-2.5 | 2026-08-09 | parse scene render mode | 9251e7
+// agent: composer-2.5 | 2026-08-09 | mouse left set_view_camera | 3e4dbc
+// agent: composer-2.5 | 2026-08-09 | shared soft skip last sent | 6a5eb6
+// agent: composer-2.5 | 2026-08-09 | drop null mouse on unfocus | b5e3ef
+// agent: composer-2.5 | 2026-08-09 | clamp plane raycast range | ea77c0
+// agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979

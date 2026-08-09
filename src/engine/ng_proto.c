@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | binary wire codec | b5e73f
 // agent: composer-2.5 | 2026-07-25 | input on unreliable channel | f1418f
+// agent: composer-2.5 | 2026-08-09 | state rot full-circle euler wire | 2cb801
 #include "engine/ng_proto.h"
 #include "engine/ng_action.h"
 #include <math.h>
@@ -812,7 +813,10 @@ static bool ng_proto_write_state_body(NgProtoBuf *b, const NgStateUpdate *update
            ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[1])) &&
            ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[2])))) &&
          (!(update->comp_mask & NG_COMP_ROT) ||
-          ng_proto_write_u32(b, ng_proto_pack_quat_smallest_three(update->rot))) &&
+          /* v14: signed mrad euler — yaw (rot[1]) survives; quat asin-middle did not. */
+          (ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[0])) &&
+           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[1])) &&
+           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[2])))) &&
          (!(update->comp_mask & NG_COMP_SCALE) ||
           ng_proto_write_i16(b, ng_proto_quant_cm(update->scale))) &&
          (!(update->comp_mask & NG_COMP_LIN_VEL) ||
@@ -843,11 +847,14 @@ static bool ng_proto_read_state_body(NgProtoBuf *b, NgStateUpdate *update) {
     update->pos[2] = ng_proto_dequant_cm(q2);
   }
   if (mask & NG_COMP_ROT) {
-    uint32_t packed = 0;
-    if (!ng_proto_read_u32(b, &packed)) {
+    // agent: composer-2.5 | 2026-08-09 | state rot full-circle euler wire | 2cb801
+    int16_t a0 = 0, a1 = 0, a2 = 0;
+    if (!ng_proto_read_i16(b, &a0) || !ng_proto_read_i16(b, &a1) || !ng_proto_read_i16(b, &a2)) {
       return false;
     }
-    ng_proto_unpack_quat_smallest_three(packed, update->rot);
+    update->rot[0] = ng_proto_dequant_ang_vel(a0);
+    update->rot[1] = ng_proto_dequant_ang_vel(a1);
+    update->rot[2] = ng_proto_dequant_ang_vel(a2);
   }
   if (mask & NG_COMP_SCALE) {
     int16_t qs = 0;
@@ -1383,3 +1390,4 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt) {
 // agent: composer-2.5 | 2026-08-01 | smallest three quat wire | b4fc42
 // agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
 // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | ded0c5
+// agent: composer-2.5 | 2026-08-09 | state rot full-circle euler wire | 2cb801

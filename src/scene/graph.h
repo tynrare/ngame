@@ -112,6 +112,9 @@ typedef struct NgSceneInst {
   float last_sent_scale;
   float last_sent_lin_vel[3];
   float last_sent_ang_vel[3];
+  /* 1 = draw live pose (local mouse/WASD); samples resume after true remote. */
+  // agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | d3e801
+  uint8_t prefer_live_draw;
   int script_inst_stash;
 } NgSceneInst;
 
@@ -203,3 +206,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 8a078a
 // agent: composer-2.5 | 2026-08-01 | entity id band helpers | 21c51e
 // agent: composer-2.5 | 2026-08-02 | add FIXED_STEP spawn ctx | abcd62
+// agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | d3e801

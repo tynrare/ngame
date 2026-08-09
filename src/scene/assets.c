@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-07-29 | assets use active runtime | ce9266
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | c86521
+// agent: composer-2.5 | 2026-08-09 | set view camera assets | d004a6
 #include "assets.h"
 #include "scene/runtime.h"
 #include <stdio.h>
@@ -202,6 +203,25 @@ bool mod_scene_assets_describe_view(const NgSceneViewMeta *view) {
   return true;
 }
 
+// agent: composer-2.5 | 2026-08-09 | set view camera assets | d004a6
+bool mod_scene_assets_set_view_camera(const float *pos, const float *target) {
+  if (!GASSETS().view.valid) {
+    return false;
+  }
+  if (pos) {
+    GASSETS().view.cam_pos[0] = pos[0];
+    GASSETS().view.cam_pos[1] = pos[1];
+    GASSETS().view.cam_pos[2] = pos[2];
+  }
+  if (target) {
+    GASSETS().view.cam_target[0] = target[0];
+    GASSETS().view.cam_target[1] = target[1];
+    GASSETS().view.cam_target[2] = target[2];
+  }
+  GASSETS().view.camera_mode = NG_SCENE_CAM_FIXED;
+  return true;
+}
+
 const NgSceneViewMeta *mod_scene_assets_view(void) {
   return GASSETS().view.valid ? &GASSETS().view : NULL;
 }
@@ -288,3 +308,4 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-07-28 | parse mesh shape from js field | a4b5c6
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | c86521
+// agent: composer-2.5 | 2026-08-09 | set view camera assets | d004a6

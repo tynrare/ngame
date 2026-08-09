@@ -4,11 +4,13 @@
 <!-- agent: composer-2.5 | 2026-08-02 | list stress_spawn scene id | c65956 -->
 <!-- agent: composer-2.5 | 2026-08-09 | list rc shader describe keys | cac3e8 -->
 <!-- agent: composer-2.5 | 2026-08-09 | CLI debug pass note docs | 3147b2 -->
+<!-- agent: composer-2.5 | 2026-08-09 | Phase2 CLI note docs | 5a9332 -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 433e2e -->
 Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, or **`example`** (helpers demo).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
-Tab console (JS `res/bus.js` / `res/cli/`): `?`, `? set debug.render.pass`, `set debug.render.pass albedo|normal|glow|depth|final`.
+Tab console (JS `res/bus.js` / `res/cli/`): `?`, `set debug.render.pass …`, `set debug.render.rc_quality 0|1|2` (2 = screen-space RC). Only meaningful when the scene opts in (`render: "gbuffer"` / `"rc"`).
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
 
@@ -26,10 +28,16 @@ global.describe("shader", "cube_a_s", {
 });
 global.describe("model", "cube_a_mo", { mesh: "cube_a_m", shader: "cube_a_s" });
 global.describe("entity", "cube_a_e", { model: "cube_a_mo", func: Cube, sync: "shared" });
-global.describe("scene", "view", { bg: { r, g, b }, camera: { ... } });
+global.describe("scene", "view", {
+  render: "simple", // optional: "simple" | "gbuffer" | "rc" (default simple; rc includes gbuffer)
+  bg: { r, g, b },
+  camera: { ... },
+});
 ```
 
-See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (material demo).
+See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (`render: "rc"`).
+
+**Render (`render`):** omit / `"simple"` (default forward), `"gbuffer"` (debug G-buffer), `"rc"` (G-buffer + SS RC when `rc_quality≥2`).
 
 ## Body / shape (physics)
 
@@ -124,7 +132,8 @@ Agent: `lockstep_hash` returns the current physics transform checksum and tick.
 <!-- agent: composer-2.5 | 2026-08-01 | scenes server gaffer notes | ad0e58 -->
 Omit `sim`, or use non-input-sim (implicit `server`): host runs Box3D for bodies according to entity sync (`server` on host, `shared`/`local` on views, `owner` on controller).
 
-Live replication uses unreliable `STATE_UPDATE` with quantized **pose + lin/ang vel** (cm / mrad) and **smallest-three** orientation (proto v12). At-rest omits vel. For `sync: "server"` only: per-peer ACK **delta** (`NG_COMP_FLAGS`) with absolute keyframes ~every 30 sends; **shared / multi-author stay absolute**. Flush prioritizes |velocity| × interest (R≈40, skip beyond 2R; up to 24 per pass).
+<!-- agent: composer-2.5 | 2026-08-09 | state rot mrad euler docs | 1118bb -->
+Live replication uses unreliable `STATE_UPDATE` with quantized **pose + lin/ang vel** (cm / mrad) and **signed mrad euler** orientation (proto v14; yaw in `rot[1]` is not asin-clamped). At-rest omits vel. For `sync: "server"` only: per-peer ACK **delta** (`NG_COMP_FLAGS`) with absolute keyframes ~every 30 sends; **shared / multi-author stay absolute**. Flush prioritizes |velocity| × interest (R≈40, skip beyond 2R; up to 24 per pass).
 
 Views keep a sample ring and **Hermite**-interpolate with adaptive delay (~3× arrival EMA, clamp 50–350 ms; `NG_STATE_INTERP_MS` override). Past the newest sample, **hold** (no naive extrapolate). For `sync: "server"` bodies, the view attaches a **kinematic Box3D proxy** driven by pose+vel. Controller `owner` bodies: local sim; skip applying absolute host updates when error is below ~5 cm / ~5°.
 
@@ -207,3 +216,6 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-02 | list stress_spawn scene id | c65956 -->
 <!-- agent: composer-2.5 | 2026-08-09 | list rc shader describe keys | cac3e8 -->
 <!-- agent: composer-2.5 | 2026-08-09 | CLI debug pass note docs | 3147b2 -->
+<!-- agent: composer-2.5 | 2026-08-09 | Phase2 CLI note docs | 5a9332 -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 433e2e -->
+<!-- agent: composer-2.5 | 2026-08-09 | state rot mrad euler docs | 1118bb -->

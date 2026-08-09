@@ -1,4 +1,6 @@
 // agent: composer-2.5 | 2026-08-09 | rc Phase 0 test scene | 57f1f6
+// agent: composer-2.5 | 2026-08-09 | rc scene render rc opt-in | c4d815
+// agent: composer-2.5 | 2026-08-09 | rc mouse drag orbit cam | 14f14d
 function Prop() {}
 Prop.prototype.init = function () {};
 Prop.prototype.start = function () {};
@@ -106,7 +108,9 @@ Scene.prototype.init = function () {
   global.describe("model", "rc_glow_b_mo", { mesh: "rc_glow_b_m", shader: "rc_glow_b_s" });
   global.describe("entity", "rc_glow_b_e", { model: "rc_glow_b_mo", func: Prop, sync: "shared" });
 
+  // agent: composer-2.5 | 2026-08-09 | rc scene render rc opt-in | c4d815
   global.describe("scene", "view", {
+    render: "rc",
     bg: { r: 18, g: 20, b: 28 },
     camera: {
       mode: "fixed",
@@ -150,11 +154,87 @@ Scene.prototype.start = function (session) {
     key: "glow_b",
     position: { x: 2.4, y: 0.5, z: -2.0 },
   });
+
+  // agent: composer-2.5 | 2026-08-09 | rc mouse drag orbit cam | 14f14d
+  var cam = global.get_view_camera();
+  var tx = cam && cam.target ? cam.target.x : 0;
+  var ty = cam && cam.target ? cam.target.y : 1;
+  var tz = cam && cam.target ? cam.target.z : 0;
+  var px = cam && cam.position ? cam.position.x : 5.5;
+  var py = cam && cam.position ? cam.position.y : 3.2;
+  var pz = cam && cam.position ? cam.position.z : 7.5;
+  var dx = px - tx;
+  var dy = py - ty;
+  var dz = pz - tz;
+  var radius = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (!(radius > 0.01)) {
+    radius = 9.5;
+  }
+  this._orbit = {
+    yaw: Math.atan2(dx, dz),
+    pitch: Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)),
+    radius: radius,
+    target: { x: tx, y: ty, z: tz },
+    last: null,
+  };
 };
 
-Scene.prototype.step = function (dt) {};
+/** Apply yaw/pitch/radius to view camera. */
+Scene.prototype._orbit_apply = function () {
+  var o = this._orbit;
+  if (!o) {
+    return;
+  }
+  var cp = Math.cos(o.pitch);
+  var sp = Math.sin(o.pitch);
+  var sy = Math.sin(o.yaw);
+  var cy = Math.cos(o.yaw);
+  var r = o.radius;
+  var t = o.target;
+  global.set_view_camera({
+    position: {
+      x: t.x + r * cp * sy,
+      y: t.y + r * sp,
+      z: t.z + r * cp * cy,
+    },
+    target: t,
+  });
+};
+
+Scene.prototype.step = function (dt) {
+  var o = this._orbit;
+  if (!o) {
+    return;
+  }
+  var mouse = global.get_mouse_pos();
+  if (!mouse) {
+    return;
+  }
+  if (mouse.left) {
+    if (!o.last) {
+      o.last = { x: mouse.x, y: mouse.y };
+      return;
+    }
+    var mdx = mouse.x - o.last.x;
+    var mdy = mouse.y - o.last.y;
+    o.last.x = mouse.x;
+    o.last.y = mouse.y;
+    o.yaw -= mdx * 0.005;
+    o.pitch += mdy * 0.005;
+    if (o.pitch > 1.2) {
+      o.pitch = 1.2;
+    } else if (o.pitch < -0.2) {
+      o.pitch = -0.2;
+    }
+    this._orbit_apply();
+  } else {
+    o.last = null;
+  }
+};
 Scene.prototype.stop = function () {};
 Scene.prototype.dispose = function () {};
 
 global.module(Scene);
 // agent: composer-2.5 | 2026-08-09 | rc Phase 0 test scene | 57f1f6
+// agent: composer-2.5 | 2026-08-09 | rc scene render rc opt-in | c4d815
+// agent: composer-2.5 | 2026-08-09 | rc mouse drag orbit cam | 14f14d

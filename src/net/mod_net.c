@@ -3262,6 +3262,12 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
   }
   NgStateUpdate cand[64];
   float prio[64];
+  // agent: composer-2.5 | 2026-08-09 | flush skip no redity same pass | 9b01cc
+  /* Beyond-interest skips must not mark_dirty mid-pass — that re-queues the
+   * same inst and spins forever (cube mouse teleport on unfocus). */
+  uint32_t defer_id[64];
+  uint8_t defer_mask[64];
+  int defer_n = 0;
   for (;;) {
     int n = 0;
     uint32_t tick = 0;
@@ -3283,15 +3289,18 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
       }
       prio[n] = mod_scene_graph_flush_priority_at(&cand[n], origin, 40.0f);
       if (prio[n] < 0.0f) {
-        if (inst) {
-          mod_scene_graph_mark_dirty(inst, cand[n].comp_mask & ~NG_COMP_FLAGS);
+        if (inst && defer_n < 64) {
+          defer_id[defer_n] = inst->id;
+          defer_mask[defer_n] =
+              (uint8_t)(cand[n].comp_mask & ~NG_COMP_FLAGS);
+          defer_n++;
         }
         continue;
       }
       n++;
     }
     if (n == 0) {
-      return;
+      break;
     }
     /* Priority sort (descending) — send hottest movers first. */
     for (int i = 0; i < n; i++) {
@@ -3345,7 +3354,7 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
             ? ng_proto_encode_state_update(&ctx->tx_buf, batch[0].seq, &batch[0])
             : ng_proto_encode_state_batch(&ctx->tx_buf, batch[0].seq, tick, batch, send_n);
     if (!ok) {
-      return;
+      break;
     }
 #if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
 #if defined(NG_HAS_EMBEDDED)
@@ -3365,6 +3374,12 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
       ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
     }
 #endif
+  }
+  for (int i = 0; i < defer_n; i++) {
+    NgSceneInst *dinst = mod_scene_graph_inst_by_id(defer_id[i]);
+    if (dinst) {
+      mod_scene_graph_mark_dirty(dinst, defer_mask[i]);
+    }
   }
 }
 
@@ -3522,3 +3537,4 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-08-09 | uplink independent clocks | 9ff6f9
 // agent: composer-2.5 | 2026-08-09 | proxy ack parent PHYS join | 274443
 // agent: composer-2.5 | 2026-08-09 | raise soft PHYS resync budget | 462260
+// agent: composer-2.5 | 2026-08-09 | flush skip no redity same pass | 9b01cc

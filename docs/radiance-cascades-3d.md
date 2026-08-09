@@ -1,9 +1,13 @@
-<!-- agent: composer-2.5 | 2026-08-09 | Phase1 CLI gbuf docs | 87c6db -->
+<!-- agent: composer-2.5 | 2026-08-09 | Phase2 RC docs done | a6b410 -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 41a9b6 -->
 # Radiance Cascades (3D) — North Star
 
 Goal: a **performance-scalable** GI path for ngame, with a clean JS scene
 (`res/scenes/rc.js`) and classical material shaders, degrading to simple
 direct lighting when cascades are off or cheap.
+
+**Opt-in:** scene `describe("scene","view",{ render: "rc" })` (default `"simple"`).
+`rc` includes gbuffer; other scenes stay on simple forward.
 
 ## Why
 
@@ -28,7 +32,7 @@ a ladder, not one fixed algorithm.
 | 4 | RC high | more dirs / probes | target demo look |
 
 **Invariant:** Level 0 always works. Raising level only adds passes.
-Knob: `rc_quality` ∈ {0…4}.
+Knob: `rc_quality` ∈ {0…4} (CLI: `set debug.render.rc_quality`; **2** = SS RC).
 
 ## Target deliverables
 
@@ -37,10 +41,11 @@ Knob: `rc_quality` ∈ {0…4}.
 | `docs/radiance-cascades-3d.md` | This north star |
 | `res/scenes/rc.js` | Test scene: multi-mesh, lights, glow props |
 | `res/shaders/rc.fs` | One material: tint, roughness, metalness, **glow** |
-| `res/shaders/rc_gbuf.fs` | G-buffer debug write (albedo/normal/glow/depth) |
-| `res/cli/debug.js` | JS CLI: `set debug.render.pass` |
-| `res/shaders/rc_compose.fs` | Later: direct + cascade irradiance (+ bloom) |
-| (later) cascade fill / merge passes | Screen-space RC first |
+| `res/shaders/rc_gbuf.fs` | G-buffer write (albedo/normal/glow/linear depth) |
+| `res/shaders/rc_cascade_fill.fs` | SS interval raymarch per cascade |
+| `res/shaders/rc_cascade_merge.fs` | Nearest merge coarse→fine |
+| `res/shaders/rc_compose.fs` | Direct + `k_gi * irradiance * albedo` |
+| `res/cli/debug.js` | JS CLI: pass + `rc_quality` |
 
 Register: `register("rc", "scenes/rc.js")` in `res/boot.js`. Follow
 `docs/scenes.md` describe/spawn patterns (`cube.js`).
@@ -48,53 +53,27 @@ Register: `register("rc", "scenes/rc.js")` in `res/boot.js`. Follow
 **Material:** one shader only. Glow props use the same FS with a high
 `glow` describe uniform (`ng_glow`). No lit/emissive shader split.
 
-```javascript
-global.describe("shader", "mat_s", {
-  fragment: "shaders/rc.fs",
-  vertex: "shaders/mesh.vs",
-  tint: { r, g, b },
-  glow: { r, g, b },       // 0 = none; bright = self-lit
-  roughness: 0.5,
-  metalness: 0.0,
-});
-```
-
 ### Debug CLI (JS-driven)
 
-Tab console → cmds go to `res/bus.js` (+ `res/cli/*.js`). Help is hierarchical:
-
 ```
-?                              # top-level cmds
-? set                          # set subtree
-? set debug.render.pass        # values + current
-set debug.render.pass albedo   # final|albedo|normal|glow|depth
+? set debug.render.pass
+? set debug.render.rc_quality
+set debug.render.pass albedo|normal|glow|depth|irradiance|final
+set debug.render.rc_quality 0|1|2
 ```
 
 ## Approximate steps
 
-### Phase 0 — Scene + materials (no RC) — done
-
-1. `rc.js` + `rc.fs` + describe uniforms (`glow` / roughness / metalness).
-2. `scene rc` multi-object lit stage with glow props.
-
+### Phase 0 — Scene + materials — done
 ### Phase 1 — G-buffer hooks — done
+### Phase 2 — Screen-space RC — done
 
-4. RTs for albedo / normal / glow / depth via `rc_gbuf.fs` + `mesh.vs`.
-5. Fullscreen blit selected by `set debug.render.pass KEY`.
-6. CLI help/set in JS (`bus.js`, `cli/debug.js`); C only binds set/get/status.
+7. Cascades 0/1/2 (4/16/64 dirs; short/mid/long intervals).
+8. Fill SS raymarch into glow/albedo; miss → sky.
+9. Nearest merge top→bottom; compose Direct+GI.
+10. On `render:"rc"` scenes, `rc_quality≥2` enables RC; `≤1` forward only.
 
-**Done when:** buffers readable via debug pass CLI.
-
-### Phase 2 — Screen-space RC (Level 2)
-
-7. Define cascade params: C0 probe spacing, ray dirs, interval lengths;
-   scale ~2×–4× angular / ½ spatial per cascade (paper / GMShaders).
-8. Fill cascades: short SS raymarch into glow/albedo; miss → sky/ambient.
-9. Merge top→bottom (nearest first); sample C0 irradiance in compose.
-10. Shade: `Direct(L,N,V,rough,metal) + k_gi * Irradiance * albedo`.
-11. Expose `rc_quality`; Level ≤1 skips cascade passes entirely.
-
-**Done when:** soft bounce / color bleed without noise at Level 2.
+**Done when:** soft bounce / color bleed on `scene rc` without noise.
 
 ### Phase 3 — Quality knobs (Level 3–4)
 
@@ -102,15 +81,10 @@ set debug.render.pass albedo   # final|albedo|normal|glow|depth
 13. More cascades / dirs; optional 2-frame amortize (“reduce demand”).
 14. Ringing / parallax mitigations only if visible in `rc` scene.
 
-**Done when:** Level 4 is the demo look; Level 0 remains the fallback.
-
 ### Phase 4 — Optional 3D variants (later)
 
 15. World-space volume probes + interval extension, **or**
 16. Surfel RC (surface probes; see SRC-DGI) if off-screen GI matters.
-
-Defer until screenspace ladder is solid. Do not start with full 3D volume C0
-unless the test volume is tiny.
 
 ## Pipeline sketch (Level ≥2)
 
@@ -136,17 +110,15 @@ opaque G-buffer → for c = Cmax…0: march intervals
 
 ## References (read order)
 
-1. https://radiance.wiki/ — hub, variants, fixes
+1. https://radiance.wiki/
 2. Sannikov WIP — https://github.com/Raikiri/RadianceCascadesPaper
-3. Osborne & Sannikov 2024 — arXiv:2408.14425 (bilinear / parallax)
-4. MΛX fundamentals — https://m4xc.dev/articles/fundamental-rc/
-5. Jason McGhee — https://jason.today/rc (+ https://jason.today/gi)
+3. Osborne & Sannikov 2024 — arXiv:2408.14425
+4. MΛX — https://m4xc.dev/articles/fundamental-rc/
+5. Jason McGhee — https://jason.today/rc
 6. GM Shaders — https://mini.gmshaders.com/p/radiance-cascades
-   + part 2 — https://mini.gmshaders.com/p/radiance-cascades2
-   + code — https://github.com/Yaazarai/GMShaders-Radiance-Cascades
 7. SimonDev — https://github.com/simondevyoutube/Shaders_RadianceCascades
 8. Playground — https://radiance-cascades.com/
-9. 3D experiments — https://github.com/mxcop/src-dgi (surfel)
-   · https://tmpvar.com/poc/radiance-cascades/ (cost tables)
+9. https://github.com/mxcop/src-dgi · https://tmpvar.com/poc/radiance-cascades/
 
-<!-- agent: composer-2.5 | 2026-08-09 | Phase1 CLI gbuf docs | 87c6db -->
+<!-- agent: composer-2.5 | 2026-08-09 | Phase2 RC docs done | a6b410 -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 41a9b6 -->

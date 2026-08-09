@@ -1,5 +1,7 @@
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 9bd320
+// agent: composer-2.5 | 2026-08-09 | scene render mode enum | d6a4aa
+// agent: composer-2.5 | 2026-08-09 | set view camera assets | 10114b
 #ifndef MOD_SCENE_ASSETS_H
 #define MOD_SCENE_ASSETS_H
 
@@ -18,6 +20,12 @@ typedef enum NgSceneCameraMode {
   NG_SCENE_CAM_FIXED = 0,
   NG_SCENE_CAM_ORBIT = 1,
 } NgSceneCameraMode;
+
+typedef enum NgSceneRenderMode {
+  NG_SCENE_RENDER_SIMPLE = 0,
+  NG_SCENE_RENDER_GBUFFER = 1,
+  NG_SCENE_RENDER_RC = 2,
+} NgSceneRenderMode;
 
 typedef struct NgSceneMeshDesc {
   bool alive;
@@ -59,6 +67,7 @@ typedef struct NgSceneViewMeta {
   uint8_t bg_g;
   uint8_t bg_b;
   NgSceneCameraMode camera_mode;
+  NgSceneRenderMode render_mode;
   float cam_pos[3];
   float cam_target[3];
   float cam_fovy;
@@ -97,6 +106,8 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
                                       float metalness);
 bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader);
 bool mod_scene_assets_describe_view(const NgSceneViewMeta *view);
+/** Update view camera pos/target (NULL skips). Forces fixed mode. */
+bool mod_scene_assets_set_view_camera(const float *pos, const float *target);
 bool mod_scene_assets_dispose(const char *kind, const char *name);
 bool mod_scene_assets_resolve_model(const char *model_name, NgSceneResolvedModel *out);
 bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneResolvedModel *out);
@@ -107,3 +118,5 @@ NgEntityType mod_scene_assets_entity_type_for_kind(NgSceneMeshKind kind);
 
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 9bd320
+// agent: composer-2.5 | 2026-08-09 | scene render mode enum | d6a4aa
+// agent: composer-2.5 | 2026-08-09 | set view camera assets | 10114b

@@ -14,7 +14,8 @@ struct NgActionResult;
 // agent: composer-2.5 | 2026-08-01 | session playout proto v10 | 4ca19d
 // agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
 // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
-#define NG_PROTO_VERSION 13
+// agent: composer-2.5 | 2026-08-09 | bump proto version 14 | 134f65
+#define NG_PROTO_VERSION 14
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -208,3 +209,4 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
 // agent: composer-2.5 | 2026-08-01 | proto version 11 | 2dbf01
 // agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
 // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
+// agent: composer-2.5 | 2026-08-09 | bump proto version 14 | 134f65
