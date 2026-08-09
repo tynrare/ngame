@@ -150,6 +150,11 @@ uint8_t mod_lockstep_last_bits(uint32_t peer_id);
 bool mod_lockstep_propose_local_action(uint16_t action_id, uint8_t argc, const float *argv);
 bool mod_lockstep_action_for(uint32_t peer_id, uint32_t tick, NgLockAction *out);
 uint32_t mod_lockstep_peer_id_at(int index);
+/* OR last_bits of all alive non-ghost peers (uplink merge hold). */
+// agent: composer-2.5 | 2026-08-09 | lockstep child input merge | 72264b
+uint8_t mod_lockstep_last_bits_or(void);
+/* Merge children at tick: OR bits; first present action. Returns false if no peers. */
+bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, NgLockAction *out_action);
 /* Peers whose contiguous recv lags confirmed by CATCHUP_TICKS. */
 int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers);
 bool mod_lockstep_copy_last_confirm(NgLockConfirmPkt *out);

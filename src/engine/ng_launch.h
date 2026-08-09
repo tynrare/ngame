@@ -10,6 +10,7 @@ typedef enum NgLaunchMode {
   NG_LAUNCH_REMOTE = 0,
   NG_LAUNCH_LOCAL,
   NG_LAUNCH_SOLO,
+  NG_LAUNCH_SERVER,
 } NgLaunchMode;
 
 typedef struct NgLaunchConfig {
@@ -33,3 +34,4 @@ bool ng_launch_server_spawned(void);
 #endif
 // agent: composer-2.5 | 2026-07-28 | gateway agent upstream ports | 2cac03
 // agent: composer-2.5 | 2026-08-02 | launch ping loss throttle flags | 33c549
+// agent: composer-2.5 | 2026-08-09 | launch server mode | 066770

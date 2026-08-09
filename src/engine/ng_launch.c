@@ -51,9 +51,11 @@ void ng_launch_print_usage(const char *prog) {
           "  --local [--port PORT]       spawn ngame_server + gateway upstream\n"
           "  --remote HOST:PORT          gateway upstream to existing server\n"
           "  --solo                      local gateway only (no upstream root)\n"
+          "  --server [--port PORT]      dedicated headless host (same as ngame_server)\n"
+          "  --server --connect H:P      proxy: listen locally + upstream to parent\n"
           "\n"
           "Aliases:\n"
-          "  --connect HOST:PORT         same as --remote\n"
+          "  --connect HOST:PORT         remote client; with --server = proxy uplink\n"
           "  --embedded                  same as --solo\n"
           "\n"
           "Options:\n"
@@ -115,6 +117,15 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
     }
     if (strcmp(argv[i], "--solo") == 0 || strcmp(argv[i], "--embedded") == 0) {
       cfg->mode = NG_LAUNCH_SOLO;
+      cfg->use_upstream = false;
+    } else if (strcmp(argv[i], "--server") == 0) {
+#if defined(__EMSCRIPTEN__)
+      NG_LOG_ERROR("--server is not available on web builds");
+      return false;
+#else
+      // agent: composer-2.5 | 2026-08-09 | launch server mode | ab5d0d
+      cfg->mode = NG_LAUNCH_SERVER;
+#endif
     } else if (strcmp(argv[i], "--local") == 0) {
       cfg->mode = NG_LAUNCH_LOCAL;
       cfg->use_upstream = true;
@@ -125,7 +136,11 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
         ng_launch_parse_host_port(argv[++i], cfg);
       }
     } else if (strcmp(argv[i], "--connect") == 0 && i + 1 < argc) {
-      cfg->mode = NG_LAUNCH_REMOTE;
+      // agent: composer-2.5 | 2026-08-09 | server connect keeps mode | 199790
+      /* With --server, keep SERVER mode and add upstream (proxy). Else remote client. */
+      if (cfg->mode != NG_LAUNCH_SERVER) {
+        cfg->mode = NG_LAUNCH_REMOTE;
+      }
       cfg->use_upstream = true;
       ng_launch_parse_host_port(argv[++i], cfg);
     } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -144,6 +159,7 @@ bool ng_launch_parse(int argc, char **argv, NgLaunchConfig *cfg) {
   if (cfg->mode == NG_LAUNCH_LOCAL || cfg->mode == NG_LAUNCH_REMOTE) {
     cfg->use_upstream = true;
   }
+  /* NG_LAUNCH_SERVER + --connect already set use_upstream above. */
 
   return true;
 }
@@ -331,6 +347,11 @@ void ng_launch_stop_server(void) {
 }
 
 bool ng_launch_server_spawned(void) { return g_server_pid > 0; }
+
+// agent: composer-2.5 | 2026-07-28 | gateway agent upstream ports | 2cac03
+// agent: composer-2.5 | 2026-08-02 | launch ping loss throttle flags | 33c549
+// agent: composer-2.5 | 2026-08-09 | launch server mode | ab5d0d
+// agent: composer-2.5 | 2026-08-09 | server connect keeps mode | 199790
 
 // agent: composer-2.5 | 2026-07-29 | reuse running server | a3c7e4
 // agent: composer-2.5 | 2026-07-29 | default local sets upstream | c2d01b

@@ -20,15 +20,22 @@ If `validate.sh` fails, fix the first failing section before moving on.
 - `--local` (native default): starts `ngame_server`, gateway connects upstream to `127.0.0.1:27015`
 - `--remote HOST:PORT`: gateway connects to existing upstream server
 - `--solo` / `--embedded`: no upstream root; local authoritative loopback runtime
+- `--server`: dedicated headless host (same code as `ngame_server`; pack binary stays raylib-free)
+- `--server --connect HOST:PORT --port LISTEN`: proxy (listen + upstream); nested lockstep — children merge to one parent peer
 - `--ping MS`: simulated one-way latency (ms); on `--local` forwarded to spawned server
 - `--loss PCT`: unreliable LOCK_INPUT loss percent (0..100)
 - `--throttle PCT`: FPS drop percent from 60Hz baseline (0..100)
+
+Topology matrix: `./scripts/topology_matrix.sh` (hooked from `validate.sh`).
 
 Use console `status` to confirm mode labels:
 
 - `launch=local`
 - `launch=remote`
 - `launch=embedded`
+
+<!-- agent: composer-2.5 | 2026-08-09 | docs --server launch | 130881 -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs nested proxy facets | b58696 -->
 
 ## 3) MCP quick checks
 
@@ -80,3 +87,5 @@ At minimum:
 - Keep console output structured and multiline for readability
 
 <!-- agent: composer-2.5 | 2026-07-29 | agent mcp test runbook | e14c6a -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs --server launch | 130881 -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs nested proxy facets | b58696 -->

@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-07-28 | shared server tick runtime | 776fad
+// agent: composer-2.5 | 2026-08-09 | dedicated host runtime poll | c25127
 #include "ng_server_runtime.h"
 #include "engine/ng_bus.h"
 #include "server/agent.h"
@@ -13,11 +14,14 @@ static float g_accum = 0.0f;
 void ng_server_runtime_init(void) { g_accum = 0.0f; }
 
 void ng_server_runtime_poll_net(void) {
-#if defined(NG_SERVER)
-  for (int i = 0; i < 8; i++) {
-    mod_net_server_poll();
+  // agent: composer-2.5 | 2026-08-09 | runtime poll proxy upstream | 30e6a0
+  if (mod_net_is_dedicated_host()) {
+    for (int i = 0; i < 8; i++) {
+      mod_net_server_poll();
+    }
+    return;
   }
-#elif defined(NG_HAS_EMBEDDED)
+#if defined(NG_HAS_EMBEDDED)
   mod_net_gateway_host_poll();
 #endif
 }
@@ -55,3 +59,5 @@ void ng_server_runtime_frame(float dt) {
 void ng_server_runtime_shutdown(void) { g_accum = 0.0f; }
 
 // agent: composer-2.5 | 2026-07-28 | shared server tick runtime | 776fad
+// agent: composer-2.5 | 2026-08-09 | dedicated host runtime poll | c25127
+// agent: composer-2.5 | 2026-08-09 | runtime poll proxy upstream | 30e6a0

@@ -1483,6 +1483,50 @@ uint8_t mod_lockstep_last_bits(uint32_t peer_id) {
   return p ? p->last_bits : 0;
 }
 
+// agent: composer-2.5 | 2026-08-09 | lockstep child input merge | 1ca140
+uint8_t mod_lockstep_last_bits_or(void) {
+  uint8_t bits = 0;
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->ghost || p->peer_id == 0) {
+      continue;
+    }
+    bits |= p->last_bits;
+  }
+  return bits;
+}
+
+bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, NgLockAction *out_action) {
+  if (!out_bits) {
+    return false;
+  }
+  *out_bits = 0;
+  if (out_action) {
+    memset(out_action, 0, sizeof(*out_action));
+  }
+  bool any = false;
+  for (int i = 0; i < g_lock.peer_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->ghost || p->peer_id == 0) {
+      continue;
+    }
+    any = true;
+    if (tick != 0 && mod_lockstep_slot_has(p, tick)) {
+      const NgLockSlot *sl = &p->slots[tick % NG_LOCK_RING];
+      *out_bits |= sl->bits;
+      if (out_action && !out_action->present && sl->has_action) {
+        out_action->present = 1;
+        out_action->id = sl->action_id;
+        out_action->argc = sl->action_argc;
+        memcpy(out_action->argv, sl->action_argv, sizeof(float) * sl->action_argc);
+      }
+    } else {
+      *out_bits |= p->last_bits;
+    }
+  }
+  return any;
+}
+
 // agent: composer-2.5 | 2026-08-01 | slot action propose APIs | a8876f
 bool mod_lockstep_propose_local_action(uint16_t action_id, uint8_t argc, const float *argv) {
   // agent: composer-2.5 | 2026-08-01 | propose future tip only | e6c793
@@ -1634,3 +1678,4 @@ int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers) {
 // agent: composer-2.5 | 2026-08-01 | hash only confirmed tips | 2c31a3
 // agent: composer-2.5 | 2026-08-02 | peer heartbeat API | 35dfd4
 // agent: composer-2.5 | 2026-08-09 | propose next unsent tip | 5a28ac
+// agent: composer-2.5 | 2026-08-09 | lockstep child input merge | 1ca140

@@ -105,12 +105,14 @@ if(EMSCRIPTEN)
   set(NG_NET_DEFS NG_HAS_EMBEDDED GRAPHICS_API_OPENGL_ES3)
   set(NG_RES_ROOT_DEF NG_RES_ROOT=\"/res/\")
 else()
-  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_enet.c src/server/agent.c)
+  list(APPEND NG_CLIENT_SOURCES ${NG_GATEWAY_SOURCES} src/net/ng_net_enet.c src/server/agent.c
+       src/server/ng_app_server.c src/net/ng_ws_server.c)
   list(APPEND NG_SERVER_SOURCES src/net/ng_net_enet.c)
   set(NG_NET_DEFS NG_HAS_EMBEDDED ENET_IPV4_ONLY)
   set(NG_ENET_DEFS ENET_IPV4_ONLY)
   set(NG_RES_ROOT_DEF NG_RES_ROOT=\"res/\")
 endif()
+# agent: composer-2.5 | 2026-08-09 | link server into ngame | 3ae9cf
 
 add_executable(ngame ${NG_CORE_SOURCES} ${NG_CLIENT_SOURCES})
 target_link_libraries(ngame PRIVATE raylib m box3d)
@@ -197,7 +199,7 @@ if(NOT EMSCRIPTEN)
   add_executable(ng_cmd_loopback_latency EXCLUDE_FROM_ALL tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
-                 src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
+                 src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m box3d)
@@ -205,7 +207,7 @@ if(NOT EMSCRIPTEN)
   add_executable(ng_embed_smoke EXCLUDE_FROM_ALL tools/embed_smoke.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c ${NG_SCENE_SOURCES}
                  src/ng_shader.c src/ng_viewport.c src/server/script.c
-                 src/net/ng_net_enet.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
+                 src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_embed_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_embed_smoke PRIVATE raylib m box3d)
@@ -219,3 +221,4 @@ endif()
 # agent: composer-2.5 | 2026-07-31 | phys save smoke cmake | 33f75f
 # agent: composer-2.5 | 2026-08-01 | cmake add jsmod source | b1ae4c
 # agent: composer-2.5 | 2026-08-01 | add jsact to cmake | f0e545
+# agent: composer-2.5 | 2026-08-09 | link server into ngame | 3ae9cf

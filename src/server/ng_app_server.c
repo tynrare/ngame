@@ -55,17 +55,47 @@ static int ng_server_clamp_ping_ms(int v) {
   return v;
 }
 
+// agent: composer-2.5 | 2026-08-09 | server connect upstream flags | 841909
+/** Parse HOST or HOST:PORT into host buffer and optional port. */
+static void ng_server_parse_host_port(const char *spec, char *host, size_t host_cap, uint16_t *port) {
+  if (!spec || !host || host_cap == 0) {
+    return;
+  }
+  char buf[128];
+  strncpy(buf, spec, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+  char *colon = strchr(buf, ':');
+  if (colon) {
+    *colon = '\0';
+    strncpy(host, buf, host_cap - 1);
+    host[host_cap - 1] = '\0';
+    if (port) {
+      *port = (uint16_t)atoi(colon + 1);
+    }
+  } else {
+    strncpy(host, buf, host_cap - 1);
+    host[host_cap - 1] = '\0';
+  }
+}
+
 void ng_app_server_init(int argc, char **argv) {
   uint16_t port = NG_NET_DEFAULT_PORT;
   int ping_ms = 0;
   int loss_pct = 0;
   g_throttle_pct = 0;
+  char upstream_host[64] = {0};
+  uint16_t upstream_port = 0;
+
+  // agent: composer-2.5 | 2026-08-09 | set dedicated host on init | cceb95
+  mod_net_set_dedicated_host(true);
 
   for (int i = 1; i < argc; i++) {
     if ((strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)) {
       fprintf(stderr,
-              "Usage: ngame_server [options]\n"
+              "Usage: ngame_server | ngame --server [options]\n"
               "  --port PORT        game port (default %u)\n"
+              "  --connect HOST:PORT  upstream parent (proxy: listen + uplink)\n"
+              "  --remote HOST:PORT   same as --connect\n"
               "  --ping MS          simulated one-way latency (ms)\n"
               "  --loss PCT         unreliable LOCK_INPUT loss percent (0..100)\n"
               "  --throttle PCT     FPS drop percent from 60Hz (0..100)\n",
@@ -73,8 +103,15 @@ void ng_app_server_init(int argc, char **argv) {
       g_running = false;
       return;
     }
+    if (strcmp(argv[i], "--server") == 0) {
+      continue;
+    }
     if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
       port = (uint16_t)atoi(argv[++i]);
+    } else if ((strcmp(argv[i], "--connect") == 0 || strcmp(argv[i], "--remote") == 0) &&
+               i + 1 < argc) {
+      upstream_port = NG_NET_DEFAULT_PORT;
+      ng_server_parse_host_port(argv[++i], upstream_host, sizeof(upstream_host), &upstream_port);
     } else if (strcmp(argv[i], "--ping") == 0 && i + 1 < argc) {
       ping_ms = ng_server_clamp_ping_ms(atoi(argv[++i]));
     } else if (strcmp(argv[i], "--loss") == 0 && i + 1 < argc) {
@@ -89,6 +126,15 @@ void ng_app_server_init(int argc, char **argv) {
 
   ng_bus_init();
   mod_net_configure(NULL, port);
+#if defined(NG_HAS_EMBEDDED)
+  if (upstream_host[0] != '\0' && upstream_port != 0) {
+    mod_net_configure_upstream(upstream_host, upstream_port);
+  }
+#else
+  if (upstream_host[0] != '\0') {
+    NG_LOG_WARN("proxy upstream requires ngame --server --connect (pack binary has no uplink)");
+  }
+#endif
   if (ping_ms > 0 || loss_pct > 0) {
     mod_net_sim_configure(ping_ms, loss_pct);
   }
@@ -110,6 +156,8 @@ void ng_app_server_init(int argc, char **argv) {
   if (g_throttle_pct > 0) {
     const int fps = 60 * (100 - g_throttle_pct) / 100;
     NG_LOG_INFO("server ready (throttle=%d%% → ~%d Hz)", g_throttle_pct, fps > 0 ? fps : 1);
+  } else if (upstream_host[0] != '\0') {
+    NG_LOG_INFO("server ready (proxy upstream %s:%u)", upstream_host, upstream_port);
   } else {
     NG_LOG_INFO("server ready");
   }
@@ -170,3 +218,5 @@ bool ng_app_server_running(void) { return g_running; }
 // agent: composer-2.5 | 2026-07-28 | use shared server runtime | 776fad
 // agent: composer-2.5 | 2026-07-30 | server publish_tick for lockstep | d59def
 // agent: composer-2.5 | 2026-08-02 | server ping loss throttle args | 45461d
+// agent: composer-2.5 | 2026-08-09 | set dedicated host on init | cceb95
+// agent: composer-2.5 | 2026-08-09 | server connect upstream flags | 841909

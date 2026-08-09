@@ -201,6 +201,10 @@ echo "$SPHERE_SNAP" | grep -q "bg=0c1430"
 kill -9 "$LOCAL_PID" 2>/dev/null || true
 killall -9 ngame_server 2>/dev/null || true
 
+# agent: composer-2.5 | 2026-08-09 | validate topology matrix | e7463e
+echo "== topology matrix (nested lockstep scopes) =="
+"$ROOT/scripts/topology_matrix.sh"
+
 if [[ -f "$ROOT/build-web/ngame.html" ]]; then
   echo "== web build artifact =="
   test -f "$ROOT/build-web/ngame.html"
@@ -223,3 +227,4 @@ echo "ALL OK"
 # agent: composer-2.5 | 2026-08-01 | validate pure lockstep stall | f069f1
 # agent: composer-2.5 | 2026-08-01 | validate server state soak | 8419a0
 # agent: composer-2.5 | 2026-08-02 | validate gateway Connected to text | 9361c9
+# agent: composer-2.5 | 2026-08-09 | validate topology matrix | e7463e

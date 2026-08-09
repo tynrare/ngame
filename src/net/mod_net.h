@@ -15,11 +15,16 @@ const NgModOps *mod_net_ops(void);
 void *mod_net_ctx(void);
 void mod_net_configure(const char *host, uint16_t port);
 bool mod_net_is_connected(void);
+/* Dedicated ENet HOST (+ WS): ngame_server, or ngame --server. */
+// agent: composer-2.5 | 2026-08-09 | dedicated host net role | 4e6a0e
+void mod_net_set_dedicated_host(bool dedicated);
+bool mod_net_is_dedicated_host(void);
+/* Listen + upstream proxy (nested lockstep scopes). */
+// agent: composer-2.5 | 2026-08-09 | net listen upstream facets | 9ceb37
+bool mod_net_is_proxy(void);
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 bool mod_net_has_clients(void);
 void mod_net_broadcast_scene_session(void);
-#endif
-#if defined(NG_SERVER)
 void mod_net_server_poll(void);
 #endif
 #if defined(NG_HAS_EMBEDDED)
@@ -53,3 +58,5 @@ void mod_net_poll_recv(void);
 // agent: composer-2.5 | 2026-07-29 | upstream endpoint accessor | 0a7d3c
 // agent: composer-2.5 | 2026-07-29 | gateway sync view helper | 124fc1
 // agent: composer-2.5 | 2026-08-02 | net sim configure ping loss API | d61c66
+// agent: composer-2.5 | 2026-08-09 | dedicated host net role | 4e6a0e
+// agent: composer-2.5 | 2026-08-09 | net listen upstream facets | 9ceb37

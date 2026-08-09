@@ -26,7 +26,7 @@
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 #include "server/sim.h"
 #endif
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 #include "net/ng_ws_server.h"
 #endif
 #include "world/ng_world.h"
@@ -41,14 +41,34 @@
 #include <unistd.h>
 #endif
 
+// agent: composer-2.5 | 2026-08-09 | dedicated host net role | c08c13
+static bool g_dedicated_host = false;
+
+void mod_net_set_dedicated_host(bool dedicated) {
 #if defined(NG_SERVER)
-/* CI soak / launch: drop % of unreliable LOCK_INPUT (env NG_LOCK_SIM_DROP or --loss). */
+  (void)dedicated;
+  g_dedicated_host = true;
+#else
+  g_dedicated_host = dedicated;
+#endif
+}
+
+bool mod_net_is_dedicated_host(void) {
+#if defined(NG_SERVER)
+  return true;
+#else
+  return g_dedicated_host;
+#endif
+}
+
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+/* Host: drop % of unreliable LOCK_INPUT (env NG_LOCK_SIM_DROP or --loss). */
 // agent: composer-2.5 | 2026-07-31 | lock sim drop input hook | 6098a8
 // agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
 static int g_lock_sim_drop_pct = -1;
 static int g_lock_sim_delay_ms = -1;
 
-void mod_net_sim_configure(int ping_ms, int loss_pct) {
+static void mod_net_sim_configure_host(int ping_ms, int loss_pct) {
   if (ping_ms < 0) {
     ping_ms = 0;
   }
@@ -163,12 +183,14 @@ static bool mod_net_lock_sim_delay_enqueue(uint8_t channel, const NgLockInputPkt
   s->from_peer_id = from_peer_id;
   return true;
 }
-#else
+#endif
+
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
 /* Client/gateway: optional uplink loss on LOCK_INPUT send (--loss / configure). */
 // agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
 static int g_client_sim_loss_pct = -1;
 
-void mod_net_sim_configure(int ping_ms, int loss_pct) {
+static void mod_net_sim_configure_client(int ping_ms, int loss_pct) {
   if (loss_pct < 0) {
     loss_pct = 0;
   }
@@ -197,6 +219,19 @@ static bool mod_net_client_sim_should_drop_tx(void) {
 }
 #endif
 
+void mod_net_sim_configure(int ping_ms, int loss_pct) {
+#if defined(NG_SERVER)
+  mod_net_sim_configure_host(ping_ms, loss_pct);
+#elif defined(NG_HAS_EMBEDDED)
+  if (mod_net_is_dedicated_host()) {
+    mod_net_sim_configure_host(ping_ms, loss_pct);
+  } else {
+    mod_net_sim_configure_client(ping_ms, loss_pct);
+  }
+#else
+  mod_net_sim_configure_client(ping_ms, loss_pct);
+#endif
+}
 
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 typedef struct NetPeerState {
@@ -259,8 +294,13 @@ typedef struct ModNetCtx {
   bool upstream_was_connected;
   double upstream_phase_t0;
   double upstream_last_hint_log;
+  /* Proxy: listen HOST + upstream CLIENT; nested lockstep uplink seat. */
+  // agent: composer-2.5 | 2026-08-09 | net listen upstream facets | 6e0ed5
+  uint8_t uplink_peer_id;
+  uint32_t uplink_send_tick;
+  uint32_t uplink_confirmed;
 #endif
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   NgWsServer *ws;
   bool ws_was_connected;
 #endif
@@ -640,7 +680,7 @@ static void mod_net_lockstep_prune_silent(ModNetCtx *ctx, NgNet *net) {
   if (ctx->lock_join_pending || mod_lockstep_syncing() || mod_lockstep_awaiting_phys()) {
     return;
   }
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   /* Delay queue holds undelivered INPUT — keep peers alive until deliver_at. */
   for (int i = 0; i < g_lock_sim_delay_n; i++) {
     uint8_t id = g_lock_sim_delay_q[i].from_peer_id;
@@ -719,7 +759,7 @@ static void mod_net_relay_state_update(NgNet *net, NgNetPeer *peer, void *vctx) 
                  NG_CH_UNRELIABLE, false);
 }
 
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 // agent: composer-2.5 | 2026-07-31 | lock input sim delay queue | 566450
 typedef struct {
   uint8_t want;
@@ -898,7 +938,7 @@ static void mod_net_send_action_result(ModNetCtx *ctx, NgNet *net, NgNetPeer *pe
     ng_net_send(net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
     ng_net_flush(net);
   }
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   if (ctx->ws && !peer) {
     ng_ws_server_send(ctx->ws, ctx->tx_buf.data, ctx->tx_buf.len);
   }
@@ -1066,7 +1106,7 @@ static void mod_net_send_connect_snapshot(NgNet *net, NgNetPeer *peer, void *vct
   }
 }
 #endif
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 static void mod_net_send_ws_snapshot(ModNetCtx *ctx, const NgSnapshot *full);
 #endif
 
@@ -1117,7 +1157,21 @@ bool mod_net_upstream_connected(void) {
   return g_net_ctx.net_upstream != NULL && ng_net_connected(g_net_ctx.net_upstream);
 }
 
-bool mod_net_is_authoritative(void) { return mod_net_is_gateway() && !mod_net_upstream_connected(); }
+bool mod_net_is_proxy(void) {
+  return mod_net_is_dedicated_host() && g_upstream_host[0] != '\0' && g_upstream_port != 0;
+}
+
+bool mod_net_is_authoritative(void) {
+  /* Dedicated/proxy host always owns the local listen scope clock. */
+  if (mod_net_is_dedicated_host()) {
+    return true;
+  }
+  return mod_net_is_gateway() && !mod_net_upstream_connected();
+}
+#endif
+
+#if !defined(NG_HAS_EMBEDDED)
+bool mod_net_is_proxy(void) { return false; }
 #endif
 
 static NgNet *mod_net_client_link(ModNetCtx *ctx) {
@@ -1130,10 +1184,11 @@ static NgNet *mod_net_client_link(ModNetCtx *ctx) {
 }
 
 // agent: composer-2.5 | 2026-07-30 | send READY via upstream link | 183632
-/* Gateway with root: lock replies must reach ngame_server, not loopback. */
+/* Gateway/proxy with root: lock replies must reach parent, not loopback. */
 static NgNet *mod_net_auth_send_link(ModNetCtx *ctx) {
 #if defined(NG_HAS_EMBEDDED)
-  if (ctx->gateway && ctx->net_upstream && ng_net_connected(ctx->net_upstream)) {
+  if (ctx->net_upstream && ng_net_connected(ctx->net_upstream) &&
+      (ctx->gateway || mod_net_is_proxy())) {
     return ctx->net_upstream;
   }
 #endif
@@ -1161,8 +1216,8 @@ bool mod_net_has_clients(void) {
   if (g_net_ctx.net && ng_net_connected(g_net_ctx.net)) {
     return true;
   }
-#if defined(NG_SERVER)
-  if (g_net_ctx.ws && ng_ws_server_connected(g_net_ctx.ws)) {
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  if (mod_net_is_dedicated_host() && g_net_ctx.ws && ng_ws_server_connected(g_net_ctx.ws)) {
     return true;
   }
 #endif
@@ -1316,6 +1371,104 @@ static void mod_net_handle_upstream_packet(NgNet *net, NgNetPeer *peer, const ui
   case NG_PKT_LOCK_RESUME:
   // agent: composer-2.5 | 2026-07-31 | broadcast confirm drop late | 0623bf
   case NG_PKT_LOCK_CONFIRM:
+    // agent: composer-2.5 | 2026-08-09 | proxy uplink seat only | ff82f6
+    if (mod_net_is_proxy()) {
+      if (h.type == NG_PKT_LOCK_CONFIRM) {
+        NgLockConfirmPkt conf = {0};
+        if (ng_proto_decode_lock_confirm(buf, &conf)) {
+          if (conf.tick > ctx->uplink_confirmed) {
+            ctx->uplink_confirmed = conf.tick;
+          }
+        }
+        break;
+      }
+      if (h.type == NG_PKT_SESSION) {
+        NgSessionState session = {.tick = h.tick};
+        if (!ng_proto_decode_session(buf, &session)) {
+          break;
+        }
+        session.tick = h.tick;
+        ctx->lock_peer_id = session.your_id;
+        ctx->uplink_peer_id = session.your_id;
+        if (session.tick > ctx->uplink_confirmed) {
+          ctx->uplink_confirmed = session.tick;
+        }
+        if (ctx->uplink_send_tick < ctx->uplink_confirmed) {
+          ctx->uplink_send_tick = ctx->uplink_confirmed;
+        }
+        if (session.lockstep && session.playout != 0) {
+          mod_lockstep_set_playout_ticks(session.playout);
+        }
+        mod_net_update_root_mirror_session(&session);
+        NG_LOG_INFO("proxy: uplink SESSION your=%u tick=%u lock=%u (local scope unchanged)",
+                    session.your_id, session.tick, session.lockstep);
+        break;
+      }
+      // agent: composer-2.5 | 2026-08-09 | proxy ack parent PHYS join | 274443
+      if (h.type == NG_PKT_LOCK_PHYS) {
+        NgLockPhysPkt pkt = {0};
+        if (!ng_proto_decode_lock_phys(buf, &pkt)) {
+          break;
+        }
+        if (pkt.total == 0 || pkt.len == 0 || pkt.offset + pkt.len > pkt.total) {
+          break;
+        }
+        if (!ctx->lock_phys_rx || ctx->lock_phys_rx_tick != pkt.sim_tick ||
+            ctx->lock_phys_rx_size != (int)pkt.total) {
+          mod_net_lock_free_rx(ctx);
+          ctx->lock_phys_rx = (uint8_t *)malloc(pkt.total);
+          if (!ctx->lock_phys_rx) {
+            break;
+          }
+          ctx->lock_phys_rx_size = (int)pkt.total;
+          ctx->lock_phys_rx_got = 0;
+          ctx->lock_phys_rx_tick = pkt.sim_tick;
+          ctx->lock_phys_expect_hash = 0;
+        }
+        if (pkt.offset == 0u && pkt.world_hash != 0u) {
+          ctx->lock_phys_expect_hash = pkt.world_hash;
+        }
+        memcpy(ctx->lock_phys_rx + pkt.offset, pkt.data, pkt.len);
+        if ((int)(pkt.offset + pkt.len) > ctx->lock_phys_rx_got) {
+          ctx->lock_phys_rx_got = (int)(pkt.offset + pkt.len);
+        }
+        if (ctx->lock_phys_rx_got < ctx->lock_phys_rx_size) {
+          break;
+        }
+        /* Ack parent join without importing PHYS into local children scope. */
+        NgLockReadyPkt ready = {
+            .peer_id = ctx->uplink_peer_id ? ctx->uplink_peer_id : ctx->lock_peer_id,
+            .sim_tick = pkt.sim_tick,
+            .hash = ctx->lock_phys_expect_hash,
+        };
+        NG_LOG_INFO("proxy: uplink READY peer=%u tick=%u hash=0x%08x (no local PHYS import)",
+                    ready.peer_id, ready.sim_tick, ready.hash);
+        if (ng_proto_encode_lock_ready(&ctx->tx_buf, ++ctx->seq, &ready)) {
+          NgNet *link = mod_net_auth_send_link(ctx);
+          if (link && ng_net_connected(link)) {
+            ng_net_send(link, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
+            ng_net_flush(link);
+          }
+        }
+        if (pkt.sim_tick > ctx->uplink_confirmed) {
+          ctx->uplink_confirmed = pkt.sim_tick;
+        }
+        if (ctx->uplink_send_tick < ctx->uplink_confirmed) {
+          ctx->uplink_send_tick = ctx->uplink_confirmed;
+        }
+        mod_net_lock_free_rx(ctx);
+        ctx->lock_phys_expect_hash = 0;
+        break;
+      }
+      if (h.type == NG_PKT_CMD_REPLY || h.type == NG_PKT_ACTION_RESULT) {
+        char reply_text[1024];
+        reply_text[0] = '\0';
+        mod_net_upstream_reply_from_packet(buf, &h, reply_text, sizeof(reply_text));
+        mod_net_finish_upstream_cmd(ctx, reply_text);
+      }
+      /* Nested scope: do not apply parent PAUSE/RESUME into local children. */
+      break;
+    }
     if (h.type == NG_PKT_SNAPSHOT) {
       NgSnapshot snap = {0};
       bool delta = false;
@@ -1426,7 +1579,6 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
 
   switch (h.type) {
   case NG_PKT_REGISTER: {
-#if defined(NG_SERVER)
     NgRegisterReq req = {0};
     if (!ng_proto_decode_register(buf, &req)) {
       return;
@@ -1510,7 +1662,6 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
       ng_net_send_to(net, peer, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
       NG_LOG_INFO("dependent registered name=%s agent=%u", ps->name, ps->assigned_agent_port);
     }
-#endif
     break;
   }
   case NG_PKT_INPUT: {
@@ -1616,9 +1767,9 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
   }
   // agent: composer-2.5 | 2026-07-29 | lockstep net relay gate | dc281e
   case NG_PKT_LOCK_INPUT: {
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
     // agent: composer-2.5 | 2026-07-31 | lock sim drop input hook | 6098a8
-    if (mod_net_lock_sim_should_drop_input(channel)) {
+    if (mod_net_is_dedicated_host() && mod_net_lock_sim_should_drop_input(channel)) {
       return;
     }
 #endif
@@ -1626,9 +1777,9 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (!ng_proto_decode_lock_input(buf, &pkt)) {
       return;
     }
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
     // agent: composer-2.5 | 2026-07-31 | lock input sim delay queue | 566450
-    {
+    if (mod_net_is_dedicated_host()) {
       uint8_t from_id = 0;
       NetPeerState *ps = peer ? (NetPeerState *)ng_net_peer_data(peer) : NULL;
       if (ps) {
@@ -1871,6 +2022,25 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       return;
     }
     session.tick = h.tick;
+    // agent: composer-2.5 | 2026-08-09 | net listen upstream facets | 6e0ed5
+    /* Proxy keeps local listen lockstep; parent SESSION only binds uplink seat. */
+    if (mod_net_is_proxy()) {
+      ctx->lock_peer_id = session.your_id;
+      ctx->uplink_peer_id = session.your_id;
+      if (session.tick > ctx->uplink_confirmed) {
+        ctx->uplink_confirmed = session.tick;
+      }
+      if (ctx->uplink_send_tick < ctx->uplink_confirmed) {
+        ctx->uplink_send_tick = ctx->uplink_confirmed;
+      }
+      if (session.lockstep && session.playout != 0) {
+        mod_lockstep_set_playout_ticks(session.playout);
+      }
+      mod_net_update_root_mirror_session(&session);
+      NG_LOG_INFO("proxy: uplink SESSION your=%u tick=%u lock=%u (local scope unchanged)",
+                  session.your_id, session.tick, session.lockstep);
+      break;
+    }
     ctx->lock_peer_id = session.your_id;
     // agent: composer-2.5 | 2026-08-01 | view camera force view rt | f9c6af
     if (session.your_id != 0) {
@@ -2111,7 +2281,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
 }
 #endif
 
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 static void mod_net_handle_packet(NgNet *net, NgNetPeer *peer, const uint8_t *data, size_t len,
                                   uint8_t channel, void *vctx) {
   mod_net_handle_host_packet(net, peer, data, len, channel, vctx);
@@ -2264,7 +2434,7 @@ static void mod_net_send_snapshot_peer(NgNet *net, NgNetPeer *peer, void *vctx) 
 }
 #endif
 
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 static void mod_net_send_ws_snapshot(ModNetCtx *ctx, const NgSnapshot *full) {
   if (!ctx->ws || !full) {
     return;
@@ -2306,20 +2476,18 @@ static bool mod_net_on_msg(const NgMsg *msg, void *vctx) {
   if (msg->kind == NG_MSG_SNAPSHOT && msg->snapshot) {
     ctx->snapshot_buf = *msg->snapshot;
     ng_net_foreach_peer(ctx->net, mod_net_send_snapshot_peer, ctx);
-#if defined(NG_SERVER)
-    mod_net_send_ws_snapshot(ctx, msg->snapshot);
-#endif
+    if (mod_net_is_dedicated_host()) {
+      mod_net_send_ws_snapshot(ctx, msg->snapshot);
+    }
     return true;
   }
   if (msg->kind == NG_MSG_ACTION_RESULT && msg->action_result) {
     if (ng_proto_encode_action_result(&ctx->tx_buf, msg->action_result)) {
       ng_net_foreach_peer(ctx->net, mod_net_send_action_to_peer, ctx);
       ng_net_flush(ctx->net);
-#if defined(NG_SERVER)
-      if (ctx->ws) {
+      if (mod_net_is_dedicated_host() && ctx->ws) {
         ng_ws_server_send(ctx->ws, ctx->tx_buf.data, ctx->tx_buf.len);
       }
-#endif
     }
     return true;
   }
@@ -2327,11 +2495,9 @@ static bool mod_net_on_msg(const NgMsg *msg, void *vctx) {
     if (ng_proto_encode_text(&ctx->tx_buf, NG_PKT_CMD_REPLY, ++ctx->seq, msg->text)) {
       ng_net_send(ctx->net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
       ng_net_flush(ctx->net);
-#if defined(NG_SERVER)
-      if (ctx->ws) {
+      if (mod_net_is_dedicated_host() && ctx->ws) {
         ng_ws_server_send(ctx->ws, ctx->tx_buf.data, ctx->tx_buf.len);
       }
-#endif
     }
     return true;
   }
@@ -2339,11 +2505,9 @@ static bool mod_net_on_msg(const NgMsg *msg, void *vctx) {
     if (ng_proto_encode_text(&ctx->tx_buf, NG_PKT_EVENT, ++ctx->seq, msg->text)) {
       ng_net_send(ctx->net, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_RELIABLE, true);
       ng_net_flush(ctx->net);
-#if defined(NG_SERVER)
-      if (ctx->ws) {
+      if (mod_net_is_dedicated_host() && ctx->ws) {
         ng_ws_server_send(ctx->ws, ctx->tx_buf.data, ctx->tx_buf.len);
       }
-#endif
     }
     return true;
   }
@@ -2438,6 +2602,8 @@ static void mod_net_upstream_send_register(ModNetCtx *ctx) {
   const char *peer_name = getenv("NG_LOCK_PEER_NAME");
   if (peer_name && peer_name[0] != '\0') {
     snprintf(req.name, sizeof(req.name), "%s", peer_name);
+  } else if (mod_net_is_proxy()) {
+    snprintf(req.name, sizeof(req.name), "proxy-%d", (int)getpid());
   } else {
     snprintf(req.name, sizeof(req.name), "gateway-%d", (int)getpid());
   }
@@ -2485,7 +2651,11 @@ static void mod_net_upstream_log_phase(ModNetCtx *ctx, int phase) {
 }
 
 static void mod_net_upstream_tick(ModNetCtx *ctx) {
-  if (!ctx || !ctx->gateway || ctx->upstream_host[0] == '\0' || ctx->upstream_port == 0) {
+  // agent: composer-2.5 | 2026-08-09 | upstream tick allows proxy | eebefe
+  if (!ctx || ctx->upstream_host[0] == '\0' || ctx->upstream_port == 0) {
+    return;
+  }
+  if (!ctx->gateway && !mod_net_is_dedicated_host()) {
     return;
   }
   if (!ctx->net_upstream) {
@@ -2496,6 +2666,7 @@ static void mod_net_upstream_tick(ModNetCtx *ctx) {
 
   const bool connected = ng_net_connected(ctx->net_upstream);
   const double now = GetTime();
+  const bool proxy = mod_net_is_proxy();
 
   if (connected) {
     if (!ctx->upstream_was_connected) {
@@ -2505,7 +2676,15 @@ static void mod_net_upstream_tick(ModNetCtx *ctx) {
     }
     mod_net_upstream_send_register(ctx);
     if (ctx->assigned_agent_port != 0) {
-      if (mod_scene_view_is_loaded() || ctx->have_baseline) {
+      if (proxy) {
+        /* Nested proxy: uplink SESSION binds seat; no local view required. */
+        if (ctx->uplink_peer_id != 0 || ctx->upstream_phase >= 3) {
+          ctx->upstream_phase = 4;
+        } else if (ctx->upstream_phase < 3) {
+          ctx->upstream_phase = 3;
+          ctx->upstream_phase_t0 = now;
+        }
+      } else if (mod_scene_view_is_loaded() || ctx->have_baseline) {
         ctx->upstream_phase = 4;
       } else if (ctx->upstream_phase < 3) {
         ctx->upstream_phase = 3;
@@ -2525,9 +2704,15 @@ static void mod_net_upstream_tick(ModNetCtx *ctx) {
       ctx->upstream_phase = 5;
       NG_LOG_WARN("Lost connection to the game server at %s:%u.", ctx->upstream_host,
                   ctx->upstream_port);
-      /* Stop all_have STALL on a ghost roster after timeout/kick. */
-      // agent: cursor-grok-4.5 | 2026-07-31 | mirror teardown on upstream loss | 256e51
-      mod_lockstep_on_net_lost();
+      /* Proxy keeps local children lockstep; gateway mirrors tear down. */
+      if (!proxy) {
+        // agent: cursor-grok-4.5 | 2026-07-31 | mirror teardown on upstream loss | 256e51
+        mod_lockstep_on_net_lost();
+      } else {
+        ctx->uplink_peer_id = 0;
+        ctx->uplink_send_tick = 0;
+        ctx->uplink_confirmed = 0;
+      }
     } else if (ctx->upstream_phase != 5) {
       ctx->upstream_phase = 1;
       if (now - ctx->upstream_last_hint_log >= 2.0) {
@@ -2597,6 +2782,43 @@ static bool mod_net_init(void *vctx) {
   ng_net_set_peer_fn(ctx->net, mod_net_on_peer, ctx);
   return true;
 #elif defined(NG_HAS_EMBEDDED)
+  // agent: composer-2.5 | 2026-08-09 | dedicated host net role | c08c13
+  // agent: composer-2.5 | 2026-08-09 | net listen upstream facets | 6e0ed5
+  if (mod_net_is_dedicated_host()) {
+    ctx->gateway = false;
+    ctx->net = ng_net_create(NG_NET_ROLE_HOST, NULL, ctx->port);
+    ctx->ws = ng_ws_server_create(NG_NET_WS_PORT);
+    if (!ctx->net) {
+      return false;
+    }
+    if (!ctx->ws) {
+      NG_LOG_WARN("websocket server unavailable on :%u", NG_NET_WS_PORT);
+    }
+    ng_net_set_peer_fn(ctx->net, mod_net_on_peer, ctx);
+    strncpy(ctx->upstream_host, upstream_host_save, sizeof(ctx->upstream_host) - 1);
+    ctx->upstream_port = upstream_port_save;
+    if (ctx->upstream_host[0] != '\0' && ctx->upstream_port != 0) {
+      ctx->upstream_phase = 1;
+      ctx->upstream_phase_logged = 0;
+      ctx->upstream_phase_t0 = GetTime();
+      ctx->upstream_last_hint_log = 0.0;
+      ctx->upstream_register_sent = false;
+      ctx->upstream_was_connected = false;
+      ctx->uplink_peer_id = 0;
+      ctx->uplink_send_tick = 0;
+      ctx->uplink_confirmed = 0;
+      NG_LOG_INFO("proxy: listen :%u + upstream %s:%u", ctx->port, ctx->upstream_host,
+                  ctx->upstream_port);
+      ctx->net_upstream =
+          ng_net_create(NG_NET_ROLE_CLIENT, ctx->upstream_host, ctx->upstream_port);
+      if (!ctx->net_upstream) {
+        ctx->upstream_phase = 5;
+        NG_LOG_WARN("proxy: could not connect upstream %s:%u", ctx->upstream_host,
+                    ctx->upstream_port);
+      }
+    }
+    return true;
+  }
   if (ctx->gateway) {
     ctx->loopback = ng_net_loopback_create();
     if (!ctx->loopback) {
@@ -2656,9 +2878,11 @@ static bool mod_net_init(void *vctx) {
 
 static void mod_net_shutdown(void *vctx) {
   ModNetCtx *ctx = (ModNetCtx *)vctx;
-#if defined(NG_SERVER)
-  ng_ws_server_destroy(ctx->ws);
-  ctx->ws = NULL;
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  if (ctx->ws) {
+    ng_ws_server_destroy(ctx->ws);
+    ctx->ws = NULL;
+  }
 #endif
 #if defined(NG_HAS_EMBEDDED)
   if (ctx->net_upstream) {
@@ -2681,48 +2905,62 @@ static bool mod_net_tick(const NgMsg *msg, void *vctx) {
   (void)msg;
   ModNetCtx *ctx = (ModNetCtx *)vctx;
 #if defined(NG_HAS_EMBEDDED)
-  if (ctx->gateway) {
+  if (mod_net_is_dedicated_host()) {
+    /* Dedicated host: server_poll owns net; tick is a no-op side channel. */
+  } else if (ctx->gateway) {
     mod_net_client_recv(ctx);
     return true;
   }
 #endif
-#if defined(NG_SERVER)
-  ng_net_poll(ctx->net, mod_net_handle_packet, ctx);
-  if (ctx->ws) {
-    const bool ws_up = ng_ws_server_connected(ctx->ws);
-    ng_ws_server_poll(ctx->ws, mod_net_handle_ws_packet, ctx);
-    if (ws_up && !ctx->ws_was_connected) {
-      mod_net_fill_snapshot_buf(ctx);
-      ctx->have_baseline = false;
-      mod_net_send_ws_snapshot(ctx, &ctx->snapshot_buf);
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
+  if (mod_net_is_dedicated_host()) {
+    ng_net_poll(ctx->net, mod_net_handle_packet, ctx);
+    if (ctx->ws) {
+      const bool ws_up = ng_ws_server_connected(ctx->ws);
+      ng_ws_server_poll(ctx->ws, mod_net_handle_ws_packet, ctx);
+      if (ws_up && !ctx->ws_was_connected) {
+        mod_net_fill_snapshot_buf(ctx);
+        ctx->have_baseline = false;
+        mod_net_send_ws_snapshot(ctx, &ctx->snapshot_buf);
+      }
+      ctx->ws_was_connected = ws_up;
     }
-    ctx->ws_was_connected = ws_up;
+    return true;
   }
-#else
+#endif
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
   mod_net_client_recv(ctx);
 #endif
   return true;
 }
 
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 void mod_net_server_poll(void) {
   ModNetCtx *ctx = &g_net_ctx;
-  if (!ctx->net) {
+  if (!ctx->net || !mod_net_is_dedicated_host()) {
     return;
   }
+  // agent: composer-2.5 | 2026-08-09 | proxy poll upstream listen | 7df7c9
   ng_net_poll(ctx->net, mod_net_handle_packet, ctx);
   ng_net_foreach_peer(ctx->net, mod_net_send_connect_snapshot, ctx);
   ng_net_flush(ctx->net);
   if (ctx->ws) {
     ng_ws_server_poll(ctx->ws, mod_net_handle_ws_packet, ctx);
   }
+#if defined(NG_HAS_EMBEDDED)
+  if (ctx->net_upstream) {
+    ng_net_poll(ctx->net_upstream, mod_net_handle_upstream_packet, ctx);
+    ng_net_flush(ctx->net_upstream);
+    mod_net_upstream_tick(ctx);
+  }
+#endif
 }
 #endif
 
 #if defined(NG_HAS_EMBEDDED)
 void mod_net_gateway_host_poll(void) {
   ModNetCtx *ctx = &g_net_ctx;
-  if (!ctx->gateway || !ctx->net) {
+  if (mod_net_is_dedicated_host() || !ctx->gateway || !ctx->net) {
     return;
   }
   ng_net_poll(ctx->net, mod_net_handle_host_packet, ctx);
@@ -2819,12 +3057,14 @@ static void mod_net_send_lock_tx(ModNetCtx *ctx) {
   if (!ctx || ctx->tx_buf.len == 0) {
     return;
   }
-#if defined(NG_SERVER)
-  if (ctx->net) {
-    ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
-    ng_net_flush(ctx->net);
+  if (mod_net_is_dedicated_host()) {
+    if (ctx->net) {
+      ng_net_foreach_peer(ctx->net, mod_net_send_state_peer, ctx);
+      ng_net_flush(ctx->net);
+    }
+    return;
   }
-#elif defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
+#if defined(NG_HAS_EMBEDDED) || !defined(NG_SERVER)
   // agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
   if (mod_net_client_sim_should_drop_tx()) {
     return;
@@ -2849,16 +3089,91 @@ static void mod_net_send_lock_tx(ModNetCtx *ctx) {
 #endif
 }
 
+#if defined(NG_HAS_EMBEDDED)
+/** Flush merged child inputs as one uplink LOCK_INPUT to the parent. */
+static void mod_net_flush_uplink(ModNetCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-09 | proxy uplink merge flush | 4862e1
+  // agent: composer-2.5 | 2026-08-09 | uplink independent clocks | 9ff6f9
+  if (!ctx || !mod_net_is_proxy() || !ctx->net_upstream || !ng_net_connected(ctx->net_upstream)) {
+    return;
+  }
+  if (ctx->uplink_peer_id == 0) {
+    return;
+  }
+  if (ctx->uplink_send_tick < ctx->uplink_confirmed) {
+    ctx->uplink_send_tick = ctx->uplink_confirmed;
+  }
+  /* Nested scopes: parent ticks ≠ local ticks. Advance parent sendahead from
+   * uplink_confirmed + playout; sample OR(bits)/action from local confirmed. */
+  const uint32_t playout = mod_lockstep_playout_ticks();
+  uint32_t target = ctx->uplink_confirmed + (playout ? playout : 6u);
+  if (target < ctx->uplink_confirmed + 1u) {
+    target = ctx->uplink_confirmed + 1u;
+  }
+  uint32_t base = ctx->uplink_send_tick + 1u;
+  if (base == 0u) {
+    base = 1u;
+  }
+  if (base > target) {
+    return;
+  }
+  NgLockInputPkt inp = {0};
+  inp.peer_id = ctx->uplink_peer_id;
+  int n = 0;
+  uint8_t sample_bits = 0;
+  NgLockAction sample_action = {0};
+  if (mod_lockstep_active()) {
+    const uint32_t local_conf = mod_lockstep_confirmed_tick();
+    if (local_conf != 0u) {
+      mod_lockstep_merge_children(local_conf, &sample_bits, &sample_action);
+    } else {
+      sample_bits = mod_lockstep_last_bits_or();
+    }
+  }
+  while (n < NG_LOCK_INPUT_MAX && base + (uint32_t)n <= target) {
+    inp.bits[n] = sample_bits;
+    /* Attach action only on the first unsent tip so it is not duplicated. */
+    if (n == 0 && sample_action.present) {
+      inp.actions[n] = sample_action;
+    }
+    n++;
+  }
+  if (n > 0) {
+    inp.base_tick = base;
+    inp.count = (uint8_t)n;
+    if (ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &inp)) {
+      ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+      ng_net_flush(ctx->net_upstream);
+      ctx->uplink_send_tick = base + (uint32_t)n - 1u;
+    }
+  }
+  NgLockAckPkt ack = {
+      .peer_id = ctx->uplink_peer_id,
+      .ack_tick = ctx->uplink_confirmed,
+  };
+  if (ng_proto_encode_lock_ack(&ctx->tx_buf, ++ctx->seq, &ack)) {
+    ng_net_send(ctx->net_upstream, ctx->tx_buf.data, ctx->tx_buf.len, NG_CH_UNRELIABLE, false);
+    ng_net_flush(ctx->net_upstream);
+  }
+}
+#endif
+
 static void mod_net_flush_lockstep(ModNetCtx *ctx) {
-  if (!ctx || !mod_lockstep_active()) {
+  if (!ctx) {
+    return;
+  }
+  if (!mod_lockstep_active()) {
+#if defined(NG_HAS_EMBEDDED)
+    mod_net_flush_uplink(ctx);
+#endif
     return;
   }
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   if (mod_lockstep_is_clock_owner() && ctx->net) {
-#if defined(NG_SERVER)
     // agent: composer-2.5 | 2026-07-31 | lock input sim delay queue | 566450
-    mod_net_lock_sim_delay_flush(ctx, ctx->net);
-#endif
+    if (mod_net_is_dedicated_host()) {
+      mod_net_lock_sim_delay_flush(ctx, ctx->net);
+    }
     mod_net_lockstep_prune_silent(ctx, ctx->net);
     mod_net_lockstep_pump_confirms(ctx, ctx->net);
     // agent: composer-2.5 | 2026-08-01 | ghost soft phys hybrid only | 813811
@@ -2877,18 +3192,19 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
   }
 #if defined(NG_HAS_EMBEDDED)
   /* Solo gateway: one process owns the clock; loopback LOCK relay floods CPU. */
-  if (ctx->gateway && !(ctx->net_upstream && ng_net_connected(ctx->net_upstream))) {
+  if (!mod_net_is_dedicated_host() && ctx->gateway &&
+      !(ctx->net_upstream && ng_net_connected(ctx->net_upstream))) {
     return;
   }
 #endif
-#if defined(NG_SERVER)
-  if (!ctx->net) {
+  if (mod_net_is_dedicated_host() && !ctx->net) {
     return;
   }
-#endif
   NgLockInputPkt inp = {0};
   uint32_t local_id = mod_lockstep_local_peer_id();
-  if (ctx->lock_peer_id != 0) {
+  /* Proxy: lock_peer_id is uplink seat only — never adopt into local children scope. */
+  // agent: composer-2.5 | 2026-08-09 | proxy uplink merge flush | 4862e1
+  if (ctx->lock_peer_id != 0 && !mod_net_is_proxy()) {
     local_id = ctx->lock_peer_id;
     // agent: composer-2.5 | 2026-07-30 | no clear peers on adopt id | dfad8e
     /* Adopt SESSION your_id without wiping the peer roster (that broke all_have). */
@@ -2926,6 +3242,9 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
       mod_net_send_lock_tx(ctx);
     }
   }
+#if defined(NG_HAS_EMBEDDED)
+  mod_net_flush_uplink(ctx);
+#endif
 }
 
 static void mod_net_flush_state_update(ModNetCtx *ctx) {
@@ -2997,9 +3316,9 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
     for (int i = 0; i < send_n; i++) {
       cand[i].seq = ++ctx->seq;
     }
-#if defined(NG_SERVER)
+#if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
     // agent: composer-2.5 | 2026-08-01 | per-peer state ack baseline | 7352da
-    if (ctx->net) {
+    if (mod_net_is_dedicated_host() && ctx->net) {
       NetStatePeerFlushCtx fctx = {.net_ctx = ctx, .cand = cand, .send_n = send_n, .tick = tick};
       ng_net_foreach_peer(ctx->net, mod_net_flush_state_peer, &fctx);
       ng_net_flush(ctx->net);
@@ -3193,3 +3512,11 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-08-02 | net sim configure and client loss | 3c9ede
 // agent: composer-2.5 | 2026-08-02 | skip silent prune during join | 9f5be7
 // agent: composer-2.5 | 2026-08-02 | heartbeat on delay enqueue | 906c85
+// agent: composer-2.5 | 2026-08-09 | dedicated host net role | c08c13
+// agent: composer-2.5 | 2026-08-09 | net listen upstream facets | 6e0ed5
+// agent: composer-2.5 | 2026-08-09 | proxy uplink seat only | ff82f6
+// agent: composer-2.5 | 2026-08-09 | proxy uplink merge flush | 4862e1
+// agent: composer-2.5 | 2026-08-09 | proxy poll upstream listen | 7df7c9
+// agent: composer-2.5 | 2026-08-09 | upstream tick allows proxy | eebefe
+// agent: composer-2.5 | 2026-08-09 | uplink independent clocks | 9ff6f9
+// agent: composer-2.5 | 2026-08-09 | proxy ack parent PHYS join | 274443

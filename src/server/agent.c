@@ -10,10 +10,10 @@
 #include "scene/runtime.h"
 #include "scene/physics.h"
 #include "scene/lockstep.h"
-#if !defined(NG_SERVER)
-#include "client/input.h"
-#include "client/render.h"
 #include "net/mod_net.h"
+#include "client/input.h"
+#if !defined(NG_SERVER)
+#include "client/render.h"
 #endif
 #include "world/ng_world.h"
 #include <arpa/inet.h>
@@ -240,10 +240,10 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
   }
 
   if (strncmp(cmdline, "wire_input", 10) == 0) {
-#if defined(NG_SERVER)
-    mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"wire_input client only\"}");
-    return;
-#else
+    if (mod_net_is_dedicated_host()) {
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"wire_input client only\"}");
+      return;
+    }
     int buttons = 0;
     int frames = 30;
     const char *p = cmdline + 10;
@@ -283,14 +283,13 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
              frames);
     mod_agent_send_json(ctx->client_fd, out);
     return;
-#endif
   }
 
   if (strncmp(cmdline, "wire_mouse", 10) == 0) {
-#if defined(NG_SERVER)
-    mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"wire_mouse client only\"}");
-    return;
-#else
+    if (mod_net_is_dedicated_host()) {
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"wire_mouse client only\"}");
+      return;
+    }
     float mx = 0.0f;
     float my = 0.0f;
     int frames = 30;
@@ -312,7 +311,6 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
              frames);
     mod_agent_send_json(ctx->client_fd, out);
     return;
-#endif
   }
 
   // agent: composer-2.5 | 2026-07-30 | agent input phys debug cmds | f9a0d6
@@ -350,8 +348,8 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
   }
 
   if (strncmp(cmdline, "scene ", 6) == 0) {
-#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
-    if (mod_net_upstream_connected()) {
+#if defined(NG_HAS_EMBEDDED)
+    if (!mod_net_is_dedicated_host() && mod_net_upstream_connected()) {
       char reply[256];
       if (mod_net_gateway_upstream_cmd(cmdline, reply, sizeof(reply))) {
         char out[1200];
@@ -479,8 +477,10 @@ static bool mod_agent_on_msg(const NgMsg *msg, void *vctx) {
 static bool mod_agent_init(void *vctx) {
   ModAgentCtx *ctx = (ModAgentCtx *)vctx;
   memset(ctx, 0, sizeof(*ctx));
-#if defined(NG_HAS_EMBEDDED) && !defined(NG_SERVER)
-  if (g_agent_port == NG_AGENT_DEFAULT_PORT) {
+#if defined(NG_HAS_EMBEDDED)
+  // agent: composer-2.5 | 2026-08-09 | dedicated host agent root | 4dfc0d
+  /* Root dedicated host keeps 27100; dependents take assigned/probe ports. */
+  if (!mod_net_is_dedicated_host() && g_agent_port == NG_AGENT_DEFAULT_PORT) {
     const uint16_t assigned = mod_net_assigned_agent_port();
     if (assigned != 0) {
       g_agent_port = assigned;
@@ -593,3 +593,4 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-07-31 | lockstep hash stats agent | fc7b6a
 // agent: composer-2.5 | 2026-08-01 | lockstep hash predict field | a8ca41
 // agent: composer-2.5 | 2026-08-01 | wire_input KEY_F bit | 28e90f
+// agent: composer-2.5 | 2026-08-09 | dedicated host agent root | 4dfc0d
