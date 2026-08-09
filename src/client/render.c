@@ -6,6 +6,7 @@
 // agent: composer-2.5 | 2026-08-09 | Phase2 SS RC render path | ff1b7f
 // agent: composer-2.5 | 2026-08-09 | gate RC by scene render mode | 2a6d5a
 // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
+// agent: composer-2.5 | 2026-08-09 | default gi_strength 1.0 | 6674ef
 #include "render.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -1100,7 +1101,8 @@ static bool mod_render_init(void *vctx) {
   ctx->scene_label[0] = '\0';
   ctx->debug_pass = NG_RENDER_PASS_FINAL;
   ctx->rc_quality = 2;
-  ctx->gi_strength = 1.8f;
+  // agent: composer-2.5 | 2026-08-09 | default gi_strength 1.0 | 6674ef
+  ctx->gi_strength = 1.0f;
   mod_render_init_camera(ctx);
   return true;
 }
@@ -1236,4 +1238,5 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-09 | Phase2 SS RC render path | ff1b7f
 // agent: composer-2.5 | 2026-08-09 | gate RC by scene render mode | 2a6d5a
 // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
+// agent: composer-2.5 | 2026-08-09 | default gi_strength 1.0 | 6674ef
 // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | 4e7ce8
