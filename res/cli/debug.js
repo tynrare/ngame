@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-09 | setting leaves use _get | 55030b
+// agent: composer-2.5 | 2026-08-09 | gi_strength CLI debug | d7908f
 /* Loaded by bus.js — registers set.debug.render.* */
 if (typeof ng_cli === "undefined") {
   throw new Error("cli/debug.js requires bus.js ng_cli");
@@ -48,4 +49,23 @@ ng_cli.set.debug.render.rc_quality = {
     ng_bus_reply("debug.render.rc_quality=" + v);
   },
 };
+
+ng_cli.set.debug.render.gi_strength = {
+  _help: "RC GI multiply (0..8)",
+  _get: function () {
+    return typeof ng_render_get === "function" ? ng_render_get("debug.render.gi_strength") : null;
+  },
+  _set: function (v) {
+    if (typeof ng_render_set !== "function") {
+      ng_bus_reply("render n/a");
+      return;
+    }
+    if (!ng_render_set("debug.render.gi_strength", v)) {
+      ng_bus_reply("set failed: debug.render.gi_strength=" + v);
+      return;
+    }
+    ng_bus_reply("debug.render.gi_strength=" + v);
+  },
+};
 // agent: composer-2.5 | 2026-08-09 | setting leaves use _get | 55030b
+// agent: composer-2.5 | 2026-08-09 | gi_strength CLI debug | d7908f

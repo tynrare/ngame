@@ -38,6 +38,15 @@
 
 #define NG_SCENE_STASH_KEY "ng_scene"
 #define NG_SCENE_PENDING_MODULE "ng_pending_module"
+
+/** Wall time for live-author stamps; server builds have no raylib clock. */
+static double mod_scene_now(void) {
+#if defined(NG_SERVER)
+  return 0.0;
+#else
+  return GetTime();
+#endif
+}
 #define NG_SCENE_ACTIVE() (mod_scene_runtime_scene())
 
 static int g_jsmod_eval_depth;
@@ -1231,7 +1240,8 @@ static duk_ret_t bind_set_position(duk_context *ctx) {
   inst->pos[0] = x;
   inst->pos[1] = y;
   inst->pos[2] = z;
-  inst->prefer_live_draw = 1;
+  // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
+  mod_scene_graph_note_local_author(inst, mod_scene_now());
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   if (ng_sync_posts_wire(inst->sync)) {
     mod_scene_graph_mark_dirty(inst, NG_COMP_POS);
@@ -1276,7 +1286,7 @@ static duk_ret_t bind_set_rotation(duk_context *ctx) {
     inst->rot[2] = (float)duk_get_number(ctx, 3);
   }
   // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
-  inst->prefer_live_draw = 1;
+  mod_scene_graph_note_local_author(inst, mod_scene_now());
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
   return 0;
@@ -1289,7 +1299,7 @@ static duk_ret_t bind_set_rotation_y(duk_context *ctx) {
   }
   inst->rot[1] = (float)duk_get_number(ctx, 1);
   // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
-  inst->prefer_live_draw = 1;
+  mod_scene_graph_note_local_author(inst, mod_scene_now());
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
   return 0;
@@ -1327,7 +1337,7 @@ static duk_ret_t bind_set_rotation_x(duk_context *ctx) {
   }
   inst->rot[0] = (float)duk_get_number(ctx, 1);
   // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
-  inst->prefer_live_draw = 1;
+  mod_scene_graph_note_local_author(inst, mod_scene_now());
   mod_scene_graph_registry_set_pose(inst->id, inst->pos, inst->rot, inst->scale);
   mod_scene_graph_mark_dirty(inst, NG_COMP_ROT);
   return 0;
@@ -2797,6 +2807,10 @@ void mod_scene_view_apply_remote(const NgStateUpdate *update) {
       if (pos_err < 0.05f && rot_err < 0.05f) {
         skip_apply = true;
       }
+    } else if (inst->sync == NG_SYNC_SHARED && inst->prefer_live_draw) {
+      // agent: composer-2.5 | 2026-08-09 | skip remote while live author | 75269d
+      /* Drop in-flight echoes on key-up — host seq is new so stale pose still applies. */
+      skip_apply = true;
     } else if (inst->sync == NG_SYNC_SHARED && inst->last_sent_seq != 0) {
       /* Echo of our last flush — host rewrites seq so compare pose. */
       float pos_err = 0.0f;
@@ -3926,3 +3940,4 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-08-09 | drop null mouse on unfocus | b5e3ef
 // agent: composer-2.5 | 2026-08-09 | clamp plane raycast range | ea77c0
 // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
+// agent: composer-2.5 | 2026-08-09 | skip remote while live author | 75269d

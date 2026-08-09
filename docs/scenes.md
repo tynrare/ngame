@@ -6,11 +6,12 @@
 <!-- agent: composer-2.5 | 2026-08-09 | CLI debug pass note docs | 3147b2 -->
 <!-- agent: composer-2.5 | 2026-08-09 | Phase2 CLI note docs | 5a9332 -->
 <!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 433e2e -->
+<!-- agent: composer-2.5 | 2026-08-09 | CLI note gi_strength | ef1f7f -->
 Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, or **`example`** (helpers demo).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
-Tab console (JS `res/bus.js` / `res/cli/`): `?`, `set debug.render.pass …`, `set debug.render.rc_quality 0|1|2` (2 = screen-space RC). Only meaningful when the scene opts in (`render: "gbuffer"` / `"rc"`).
+Tab console (JS `res/bus.js` / `res/cli/`): `?`, `set debug.render.pass …`, `set debug.render.rc_quality 0|1|2` (2 = screen-space RC), `set debug.render.gi_strength …`. Only meaningful when the scene opts in (`render: "gbuffer"` / `"rc"`).
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
 
@@ -219,3 +220,4 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-09 | Phase2 CLI note docs | 5a9332 -->
 <!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 433e2e -->
 <!-- agent: composer-2.5 | 2026-08-09 | state rot mrad euler docs | 1118bb -->
+<!-- agent: composer-2.5 | 2026-08-09 | CLI note gi_strength | ef1f7f -->

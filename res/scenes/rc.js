@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-08-09 | rc Phase 0 test scene | 57f1f6
 // agent: composer-2.5 | 2026-08-09 | rc scene render rc opt-in | c4d815
 // agent: composer-2.5 | 2026-08-09 | rc mouse drag orbit cam | 14f14d
+// agent: composer-2.5 | 2026-08-09 | hotter glow props rc | 82c10e
 function Prop() {}
 Prop.prototype.init = function () {};
 Prop.prototype.start = function () {};
@@ -89,7 +90,8 @@ Scene.prototype.init = function () {
     fragment: "shaders/rc.fs",
     vertex: "shaders/mesh.vs",
     tint: { r: 40, g: 40, b: 40 },
-    glow: { r: 255, g: 140, b: 40 },
+    // agent: composer-2.5 | 2026-08-09 | hotter glow props rc | 82c10e
+    glow: { r: 255, g: 160, b: 50 },
     roughness: 0.5,
     metalness: 0.0,
   });
@@ -101,7 +103,8 @@ Scene.prototype.init = function () {
     fragment: "shaders/rc.fs",
     vertex: "shaders/mesh.vs",
     tint: { r: 30, g: 40, b: 60 },
-    glow: { r: 80, g: 160, b: 255 },
+    // agent: composer-2.5 | 2026-08-09 | hotter glow props rc | 82c10e
+    glow: { r: 100, g: 190, b: 255 },
     roughness: 0.4,
     metalness: 0.1,
   });
@@ -238,3 +241,4 @@ global.module(Scene);
 // agent: composer-2.5 | 2026-08-09 | rc Phase 0 test scene | 57f1f6
 // agent: composer-2.5 | 2026-08-09 | rc scene render rc opt-in | c4d815
 // agent: composer-2.5 | 2026-08-09 | rc mouse drag orbit cam | 14f14d
+// agent: composer-2.5 | 2026-08-09 | hotter glow props rc | 82c10e

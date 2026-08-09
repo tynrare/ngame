@@ -731,6 +731,32 @@ void mod_scene_graph_push_sample(NgSceneInst *inst, double t) {
   inst->state_time = t;
 }
 
+// agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5
+void mod_scene_graph_note_local_author(NgSceneInst *inst, double now) {
+  if (!inst) {
+    return;
+  }
+  inst->prefer_live_draw = 1;
+  inst->local_author_at = now;
+  /* Drop ring so key-up does not flash back onto stale samples. */
+  inst->sample_count = 0;
+  inst->sample_head = 0;
+}
+
+void mod_scene_graph_expire_live_draw(double now) {
+  for (int i = 0; i < GGRAPH().inst_count; i++) {
+    NgSceneInst *inst = &GGRAPH().insts[i];
+    if (!inst->alive || !inst->prefer_live_draw) {
+      continue;
+    }
+    if (now - inst->local_author_at > 0.12) {
+      inst->prefer_live_draw = 0;
+      inst->sample_count = 0;
+      inst->sample_head = 0;
+    }
+  }
+}
+
 static const NgStateSample *mod_scene_graph_sample_at(const NgSceneInst *inst, int chron_idx) {
   /* chron_idx 0 = oldest, sample_count-1 = newest */
   if (!inst || chron_idx < 0 || chron_idx >= (int)inst->sample_count) {
@@ -1241,3 +1267,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-08-09 | sample rot angle lerp wrap | ccb3ca
 // agent: composer-2.5 | 2026-08-09 | euler wrap finite guard | da648a
 // agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | 99f736
+// agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5

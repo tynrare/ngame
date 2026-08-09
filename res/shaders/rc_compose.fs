@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-09 | RC compose Direct plus GI | 6e0c88
+// agent: composer-2.5 | 2026-08-09 | compose GI vs direct | 30745a
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_albedo;
@@ -31,10 +32,11 @@ void main() {
   vec3 c1 = vec3(0.45, 0.55, 1.0);
   float ndl0 = max(dot(n, l0), 0.0);
   float ndl1 = max(dot(n, l1), 0.0);
-  vec3 direct = albedo * (c0 * ndl0 + c1 * ndl1 * 0.55);
-  vec3 ambient = albedo * 0.08;
+  vec3 direct = albedo * (c0 * ndl0 + c1 * ndl1 * 0.55) * 0.55;
+  vec3 ambient = albedo * 0.03;
   vec3 gi = albedo * irradiance * ng_gi_strength;
 
   finalColor = vec4(ambient + direct + gi + glow, 1.0);
 }
 // agent: composer-2.5 | 2026-08-09 | RC compose Direct plus GI | 6e0c88
+// agent: composer-2.5 | 2026-08-09 | compose GI vs direct | 30745a

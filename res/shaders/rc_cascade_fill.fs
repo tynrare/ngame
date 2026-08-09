@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-09 | SS RC cascade fill | 9d2e40
+// agent: composer-2.5 | 2026-08-09 | depth hit hit_frac fill | 39e073
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_depth;
@@ -12,6 +13,9 @@ out vec4 finalColor;
 
 const float FAR = 80.0;
 const float EPS = 0.02;
+const float THICKNESS = 0.08;
+const float EMIT_BOOST = 2.5;
+const float BOUNCE_SCALE = 0.65;
 
 int dir_count_for(int c) {
   if (c <= 0) return 4;
@@ -40,7 +44,7 @@ void main() {
   vec2 uv = fragTexCoord;
   float my_d = texture(tex_depth, uv).r;
   if (my_d < EPS) {
-    finalColor = vec4(ng_sky, 1.0);
+    finalColor = vec4(ng_sky, 0.0);
     return;
   }
 
@@ -51,6 +55,7 @@ void main() {
   vec2 px = 1.0 / ng_resolution;
 
   vec3 rad = vec3(0.0);
+  float hit_sum = 0.0;
   float wsum = 0.0;
 
   for (int i = 0; i < 64; i++) {
@@ -62,26 +67,27 @@ void main() {
       vec2 p = uv + dir * t * px;
       if (p.x < 0.0 || p.y < 0.0 || p.x > 1.0 || p.y > 1.0) {
         hit_rad = ng_sky;
-        hit = true;
+        hit = false;
         break;
       }
       float zd = texture(tex_depth, p).r;
-      if (zd > EPS && zd < FAR) {
-        /* Surface sample — prefer emitters, else bounce albedo. */
+      if (zd > EPS && zd < FAR && abs(zd - my_d) > THICKNESS) {
         vec3 g = texture(tex_glow, p).rgb;
         vec3 a = texture(tex_albedo, p).rgb;
-        hit_rad = g + a * 0.35;
+        hit_rad = g * EMIT_BOOST + a * BOUNCE_SCALE;
         hit = true;
         break;
       }
     }
-    if (!hit) {
-      hit_rad = ng_sky;
-    }
     rad += hit_rad;
+    if (hit) {
+      hit_sum += 1.0;
+    }
     wsum += 1.0;
   }
 
-  finalColor = vec4(rad / max(wsum, 1.0), 1.0);
+  float inv = 1.0 / max(wsum, 1.0);
+  finalColor = vec4(rad * inv, hit_sum * inv);
 }
 // agent: composer-2.5 | 2026-08-09 | SS RC cascade fill | 9d2e40
+// agent: composer-2.5 | 2026-08-09 | depth hit hit_frac fill | 39e073

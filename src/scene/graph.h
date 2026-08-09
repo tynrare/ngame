@@ -114,7 +114,9 @@ typedef struct NgSceneInst {
   float last_sent_ang_vel[3];
   /* 1 = draw live pose (local mouse/WASD); samples resume after true remote. */
   // agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | d3e801
+  // agent: composer-2.5 | 2026-08-09 | live author timestamp field | d39e8e
   uint8_t prefer_live_draw;
+  double local_author_at;
   int script_inst_stash;
 } NgSceneInst;
 
@@ -178,6 +180,8 @@ void mod_scene_graph_mark_dirty(NgSceneInst *inst, uint32_t comp);
 bool mod_scene_graph_take_dirty(NgStateUpdate *out);
 void mod_scene_graph_apply_update(const NgStateUpdate *update);
 void mod_scene_graph_push_sample(NgSceneInst *inst, double t);
+void mod_scene_graph_note_local_author(NgSceneInst *inst, double now);
+void mod_scene_graph_expire_live_draw(double now);
 bool mod_scene_graph_sample_draw_pose(const NgSceneInst *inst, double now, float delay_s,
                                       float out_pos[3], float out_rot[3]);
 void mod_scene_graph_note_sent(NgSceneInst *inst, const NgStateUpdate *update);
@@ -207,3 +211,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-08-01 | entity id band helpers | 21c51e
 // agent: composer-2.5 | 2026-08-02 | add FIXED_STEP spawn ctx | abcd62
 // agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | d3e801
+// agent: composer-2.5 | 2026-08-09 | live author timestamp field | d39e8e

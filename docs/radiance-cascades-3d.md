@@ -1,5 +1,6 @@
 <!-- agent: composer-2.5 | 2026-08-09 | Phase2 RC docs done | a6b410 -->
 <!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 41a9b6 -->
+<!-- agent: composer-2.5 | 2026-08-09 | Phase2 polish docs note | 71cf57 -->
 # Radiance Cascades (3D) — North Star
 
 Goal: a **performance-scalable** GI path for ngame, with a clean JS scene
@@ -58,8 +59,10 @@ Register: `register("rc", "scenes/rc.js")` in `res/boot.js`. Follow
 ```
 ? set debug.render.pass
 ? set debug.render.rc_quality
+? set debug.render.gi_strength
 set debug.render.pass albedo|normal|glow|depth|irradiance|final
 set debug.render.rc_quality 0|1|2
+set debug.render.gi_strength 0..8
 ```
 
 ## Approximate steps
@@ -72,6 +75,8 @@ set debug.render.rc_quality 0|1|2
 8. Fill SS raymarch into glow/albedo; miss → sky.
 9. Nearest merge top→bottom; compose Direct+GI.
 10. On `render:"rc"` scenes, `rc_quality≥2` enables RC; `≤1` forward only.
+
+**Phase 2 polish:** depth-discontinuity hits, miss-gated merge (`hit_frac` alpha), compose direct↓ / `gi_strength`↑. Phase 3 still bilinear-fix later.
 
 **Done when:** soft bounce / color bleed on `scene rc` without noise.
 
@@ -122,3 +127,4 @@ opaque G-buffer → for c = Cmax…0: march intervals
 
 <!-- agent: composer-2.5 | 2026-08-09 | Phase2 RC docs done | a6b410 -->
 <!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 41a9b6 -->
+<!-- agent: composer-2.5 | 2026-08-09 | Phase2 polish docs note | 71cf57 -->

@@ -5,6 +5,7 @@
 // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
 // agent: composer-2.5 | 2026-08-09 | Phase2 SS RC render path | ff1b7f
 // agent: composer-2.5 | 2026-08-09 | gate RC by scene render mode | 2a6d5a
+// agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
 #include "render.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
@@ -97,6 +98,7 @@ typedef struct ModRenderCtx {
   uint16_t last_input_seq;
   NgRenderDebugPass debug_pass;
   int rc_quality;
+  float gi_strength;
   RenderTexture2D rt_albedo;
   RenderTexture2D rt_normal;
   RenderTexture2D rt_glow;
@@ -673,7 +675,8 @@ static void mod_render_rc_merge(ModRenderCtx *ctx, int child, int parent) {
 
 static void mod_render_rc_compose(ModRenderCtx *ctx) {
   NgRcPassShader *pass = &ctx->rc_compose;
-  const float gi = 0.85f;
+  // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
+  const float gi = ctx->gi_strength;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
@@ -764,6 +767,8 @@ static void mod_render_draw_batch_gbuf(ModRenderCtx *ctx, const RenderAsset *a, 
 
 static void mod_render_collect_graph_batches(ModRenderCtx *ctx) {
   mod_render_batches_reset_counts(ctx);
+  // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5
+  mod_scene_graph_expire_live_draw(GetTime());
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
@@ -1095,6 +1100,7 @@ static bool mod_render_init(void *vctx) {
   ctx->scene_label[0] = '\0';
   ctx->debug_pass = NG_RENDER_PASS_FINAL;
   ctx->rc_quality = 2;
+  ctx->gi_strength = 1.8f;
   mod_render_init_camera(ctx);
   return true;
 }
@@ -1181,6 +1187,15 @@ bool mod_render_set(const char *path, const char *value) {
     g_render_ctx.rc_quality = q;
     return true;
   }
+  // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
+  if (strcmp(path, "debug.render.gi_strength") == 0) {
+    const float g = (float)atof(value);
+    if (g < 0.0f || g > 8.0f) {
+      return false;
+    }
+    g_render_ctx.gi_strength = g;
+    return true;
+  }
   return false;
 }
 
@@ -1194,6 +1209,11 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
   }
   if (strcmp(path, "debug.render.rc_quality") == 0) {
     snprintf(out, cap, "%d", g_render_ctx.rc_quality);
+    return true;
+  }
+  // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
+  if (strcmp(path, "debug.render.gi_strength") == 0) {
+    snprintf(out, cap, "%.2f", g_render_ctx.gi_strength);
     return true;
   }
   return false;
@@ -1215,3 +1235,5 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
 // agent: composer-2.5 | 2026-08-09 | Phase2 SS RC render path | ff1b7f
 // agent: composer-2.5 | 2026-08-09 | gate RC by scene render mode | 2a6d5a
+// agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
+// agent: composer-2.5 | 2026-08-09 | expire live draw after idle | 4e7ce8
