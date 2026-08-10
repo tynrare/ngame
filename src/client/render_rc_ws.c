@@ -1,16 +1,18 @@
 /*
- * World-space RC: AABB voxelize → vox slice atlas for GPU probe fill.
+ * World-space RC: AABB voxelize → vox slice atlas for GPU dir-packed RC.
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (GPU fill/butter/compose)
+ * Related: src/client/render.c (GPU fill/merge/resolve/compose)
  *
  * rc-ws flow:
  * 1) ensure → allocate vox scratch + tex_vox; quality → N/dirs/cascades/steps
  * 2) sync_vox → stamp graph AABBs when scene_hash dirty
  * 3) upload_vox → RGBA slice atlas for GPU march
  * Invariant: quality scales cost only. No SH. XZ flatland is not this path.
+ * GPU (render.c): casc fill → T-merge → N·ω screen resolve → compose.
  */
 // agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
+// agent: composer-2.5 | 2026-08-10 | playbook notes GPU resolve path | fd74c2
 // agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
 // agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
 // agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
@@ -87,7 +89,9 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
 
 bool ng_rc_ws_ensure(NgRcWsCtx *ws, int quality) {
   static const int k_probe[5] = {8, 10, 12, 16, 16};
-  static const int k_dirs[5] = {4, 6, 8, 8, 12};
+  /* More dirs (same probe_n) — kills star/ray artifacts; cost scales with dirs. */
+  // agent: composer-2.5 | 2026-08-10 | raise WS dirs quality ladder | 0478ff
+  static const int k_dirs[5] = {12, 16, 24, 32, 48};
   static const int k_cascades[5] = {1, 2, 3, 3, 3};
   static const int k_steps[5] = {3, 4, 5, 6, 8};
   if (!ws) {
@@ -310,3 +314,5 @@ void ng_rc_ws_upload_vox(NgRcWsCtx *ws) {
 // agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
 // agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
 // agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
+// agent: composer-2.5 | 2026-08-10 | raise WS dirs quality ladder | 0478ff
+// agent: composer-2.5 | 2026-08-10 | playbook notes GPU resolve path | fd74c2
