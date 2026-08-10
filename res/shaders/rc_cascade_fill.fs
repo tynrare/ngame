@@ -1,10 +1,9 @@
-// agent: composer-2.5 | 2026-08-10 | SS dist from world uvw | 39bad7
-/* Direction-first packed fill: one texel = one (probe, dir) interval march. */
+// agent: composer-2.5 | 2026-08-10 | SS fill no glow hits | 94de82
+/* Direction-first packed fill: geo+albedo bounce only (glow → bloom later). */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_depth;
 uniform sampler2D tex_albedo;
-uniform sampler2D tex_glow;
 uniform vec2 ng_resolution;     /* gbuf / base cascade pixel size */
 uniform vec2 ng_cascade_res;    /* this cascade atlas size */
 uniform vec2 ng_probes;         /* probe counts x,y */
@@ -24,9 +23,7 @@ const float FAR = 80.0;
 const float EPS = 0.02;
 const float THICKNESS = 0.45;
 const float FRONT_BIAS = 0.12;
-const float EMIT_BOOST = 2.4;
 const float BOUNCE_SCALE = 1.85;
-const float GLOW_HIT = 0.025;
 const float GEO_OPACITY = 0.8;
 
 vec2 dir_from_index(int i, int n) {
@@ -90,19 +87,15 @@ void main() {
     if (p.x < 0.0 || p.y < 0.0 || p.x > 1.0 || p.y > 1.0) {
       break;
     }
-    vec3 g = texture(tex_glow, p).rgb;
-    float glow_lum = max(g.r, max(g.g, g.b));
     float zd = depth_world_dist(p);
     bool geo = false;
     if (zd > EPS && zd < FAR) {
       geo = (zd < my_d - FRONT_BIAS) || (abs(zd - my_d) > THICKNESS);
     }
-    if (glow_lum > GLOW_HIT || geo) {
-      vec3 a = texture(tex_albedo, p).rgb;
-      vec3 L = g * EMIT_BOOST + a * BOUNCE_SCALE;
-      float opac = glow_lum > GLOW_HIT ? 1.0 : GEO_OPACITY;
+    if (geo) {
+      vec3 L = texture(tex_albedo, p).rgb * BOUNCE_SCALE;
       rad += T * L;
-      T *= (1.0 - opac);
+      T *= (1.0 - GEO_OPACITY);
       if (T < 0.02) {
         break;
       }
@@ -111,4 +104,4 @@ void main() {
   rad += T * ng_sky * 0.015;
   finalColor = vec4(rad, clamp(1.0 - T, 0.0, 1.0));
 }
-// agent: composer-2.5 | 2026-08-10 | SS dist from world uvw | 39bad7
+// agent: composer-2.5 | 2026-08-10 | SS fill no glow hits | 94de82

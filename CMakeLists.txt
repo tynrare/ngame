@@ -18,6 +18,9 @@ if(EMSCRIPTEN)
 endif()
 
 set(RAYLIB_DIR /home/x/code/raylib)
+# agent: composer-2.5 | 2026-08-10 | raise raylib shader tex units | 4a43ea
+# RC compose binds 5 samplers; raylib default batch max is 4 (5th bind is a no-op).
+add_compile_definitions(RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS=8)
 add_subdirectory(${RAYLIB_DIR} ${CMAKE_BINARY_DIR}/raylib EXCLUDE_FROM_ALL)
 
 set(NG_CORE_SOURCES
@@ -228,3 +231,4 @@ endif()
 # agent: composer-2.5 | 2026-08-09 | link web ws stubs | 2cadd9
 # agent: composer-2.5 | 2026-08-09 | add render_rc_ws to cmake | b34752
 # agent: composer-2.5 | 2026-08-10 | cmake link render_rc_ws | 0c74f6
+# agent: composer-2.5 | 2026-08-10 | raise raylib shader tex units | 4a43ea
