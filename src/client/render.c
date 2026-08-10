@@ -1596,10 +1596,11 @@ static bool mod_render_rc_ws_vox_dirty(ModRenderCtx *ctx) {
   return true;
 }
 
-/** Phase 6.1: frustum AABB + CPU vox stamp → dir-packed fill → T-merge → SH resolve. */
+/** rc-ws steps 3–4: dirty vox → fill → T-merge → SH resolve (6.2 will swap SDF prims). */
 static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-10 | frustum before gbuf CPU stamp | fff863
-  /* origin/size already set before gbuf; restamp when brick or scene moves. */
+  // agent: composer-2.5 | 2026-08-10 | tick comment rc-ws 6.2 note | 3a1e8d
+  /* rc-ws step 2 done before gbuf; restamp when brick or scene moves. */
   if (mod_render_rc_ws_vox_dirty(ctx)) {
     ng_rc_ws_rebuild_vox(&ctx->ws_cpu);
   }
@@ -2297,3 +2298,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | world-snap fixed cell GI volume | 69d77e
 // agent: composer-2.5 | 2026-08-10 | target-center GI clip volume | b97038
 // agent: composer-2.5 | 2026-08-10 | compose view use present size | 316071
+// agent: composer-2.5 | 2026-08-10 | tick comment rc-ws 6.2 note | 3a1e8d

@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild API | 2508fb
 // agent: composer-2.5 | 2026-08-10 | fixed world cell for vox snap | b66afd
+// agent: composer-2.5 | 2026-08-10 | rc-ws header SDF plan | 37c406
 #ifndef NG_RENDER_RC_WS_H
 #define NG_RENDER_RC_WS_H
 
@@ -13,6 +14,8 @@
 #define NG_RC_WS_GI_FAR 28.0f
 /** Fixed world meters per voxel — atlas stays world-aligned (no adaptive remesh). */
 #define NG_RC_WS_CELL 0.4f
+/** Phase 6.2: max analytic SDF prims (cube/sphere from describe). */
+#define NG_RC_WS_PRIM_MAX 64
 
 typedef struct NgRcWsCtx {
   bool ready;
@@ -48,3 +51,4 @@ void ng_rc_ws_rebuild_vox(NgRcWsCtx *ws);
 #endif
 // agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild API | 2508fb
 // agent: composer-2.5 | 2026-08-10 | fixed world cell for vox snap | b66afd
+// agent: composer-2.5 | 2026-08-10 | rc-ws header SDF plan | 37c406

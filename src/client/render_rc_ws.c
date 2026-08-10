@@ -1,16 +1,28 @@
 /*
- * World-space RC: quality + frustum-volume CPU vox stamp for GPU fill.
+ * World-space RC geometry + quality (Track A). North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (frustum AABB before gbuf, fill/merge/SH)
+ * Related: src/client/render.c (look-at clip before gbuf; fill/merge/SH/resolve)
+ * Downstream: res/shaders/rc_ws_fill.fs (march backend)
  *
- * rc-ws flow:
+ * rc-ws flow (current — 6.1):
  * 1) ensure → scratch + tex_vox; quality → N/dirs/cascades/steps
- * 2) render.c sets frustum-fit origin/size
- * 3) rebuild_vox → stamp AABBs → upload atlas
- * 4) fill samples tex_vox
+ * 2) render.c → look-at–snapped clip origin/size (before gbuf UVW)
+ * 3) dirty → rebuild_vox → AABB stamp → upload tex_vox
+ * 4) fill samples tex_vox; merge → SH → soft-nearest resolve (render.c)
+ *
+ * rc-ws flow (planned — 6.2; see north star):
+ * 5) rebuild_prims from mesh_kind + pose + lit (cube/sphere SDF)
+ * 6) upload prim list (UBO / texture pack; WebGL2-safe)
+ * 7) fill sphere-traces scene SDF; demote tex_vox off product path
+ * 8) later 6.3: optional SVO empty-skip / sparse probe keys (not 6.2)
+ *
+ * Branches / invariants:
+ * - Clip anchors on cam.target (not frustum AABB).
+ * - Merge/SH/resolve/compose stay cascade-storage; only march backend changes in 6.2.
  */
 // agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild impl | 689264
+// agent: composer-2.5 | 2026-08-10 | rc-ws playbook SDF plan | a4dc86
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -303,3 +315,4 @@ void ng_rc_ws_rebuild_vox(NgRcWsCtx *ws) {
   UpdateTexture(ws->tex_vox, ws->vox_rgba);
 }
 // agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild impl | 689264
+// agent: composer-2.5 | 2026-08-10 | rc-ws playbook SDF plan | a4dc86
