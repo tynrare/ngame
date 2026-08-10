@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-08-10 | B1 debug near far lattice | 75995b
 // agent: composer-2.5 | 2026-08-10 | probes gray checker no stripes | 5d8730
 // agent: composer-2.5 | 2026-08-10 | B3 sparse probes debug | b17473
+// agent: composer-2.5 | 2026-08-10 | probes outside still sample | 8fadf9
 /* WS RC debug: 0=sparse slot hit, 1=far UVW, 2=grid occupancy. */
 in vec2 fragTexCoord;
 
@@ -66,12 +67,12 @@ void main() {
     return;
   }
 
-  if (outside_far) {
-    finalColor = vec4(0.25, 0.02, 0.02, 1.0);
-    return;
-  }
-
+  /* mode 0/2: allow outside far cube (sparse keys are world-CELL). */
   if (mode == 2) {
+    if (outside_far) {
+      finalColor = vec4(0.25, 0.02, 0.02, 1.0);
+      return;
+    }
     float gr = max(ng_grid_res, 1.0);
     ivec3 ic = ivec3(clamp(floor(far_uvw * gr), vec3(0.0), vec3(gr - 1.0)));
     int gx = int(gr);
@@ -95,8 +96,12 @@ void main() {
   float slot = lookup_slot(ic);
   float parity = mod(float(ic.x + ic.y + ic.z), 2.0);
   vec3 base = slot >= 0.0 ? mix(LIVE, LIVE * 0.7, parity) : MISS;
+  if (outside_far) {
+    base *= 0.65; /* dim but still show hit/miss outside cube */
+  }
   finalColor = vec4(base, 1.0);
 }
 // agent: composer-2.5 | 2026-08-10 | B1 debug near far lattice | 75995b
 // agent: composer-2.5 | 2026-08-10 | probes gray checker no stripes | 5d8730
 // agent: composer-2.5 | 2026-08-10 | B3 sparse probes debug | b17473
+// agent: composer-2.5 | 2026-08-10 | probes outside still sample | 8fadf9

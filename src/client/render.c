@@ -35,6 +35,7 @@
 // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
 // agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
 // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
+// agent: composer-2.5 | 2026-08-10 | ws fill disable blend dirty | 466455
 #include "render.h"
 #include "render_rc_ws.h"
 #include "engine/ng_action.h"
@@ -1416,6 +1417,9 @@ static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, NgRcWsClip *clip, int 
   if (!dirty_only) {
     ClearBackground(BLACK);
   }
+  /* a=0 miss must replace dst — else reused slots keep prior cell RGB. */
+  // agent: composer-2.5 | 2026-08-10 | ws fill disable blend dirty | 466455
+  rlDisableColorBlend();
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
   if (pass->loc_ws_origin >= 0) {
@@ -1505,6 +1509,7 @@ static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, NgRcWsClip *clip, int 
   }
   mod_render_ws_fs_draw(ctx->ws_cpu.tex_prim, dest->texture.width, dest->texture.height);
   EndShaderMode();
+  rlEnableColorBlend();
   EndTextureMode();
 }
 
@@ -2635,3 +2640,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
 // agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
 // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
+// agent: composer-2.5 | 2026-08-10 | ws fill disable blend dirty | 466455

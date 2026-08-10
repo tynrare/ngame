@@ -4,6 +4,9 @@
 <!-- agent: composer-2.5 | 2026-08-10 | B2 doc amortize shipped | ccf229 -->
 <!-- agent: composer-2.5 | 2026-08-10 | roadmap B3-B5 sparse hierarchy | a30c7a -->
 <!-- agent: composer-2.5 | 2026-08-10 | B3 doc sparse hashmap path | 882e2d -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc gbuf A resolve exact | 0235b9 -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc resolve surface cell | 859c1f -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc slot reuse blend fix | 25efff -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -16,13 +19,13 @@ Compose: `ambient×1 + directional×1 + gi_strength×1·kd·irr + glow`.
 
 | Piece | Implementation |
 |-------|----------------|
-| Gbuffer | albedo+**rough(A)** / normal+**metal(A)** / glow / depth (`RGB=UVW`, `A=inside` **far**) |
+| Gbuffer | albedo+**rough(A)** / normal+**metal(A)** / glow / depth (`RGB=UVW` vs far, `A=geometry`) |
 | Clip | Far look-at cube (near nested for scroll); CELL / 2×CELL snap; hysteresis |
 | Geometry | Analytic SDF prims (`tex_prim`); col1.a = bound R |
 | Grid | **8³** uniform over **far**; **4** slots/cell (`tex_grid` RGBA8); dirty-gated |
 | Sparse | Screen-seeded CELL keys → slot pool; `tex_meta` + open-address `tex_hash` |
 | Fill | Atlas **W=dirs × H=slots**; SDF march from meta centers |
-| Merge / SH / Resolve | T-merge → L1 SH rows; resolve **hash probe** (+ face neighbor) |
+| Merge / SH / Resolve | T-merge → L1 SH rows; resolve **hash + face neighbor** |
 | Compose | `AMBIENT=1`, `DIRECTIONAL=1`; `gi_strength` default 1 |
 | Quality | Scales **slots / dirs / cascades / steps** |
 
@@ -79,7 +82,7 @@ One path (no GPU/CPU mode switch):
 1. Blit `rt_depth` → 64² seed; `ReadPixels` that only.
 2. CPU: unique `floor(p/CELL)` keys + face pad; slot pool by quality (128…512).
 3. Upload `tex_meta` (center+occ) + `tex_hash` (slot+1, cell xyz).
-4. Fill/merge/SH on **dirs × slots** atlas; resolve linear-probe hash (face fallback).
+4. Fill/merge/SH on **dirs × slots** atlas; resolve hash + face neighbor; fill blend-off (slot reuse).
 5. OOV dropped by full reseed each frame.
 
 ### B.4 — hierarchy (toward B.5)
@@ -107,7 +110,7 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 | `AMBIENT` / `DIRECTIONAL` | 1 |
 | `AMBIENT_ALBEDO` | 0.22 |
 | Fill bounce / E_LIT / emit | ~1.65 / ~1.35 / ~6 |
-| `SELF_T_MIN` / resolve `SELF_BIAS` | ~0.1 / ~0.09∨0.25·cell |
+| `SELF_T_MIN` / resolve `SELF_BIAS` | ~0.1 / ~0.09∨0.25·cell (+ face neighbor) |
 | Grid | 8³ × 4 over far; empty=255 |
 | Slots (q0–q4) | 128 / 192 / 256 / 384 / 512 |
 
@@ -130,6 +133,7 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 - Full dense refill when only a few cells dirty (B.5)  
 - Collapse that re-marches instead of averaging children (B.4)  
 - Full-screen depth readback (seed is 64² only)  
+- Dirty-only cascade fill with alpha blend (a=0 miss keeps prior slot RGB)  
 
 ## References
 
@@ -141,3 +145,6 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 <!-- agent: composer-2.5 | 2026-08-10 | B2 doc amortize shipped | ccf229 -->
 <!-- agent: composer-2.5 | 2026-08-10 | roadmap B3-B5 sparse hierarchy | a30c7a -->
 <!-- agent: composer-2.5 | 2026-08-10 | B3 doc sparse hashmap path | 882e2d -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc gbuf A resolve exact | 0235b9 -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc resolve surface cell | 859c1f -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc slot reuse blend fix | 25efff -->

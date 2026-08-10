@@ -689,7 +689,8 @@ void ng_rc_ws_sparse_seed(NgRcWsCtx *ws, const unsigned char *rgba, int w, int h
     ws->slots[si].iy = news[i].iy;
     ws->slots[si].iz = news[i].iz;
     ws->slots[si].used = 1;
-    ws->slots[si].dirty = 1;
+    // agent: composer-2.5 | 2026-08-10 | slot dirty on reuse note | 392430
+    ws->slots[si].dirty = 1; /* reuse: refill cascade/SH row before resolve */
   }
 
   /* Face pad into remaining free slots (does not evict). */
@@ -740,3 +741,4 @@ pad_done:
 // agent: composer-2.5 | 2026-08-10 | B3 seed flip stable slots | 4258ae
 // agent: composer-2.5 | 2026-08-10 | B3 fair seed incremental fill | 806cdd
 // agent: composer-2.5 | 2026-08-10 | B3 retain until OOV seed | f1dc1e
+// agent: composer-2.5 | 2026-08-10 | slot dirty on reuse note | 392430
