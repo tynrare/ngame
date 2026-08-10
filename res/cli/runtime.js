@@ -1,14 +1,24 @@
 // agent: composer-2.5 | 2026-08-09 | tree-driven CLI runtime | 43a91e
+// agent: composer-2.5 | 2026-08-09 | CLI expand comment update | 277128
+// agent: composer-2.5 | 2026-08-09 | CLI keep numeric tokens | b6d653
 /** Parse a console line into whitespace tokens. */
 function ng_bus_parse(line) {
   return line.trim().split(/\s+/).filter(function (s) { return s.length > 0; });
 }
 
-/** Expand dotted tokens so `set debug.render.pass` → set,debug,render,pass. */
+/**
+ * Expand dotted path tokens (`render.rc.quality` → render,rc,quality).
+ * Keep numeric literals intact so `0.5` is not split into `0` `5`.
+ */
 function ng_cli_expand(args) {
   var out = [];
   for (var i = 0; i < args.length; i++) {
-    var parts = String(args[i]).split(".");
+    var s = String(args[i]);
+    if (/^-?\d+(\.\d+)?$/.test(s)) {
+      out.push(s);
+      continue;
+    }
+    var parts = s.split(".");
     for (var j = 0; j < parts.length; j++) {
       if (parts[j].length > 0) {
         out.push(parts[j]);
@@ -150,3 +160,5 @@ function ng_bus_exec_line(line) {
   return ng_bus_route_cmd(args);
 }
 // agent: composer-2.5 | 2026-08-09 | tree-driven CLI runtime | 43a91e
+// agent: composer-2.5 | 2026-08-09 | CLI expand comment update | 277128
+// agent: composer-2.5 | 2026-08-09 | CLI keep numeric tokens | b6d653

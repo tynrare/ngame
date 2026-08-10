@@ -7,11 +7,21 @@
 <!-- agent: composer-2.5 | 2026-08-09 | Phase2 CLI note docs | 5a9332 -->
 <!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 433e2e -->
 <!-- agent: composer-2.5 | 2026-08-09 | CLI note gi_strength | ef1f7f -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs render.rc CLI | 0cb522 -->
+<!-- agent: composer-2.5 | 2026-08-09 | pass under debug.render | 3c20f4 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes rc WS quality note | 3e47b8 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes RC GPU quality note | 8e728d -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes layered RC note | eb101c -->
+<!-- agent: composer-2.5 | 2026-08-09 | RC doc pointer scenes.md | 62b332 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes RC radial note | 228ff4 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes Phase3 SS note | 29f238 -->
+<!-- agent: composer-2.5 | 2026-08-10 | scenes Phase4 WS volume note | 99a031 -->
 Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, or **`example`** (helpers demo).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
-Tab console (JS `res/bus.js` / `res/cli/`): `?`, `set debug.render.pass …`, `set debug.render.rc_quality 0|1|2` (2 = screen-space RC), `set debug.render.gi_strength …`. Only meaningful when the scene opts in (`render: "gbuffer"` / `"rc"`).
+Tab console: `? set`, `? set render`, `? set render.rc`, `? set debug.render`. Settings: `set render.scale …`, `set render.rc.quality|gi_strength …`, `set debug.render.pass …` (RC Phase 4: WS 3D volume + SS polish — [north star](radiance-cascades-3d.md)).
+
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
 
@@ -38,7 +48,7 @@ global.describe("scene", "view", {
 
 See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (`render: "rc"`).
 
-**Render (`render`):** omit / `"simple"` (default forward), `"gbuffer"` (debug G-buffer), `"rc"` (G-buffer + SS RC when `rc_quality≥2`).
+**Render (`render`):** omit / `"simple"` (default forward), `"gbuffer"` (debug G-buffer), `"rc"` (G-buffer + world-space GI cache + screen-space polish; [north star](radiance-cascades-3d.md)).
 
 ## Body / shape (physics)
 
@@ -221,3 +231,12 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-09 | docs render scene declare | 433e2e -->
 <!-- agent: composer-2.5 | 2026-08-09 | state rot mrad euler docs | 1118bb -->
 <!-- agent: composer-2.5 | 2026-08-09 | CLI note gi_strength | ef1f7f -->
+<!-- agent: composer-2.5 | 2026-08-09 | docs render.rc CLI | 0cb522 -->
+<!-- agent: composer-2.5 | 2026-08-09 | pass under debug.render | 3c20f4 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes rc WS quality note | 3e47b8 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes RC GPU quality note | 8e728d -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes layered RC note | eb101c -->
+<!-- agent: composer-2.5 | 2026-08-09 | RC doc pointer scenes.md | 62b332 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes RC radial note | 228ff4 -->
+<!-- agent: composer-2.5 | 2026-08-09 | scenes Phase3 SS note | 29f238 -->
+<!-- agent: composer-2.5 | 2026-08-10 | scenes Phase4 WS volume note | 99a031 -->

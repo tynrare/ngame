@@ -1,4 +1,6 @@
 // agent: composer-2.5 | 2026-08-09 | ng_cli commands with _run | dd6c51
+// agent: composer-2.5 | 2026-08-09 | load cli render.js | 3e6010
+// agent: composer-2.5 | 2026-08-09 | load cli debug again | 5a6438
 var ng_cli = {
   _help: "console commands — try ? <cmd>",
 
@@ -36,12 +38,15 @@ var ng_cli = {
   },
 
   set: {
-    _help: "set <path> <value> — change runtime settings",
+    _help: "set <path> <value> — change runtime settings (try ? set)",
   },
 };
 
 if (typeof ng_script_load === "function") {
   ng_script_load("cli/runtime.js");
+  ng_script_load("cli/render.js");
   ng_script_load("cli/debug.js");
 }
 // agent: composer-2.5 | 2026-08-09 | ng_cli commands with _run | dd6c51
+// agent: composer-2.5 | 2026-08-09 | load cli render.js | 3e6010
+// agent: composer-2.5 | 2026-08-09 | load cli debug again | 5a6438

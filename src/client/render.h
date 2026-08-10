@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | client render module | g0j28e
 // agent: composer-2.5 | 2026-08-09 | gbuffer debug pass API | b23e6f
+// agent: composer-2.5 | 2026-08-09 | CLI set render.rc tree | ee3ab2
 #ifndef MOD_RENDER_H
 #define MOD_RENDER_H
 
@@ -17,12 +18,13 @@ void mod_render_apply_session(const struct NgSessionState *session);
 void mod_render_snapshot_text(char *out, size_t cap);
 void mod_render_visibility_text(char *out, size_t cap);
 
-/** Set render debug path (e.g. debug.render.pass / albedo). Returns false on bad path/value. */
+/** Set path (e.g. render.rc.quality / debug.render.pass / render.scale). Returns false on bad path/value. */
 bool mod_render_set(const char *path, const char *value);
-/** Get render debug path into out. Returns false if unknown. */
+/** Get path into out. Returns false if unknown. */
 bool mod_render_get(const char *path, char *out, size_t cap);
 
 #endif
 
 // agent: composer-2.5 | 2026-07-25 | client render module | g0j28e
 // agent: composer-2.5 | 2026-08-09 | gbuffer debug pass API | b23e6f
+// agent: composer-2.5 | 2026-08-09 | CLI set render.rc tree | ee3ab2

@@ -7,7 +7,25 @@
 // agent: composer-2.5 | 2026-08-09 | gate RC by scene render mode | 2a6d5a
 // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
 // agent: composer-2.5 | 2026-08-09 | default gi_strength 1.0 | 6674ef
+// agent: composer-2.5 | 2026-08-09 | CLI set render.rc tree | 28de10
+// agent: composer-2.5 | 2026-08-09 | pass under debug.render | c088d1
+// agent: composer-2.5 | 2026-08-09 | present RT for render.scale | 2c679e
+// agent: composer-2.5 | 2026-08-09 | fix present FBO nesting | c075d5
+// agent: composer-2.5 | 2026-08-09 | wire WS RC quality path | d68d00
+// agent: composer-2.5 | 2026-08-09 | uniform WS quality cost scale | 45673f
+// agent: composer-2.5 | 2026-08-09 | Phase2 GPU FBO RC path | 5642b8
+// agent: composer-2.5 | 2026-08-09 | WS then SS pipeline wire | ed5dfb
+// agent: composer-2.5 | 2026-08-09 | stamp seed prop butter order | b9a6eb
+// agent: composer-2.5 | 2026-08-09 | XZ splat emitters-only stamp | bd73fb
+// agent: composer-2.5 | 2026-08-09 | WS fs draw no Y flip | 07886c
+// agent: composer-2.5 | 2026-08-09 | wire WS radial RC | 18204b
+// agent: composer-2.5 | 2026-08-09 | half-res WS casc bilinear merge | 187201
+// agent: composer-2.5 | 2026-08-09 | WS blit use raylib Y flip | 7f49b1
+// agent: composer-2.5 | 2026-08-09 | wire SS packed RC | 7ba28e
+// agent: composer-2.5 | 2026-08-10 | RC cost shift dirs cut | d9bceb
+// agent: composer-2.5 | 2026-08-10 | wire WS volume RC tick | 0fd9cd
 #include "render.h"
+#include "render_rc_ws.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
 #include "client/input.h"
@@ -28,8 +46,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define NG_RC_CASCADES 3
 
 typedef enum NgRenderDebugPass {
   NG_RENDER_PASS_FINAL = 0,
@@ -73,14 +89,48 @@ typedef struct NgRcPassShader {
   int loc_tex_glow;
   int loc_tex_normal;
   int loc_tex_irradiance;
+  int loc_tex_irradiance_ws;
+  int loc_tex_irradiance_ss;
   int loc_tex_self;
   int loc_tex_parent;
-  int loc_cascade;
+  int loc_tex_prev;
+  int loc_tex_curr;
+  int loc_tex_atlas;
+  int loc_tex_stamp;
   int loc_sky;
-  int loc_merge_weight;
   int loc_gi_strength;
+  int loc_ws_weight;
+  int loc_ss_weight;
+  int loc_dir_count;
+  int loc_dir_side;
+  int loc_spacing;
+  int loc_interval0;
+  int loc_interval1;
+  int loc_max_steps;
+  int loc_merge_weight;
+  int loc_butter;
+  int loc_texel;
+  int loc_spread;
+  int loc_parent_texel;
+  int loc_cascade_res;
+  int loc_probes;
+  int loc_parent_probes;
+  int loc_parent_res;
+  int loc_parent_dir_side;
+  int loc_cam_pos;
+  int loc_cam_forward;
+  int loc_cam_right;
+  int loc_cam_up;
+  int loc_tan_half_fov;
+  int loc_aspect;
+  int loc_ws_origin;
+  int loc_ws_size;
+  int loc_probe_res;
   bool ready;
 } NgRcPassShader;
+
+#define NG_RC_CASCADES_MAX 3
+#define NG_RC_WS_ATLAS_MAX 128
 
 typedef struct ModRenderCtx {
   RenderAssetCacheEntry cache[NG_RENDER_CACHE_MAX];
@@ -100,6 +150,11 @@ typedef struct ModRenderCtx {
   NgRenderDebugPass debug_pass;
   int rc_quality;
   float gi_strength;
+  float render_scale;
+  RenderTexture2D rt_present;
+  bool present_ready;
+  int present_w;
+  int present_h;
   RenderTexture2D rt_albedo;
   RenderTexture2D rt_normal;
   RenderTexture2D rt_glow;
@@ -109,18 +164,57 @@ typedef struct ModRenderCtx {
   int gbuf_h;
   NgShader gbuf_shader;
   bool gbuf_shader_ready;
-  RenderTexture2D rt_cascade[NG_RC_CASCADES];
+  RenderTexture2D rt_cascade[NG_RC_CASCADES_MAX];
   RenderTexture2D rt_merge;
+  RenderTexture2D rt_ss_irr;
   bool rc_rt_ready;
   int rc_w;
   int rc_h;
+  int rc_cascades;
+  int rc_dir_side[NG_RC_CASCADES_MAX];
+  int rc_probes_x[NG_RC_CASCADES_MAX];
+  int rc_probes_y[NG_RC_CASCADES_MAX];
+  int rc_spacing[NG_RC_CASCADES_MAX];
+  RenderTexture2D rt_ws_stamp;
+  RenderTexture2D rt_ws[2];
+  RenderTexture2D rt_ws_casc[NG_RC_CASCADES_MAX]; /* unused XZ stubs */
+  int ws_ping;
+  bool ws_rt_ready;
+  int ws_probe_n;
+  float ws_origin[3];
+  float ws_size[3];
+  NgRcWsCtx ws_cpu;
   NgRcPassShader rc_fill;
   NgRcPassShader rc_merge;
+  NgRcPassShader rc_resolve;
   NgRcPassShader rc_compose;
+  NgRcPassShader rc_ws_butter;
+  NgRcPassShader rc_ws_fill;
+  NgRcPassShader rc_ws_view;
 } ModRenderCtx;
 
 static ModRenderCtx g_render_ctx;
 static const Vector3 NG_RC_SKY = {0.08f, 0.10f, 0.14f};
+
+/** Internal RT size from viewport × render_scale (clamped). */
+static void mod_render_internal_size(const ModRenderCtx *ctx, int *out_w, int *out_h) {
+  float s = ctx->render_scale;
+  if (s < 0.25f) {
+    s = 0.25f;
+  } else if (s > 2.0f) {
+    s = 2.0f;
+  }
+  int w = (int)((float)ng_viewport_width() * s + 0.5f);
+  int h = (int)((float)ng_viewport_height() * s + 0.5f);
+  if (w < 1) {
+    w = 1;
+  }
+  if (h < 1) {
+    h = 1;
+  }
+  *out_w = w;
+  *out_h = h;
+}
 
 static void mod_render_blit_rt(const RenderTexture2D *rt);
 
@@ -522,14 +616,26 @@ static void mod_render_unload_gbuf(ModRenderCtx *ctx) {
 
 static void mod_render_unload_rc(ModRenderCtx *ctx) {
   if (ctx->rc_rt_ready) {
-    for (int i = 0; i < NG_RC_CASCADES; i++) {
+    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
       UnloadRenderTexture(ctx->rt_cascade[i]);
     }
     UnloadRenderTexture(ctx->rt_merge);
+    UnloadRenderTexture(ctx->rt_ss_irr);
     ctx->rc_rt_ready = false;
     ctx->rc_w = 0;
     ctx->rc_h = 0;
   }
+  if (ctx->ws_rt_ready) {
+    UnloadRenderTexture(ctx->rt_ws_stamp);
+    UnloadRenderTexture(ctx->rt_ws[0]);
+    UnloadRenderTexture(ctx->rt_ws[1]);
+    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
+      UnloadRenderTexture(ctx->rt_ws_casc[i]);
+    }
+    ctx->ws_rt_ready = false;
+    ctx->ws_probe_n = 0;
+  }
+  ng_rc_ws_shutdown(&ctx->ws_cpu);
   if (ctx->rc_fill.ready) {
     ng_shader_unload(&ctx->rc_fill.sh);
     ctx->rc_fill.ready = false;
@@ -538,10 +644,69 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     ng_shader_unload(&ctx->rc_merge.sh);
     ctx->rc_merge.ready = false;
   }
+  if (ctx->rc_resolve.ready) {
+    ng_shader_unload(&ctx->rc_resolve.sh);
+    ctx->rc_resolve.ready = false;
+  }
   if (ctx->rc_compose.ready) {
     ng_shader_unload(&ctx->rc_compose.sh);
     ctx->rc_compose.ready = false;
   }
+  if (ctx->rc_ws_butter.ready) {
+    ng_shader_unload(&ctx->rc_ws_butter.sh);
+    ctx->rc_ws_butter.ready = false;
+  }
+  if (ctx->rc_ws_fill.ready) {
+    ng_shader_unload(&ctx->rc_ws_fill.sh);
+    ctx->rc_ws_fill.ready = false;
+  }
+  if (ctx->rc_ws_view.ready) {
+    ng_shader_unload(&ctx->rc_ws_view.sh);
+    ctx->rc_ws_view.ready = false;
+  }
+}
+
+// agent: composer-2.5 | 2026-08-09 | present RT for render.scale | 2c679e
+static void mod_render_unload_present(ModRenderCtx *ctx) {
+  if (ctx->present_ready) {
+    UnloadRenderTexture(ctx->rt_present);
+    ctx->present_ready = false;
+    ctx->present_w = 0;
+    ctx->present_h = 0;
+  }
+}
+
+/** Ensure color RT at viewport × render_scale. */
+static bool mod_render_ensure_present(ModRenderCtx *ctx) {
+  int w = 0;
+  int h = 0;
+  mod_render_internal_size(ctx, &w, &h);
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (ctx->present_ready && ctx->present_w == w && ctx->present_h == h) {
+    return true;
+  }
+  mod_render_unload_present(ctx);
+  ctx->rt_present = LoadRenderTexture(w, h);
+  ctx->present_w = w;
+  ctx->present_h = h;
+  ctx->present_ready = true;
+  return true;
+}
+
+/** Blit scaled present buffer to the window (point filter when downscaled). */
+static void mod_render_present_to_screen(ModRenderCtx *ctx) {
+  if (!ctx->present_ready) {
+    return;
+  }
+  const TextureFilter filt =
+      (ctx->render_scale < 0.999f) ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR;
+  SetTextureFilter(ctx->rt_present.texture, filt);
+  const Rectangle src = {0.0f, 0.0f, (float)ctx->rt_present.texture.width,
+                         -(float)ctx->rt_present.texture.height};
+  const Rectangle dst = {0.0f, 0.0f, (float)GetScreenWidth(), (float)GetScreenHeight()};
+  DrawTexturePro(ctx->rt_present.texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
 }
 
 static bool mod_render_load_rc_pass(NgRcPassShader *pass, const char *fs) {
@@ -554,19 +719,99 @@ static bool mod_render_load_rc_pass(NgRcPassShader *pass, const char *fs) {
   pass->loc_tex_glow = GetShaderLocation(pass->sh.handle, "tex_glow");
   pass->loc_tex_normal = GetShaderLocation(pass->sh.handle, "tex_normal");
   pass->loc_tex_irradiance = GetShaderLocation(pass->sh.handle, "tex_irradiance");
+  pass->loc_tex_irradiance_ws = GetShaderLocation(pass->sh.handle, "tex_irradiance_ws");
+  pass->loc_tex_irradiance_ss = GetShaderLocation(pass->sh.handle, "tex_irradiance_ss");
   pass->loc_tex_self = GetShaderLocation(pass->sh.handle, "tex_self");
   pass->loc_tex_parent = GetShaderLocation(pass->sh.handle, "tex_parent");
-  pass->loc_cascade = GetShaderLocation(pass->sh.handle, "ng_cascade");
+  pass->loc_tex_prev = GetShaderLocation(pass->sh.handle, "tex_prev");
+  pass->loc_tex_curr = GetShaderLocation(pass->sh.handle, "tex_curr");
+  pass->loc_tex_atlas = GetShaderLocation(pass->sh.handle, "tex_atlas");
+  pass->loc_tex_stamp = GetShaderLocation(pass->sh.handle, "tex_stamp");
   pass->loc_sky = GetShaderLocation(pass->sh.handle, "ng_sky");
-  pass->loc_merge_weight = GetShaderLocation(pass->sh.handle, "ng_merge_weight");
   pass->loc_gi_strength = GetShaderLocation(pass->sh.handle, "ng_gi_strength");
+  pass->loc_ws_weight = GetShaderLocation(pass->sh.handle, "ng_ws_weight");
+  pass->loc_ss_weight = GetShaderLocation(pass->sh.handle, "ng_ss_weight");
+  pass->loc_dir_count = GetShaderLocation(pass->sh.handle, "ng_dir_count");
+  pass->loc_dir_side = GetShaderLocation(pass->sh.handle, "ng_dir_side");
+  pass->loc_spacing = GetShaderLocation(pass->sh.handle, "ng_spacing");
+  pass->loc_interval0 = GetShaderLocation(pass->sh.handle, "ng_interval0");
+  pass->loc_interval1 = GetShaderLocation(pass->sh.handle, "ng_interval1");
+  pass->loc_max_steps = GetShaderLocation(pass->sh.handle, "ng_max_steps");
+  pass->loc_merge_weight = GetShaderLocation(pass->sh.handle, "ng_merge_weight");
+  pass->loc_butter = GetShaderLocation(pass->sh.handle, "ng_butter");
+  pass->loc_texel = GetShaderLocation(pass->sh.handle, "ng_texel");
+  pass->loc_spread = GetShaderLocation(pass->sh.handle, "ng_spread");
+  pass->loc_parent_texel = GetShaderLocation(pass->sh.handle, "ng_parent_texel");
+  pass->loc_cascade_res = GetShaderLocation(pass->sh.handle, "ng_cascade_res");
+  pass->loc_probes = GetShaderLocation(pass->sh.handle, "ng_probes");
+  pass->loc_parent_probes = GetShaderLocation(pass->sh.handle, "ng_parent_probes");
+  pass->loc_parent_res = GetShaderLocation(pass->sh.handle, "ng_parent_res");
+  pass->loc_parent_dir_side = GetShaderLocation(pass->sh.handle, "ng_parent_dir_side");
+  pass->loc_cam_pos = GetShaderLocation(pass->sh.handle, "ng_cam_pos");
+  pass->loc_cam_forward = GetShaderLocation(pass->sh.handle, "ng_cam_forward");
+  pass->loc_cam_right = GetShaderLocation(pass->sh.handle, "ng_cam_right");
+  pass->loc_cam_up = GetShaderLocation(pass->sh.handle, "ng_cam_up");
+  pass->loc_tan_half_fov = GetShaderLocation(pass->sh.handle, "ng_tan_half_fov");
+  pass->loc_aspect = GetShaderLocation(pass->sh.handle, "ng_aspect");
+  pass->loc_ws_origin = GetShaderLocation(pass->sh.handle, "ng_ws_origin");
+  pass->loc_ws_size = GetShaderLocation(pass->sh.handle, "ng_ws_size");
+  pass->loc_probe_res = GetShaderLocation(pass->sh.handle, "ng_probe_res");
   pass->ready = true;
   return true;
 }
 
+/** Quality → cascades / res shift / dir_side^2 dirs / steps. */
+static void mod_render_rc_cost(int quality, int *out_cascades, int *out_shift,
+                               int dir_side[NG_RC_CASCADES_MAX], int *out_steps) {
+  // agent: composer-2.5 | 2026-08-10 | RC cost shift dirs cut | d9bceb
+  int q = quality;
+  if (q < 0) {
+    q = 0;
+  } else if (q > 4) {
+    q = 4;
+  }
+  static const int k_cascades[5] = {1, 2, 3, 3, 3};
+  /* Half-res cascades by default; full-res only at high quality. */
+  static const int k_shift[5] = {1, 1, 1, 0, 0};
+  static const int k_steps[5] = {2, 3, 4, 6, 8};
+  /* Fewer dirs: side 2/2/4 → 4/4/16 (was up to 64). */
+  static const int k_side[5][NG_RC_CASCADES_MAX] = {
+      {2, 0, 0}, {2, 2, 0}, {2, 2, 4}, {2, 4, 4}, {2, 4, 8},
+  };
+  *out_cascades = k_cascades[q];
+  *out_shift = k_shift[q];
+  *out_steps = k_steps[q];
+  for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
+    dir_side[i] = k_side[q][i];
+  }
+}
+
+/** Packed atlas: atlas = probes * dir_side (direction-first tiles). */
+static void mod_render_rc_casc_dim(int base_w, int base_h, int c, int dir_side, int *out_px,
+                                   int *out_py, int *out_aw, int *out_ah, int *out_spacing) {
+  int spacing = 1 << c;
+  int px = base_w / spacing;
+  int py = base_h / spacing;
+  if (px < 1) {
+    px = 1;
+  }
+  if (py < 1) {
+    py = 1;
+  }
+  if (dir_side < 1) {
+    dir_side = 1;
+  }
+  *out_px = px;
+  *out_py = py;
+  *out_spacing = spacing;
+  *out_aw = px * dir_side;
+  *out_ah = py * dir_side;
+}
+
 static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
-  const int w = ng_viewport_width();
-  const int h = ng_viewport_height();
+  int w = 0;
+  int h = 0;
+  mod_render_internal_size(ctx, &w, &h);
   if (w <= 0 || h <= 0) {
     return false;
   }
@@ -578,29 +823,142 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
       !mod_render_load_rc_pass(&ctx->rc_merge, NG_RES_ROOT "shaders/rc_cascade_merge.fs")) {
     return false;
   }
+  if (!ctx->rc_resolve.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_resolve, NG_RES_ROOT "shaders/rc_ss_resolve.fs")) {
+    return false;
+  }
   if (!ctx->rc_compose.ready &&
       !mod_render_load_rc_pass(&ctx->rc_compose, NG_RES_ROOT "shaders/rc_compose.fs")) {
     return false;
   }
-  if (ctx->rc_rt_ready && ctx->rc_w == w && ctx->rc_h == h) {
+  if (!ctx->rc_ws_butter.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_butter, NG_RES_ROOT "shaders/rc_ws_butter.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_fill.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_fill, NG_RES_ROOT "shaders/rc_ws_fill.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_view.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_view, NG_RES_ROOT "shaders/rc_ws_view.fs")) {
+    return false;
+  }
+  if (!ng_rc_ws_ensure(&ctx->ws_cpu, ctx->rc_quality)) {
+    return false;
+  }
+  ctx->ws_cpu.origin[0] = ctx->ws_origin[0];
+  ctx->ws_cpu.origin[1] = ctx->ws_origin[1];
+  ctx->ws_cpu.origin[2] = ctx->ws_origin[2];
+  ctx->ws_cpu.size[0] = ctx->ws_size[0];
+  ctx->ws_cpu.size[1] = ctx->ws_size[1];
+  ctx->ws_cpu.size[2] = ctx->ws_size[2];
+
+  int cascades = 3;
+  int shift = 0;
+  int dir_side[NG_RC_CASCADES_MAX];
+  int steps = 6;
+  mod_render_rc_cost(ctx->rc_quality, &cascades, &shift, dir_side, &steps);
+  (void)steps;
+  const int bw = w >> shift;
+  const int bh = h >> shift;
+  const int base_w = bw > 0 ? bw : 1;
+  const int base_h = bh > 0 ? bh : 1;
+  const int probe_n = ctx->ws_cpu.probe_n > 0 ? ctx->ws_cpu.probe_n : 12;
+
+  int need_rebuild = !ctx->rc_rt_ready || ctx->rc_w != base_w || ctx->rc_h != base_h ||
+                     ctx->rc_cascades != cascades;
+  if (!need_rebuild) {
+    for (int i = 0; i < cascades; i++) {
+      if (ctx->rc_dir_side[i] != dir_side[i]) {
+        need_rebuild = 1;
+        break;
+      }
+    }
+  }
+
+  if (!need_rebuild && ctx->ws_rt_ready && ctx->ws_probe_n == probe_n) {
     return true;
   }
-  if (ctx->rc_rt_ready) {
-    for (int i = 0; i < NG_RC_CASCADES; i++) {
+  if (need_rebuild && ctx->rc_rt_ready) {
+    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
       UnloadRenderTexture(ctx->rt_cascade[i]);
     }
     UnloadRenderTexture(ctx->rt_merge);
+    UnloadRenderTexture(ctx->rt_ss_irr);
     ctx->rc_rt_ready = false;
   }
-  for (int i = 0; i < NG_RC_CASCADES; i++) {
-    const int cw = w >> i;
-    const int ch = h >> i;
-    ctx->rt_cascade[i] = LoadRenderTexture(cw > 0 ? cw : 1, ch > 0 ? ch : 1);
+  if (!ctx->rc_rt_ready) {
+    int max_aw = 1;
+    int max_ah = 1;
+    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
+      int px = 1;
+      int py = 1;
+      int aw = 1;
+      int ah = 1;
+      int sp = 1;
+      const int ds = dir_side[i] > 0 ? dir_side[i] : 1;
+      mod_render_rc_casc_dim(base_w, base_h, i, ds, &px, &py, &aw, &ah, &sp);
+      ctx->rc_dir_side[i] = dir_side[i];
+      ctx->rc_probes_x[i] = px;
+      ctx->rc_probes_y[i] = py;
+      ctx->rc_spacing[i] = sp;
+      if (i < cascades) {
+        ctx->rt_cascade[i] = LoadRenderTexture(aw, ah);
+        SetTextureFilter(ctx->rt_cascade[i].texture, TEXTURE_FILTER_BILINEAR);
+        if (aw > max_aw) {
+          max_aw = aw;
+        }
+        if (ah > max_ah) {
+          max_ah = ah;
+        }
+      } else {
+        ctx->rt_cascade[i] = LoadRenderTexture(1, 1);
+      }
+    }
+    ctx->rt_merge = LoadRenderTexture(max_aw, max_ah);
+    SetTextureFilter(ctx->rt_merge.texture, TEXTURE_FILTER_BILINEAR);
+    ctx->rt_ss_irr = LoadRenderTexture(base_w, base_h);
+    SetTextureFilter(ctx->rt_ss_irr.texture, TEXTURE_FILTER_BILINEAR);
+    ctx->rc_w = base_w;
+    ctx->rc_h = base_h;
+    ctx->rc_cascades = cascades;
+    ctx->rc_rt_ready = true;
   }
-  ctx->rt_merge = LoadRenderTexture(w, h);
-  ctx->rc_w = w;
-  ctx->rc_h = h;
-  ctx->rc_rt_ready = true;
+
+  if (ctx->ws_rt_ready && ctx->ws_probe_n != probe_n) {
+    UnloadRenderTexture(ctx->rt_ws_stamp);
+    UnloadRenderTexture(ctx->rt_ws[0]);
+    UnloadRenderTexture(ctx->rt_ws[1]);
+    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
+      UnloadRenderTexture(ctx->rt_ws_casc[i]);
+    }
+    ctx->ws_rt_ready = false;
+  }
+  if (!ctx->ws_rt_ready) {
+    const int aw = probe_n;
+    const int ah = probe_n * probe_n;
+    ctx->rt_ws_stamp = LoadRenderTexture(aw, ah);
+    ctx->rt_ws[0] = LoadRenderTexture(aw, ah);
+    ctx->rt_ws[1] = LoadRenderTexture(aw, ah);
+    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
+      ctx->rt_ws_casc[i] = LoadRenderTexture(1, 1);
+    }
+    SetTextureFilter(ctx->rt_ws_stamp.texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(ctx->rt_ws[0].texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(ctx->rt_ws[1].texture, TEXTURE_FILTER_BILINEAR);
+    BeginTextureMode(ctx->rt_ws[0]);
+    ClearBackground(BLACK);
+    EndTextureMode();
+    BeginTextureMode(ctx->rt_ws[1]);
+    ClearBackground(BLACK);
+    EndTextureMode();
+    ctx->ws_probe_n = probe_n;
+    ctx->ws_ping = 0;
+    ctx->ws_rt_ready = true;
+    /* Seed vox atlas once RTs exist. */
+    (void)ng_rc_ws_sync_vox(&ctx->ws_cpu);
+    ng_rc_ws_upload_vox(&ctx->ws_cpu);
+  }
   return true;
 }
 
@@ -610,10 +968,21 @@ static void mod_render_fs_draw(Texture2D carrier, int dest_w, int dest_h) {
   DrawTexturePro(carrier, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
 }
 
-static void mod_render_rc_fill_cascade(ModRenderCtx *ctx, int c) {
+/** WS atlas ping-pong: same Y flip as gbuffer/SS (raylib RT convention). */
+static void mod_render_ws_fs_draw(Texture2D carrier, int dest_w, int dest_h) {
+  const Rectangle src = {0.0f, 0.0f, (float)carrier.width, -(float)carrier.height};
+  const Rectangle dst = {0.0f, 0.0f, (float)dest_w, (float)dest_h};
+  DrawTexturePro(carrier, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+}
+
+static void mod_render_rc_fill_cascade(ModRenderCtx *ctx, int c, float t0, float t1, int max_steps) {
   NgRcPassShader *pass = &ctx->rc_fill;
   RenderTexture2D *dest = &ctx->rt_cascade[c];
-  const float res[2] = {(float)ctx->gbuf_w, (float)ctx->gbuf_h};
+  const float res[2] = {(float)ctx->rc_w, (float)ctx->rc_h};
+  const float cres[2] = {(float)dest->texture.width, (float)dest->texture.height};
+  const float probes[2] = {(float)ctx->rc_probes_x[c], (float)ctx->rc_probes_y[c]};
+  const int dir_side = ctx->rc_dir_side[c] > 0 ? ctx->rc_dir_side[c] : 1;
+  const int spacing = ctx->rc_spacing[c] > 0 ? ctx->rc_spacing[c] : 1;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
   BeginTextureMode(*dest);
   ClearBackground(BLACK);
@@ -622,8 +991,26 @@ static void mod_render_rc_fill_cascade(ModRenderCtx *ctx, int c) {
   if (pass->sh.loc_resolution >= 0) {
     SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
   }
-  if (pass->loc_cascade >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cascade, &c, SHADER_UNIFORM_INT);
+  if (pass->loc_cascade_res >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cascade_res, cres, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_probes >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_probes, probes, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_dir_side >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_dir_side, &dir_side, SHADER_UNIFORM_INT);
+  }
+  if (pass->loc_spacing >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_spacing, &spacing, SHADER_UNIFORM_INT);
+  }
+  if (pass->loc_interval0 >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_interval0, &t0, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_interval1 >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_interval1, &t1, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_max_steps >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_max_steps, &max_steps, SHADER_UNIFORM_INT);
   }
   if (pass->loc_sky >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
@@ -644,13 +1031,36 @@ static void mod_render_rc_fill_cascade(ModRenderCtx *ctx, int c) {
 
 static void mod_render_rc_merge(ModRenderCtx *ctx, int child, int parent) {
   NgRcPassShader *pass = &ctx->rc_merge;
-  const float weight = 1.0f;
+  const int dw = ctx->rt_cascade[child].texture.width;
+  const int dh = ctx->rt_cascade[child].texture.height;
+  const float cres[2] = {(float)dw, (float)dh};
+  const float probes[2] = {(float)ctx->rc_probes_x[child], (float)ctx->rc_probes_y[child]};
+  const float pprobes[2] = {(float)ctx->rc_probes_x[parent], (float)ctx->rc_probes_y[parent]};
+  const float pres[2] = {(float)ctx->rt_cascade[parent].texture.width,
+                         (float)ctx->rt_cascade[parent].texture.height};
+  const int dir_side = ctx->rc_dir_side[child] > 0 ? ctx->rc_dir_side[child] : 1;
+  const int p_side = ctx->rc_dir_side[parent] > 0 ? ctx->rc_dir_side[parent] : 1;
   BeginTextureMode(ctx->rt_merge);
   ClearBackground(BLACK);
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
-  if (pass->loc_merge_weight >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_merge_weight, &weight, SHADER_UNIFORM_FLOAT);
+  if (pass->loc_cascade_res >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cascade_res, cres, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_probes >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_probes, probes, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_parent_probes >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_parent_probes, pprobes, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_parent_res >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_parent_res, pres, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_dir_side >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_dir_side, &dir_side, SHADER_UNIFORM_INT);
+  }
+  if (pass->loc_parent_dir_side >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_parent_dir_side, &p_side, SHADER_UNIFORM_INT);
   }
   if (pass->loc_tex_self >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_self, ctx->rt_cascade[child].texture);
@@ -658,34 +1068,131 @@ static void mod_render_rc_merge(ModRenderCtx *ctx, int child, int parent) {
   if (pass->loc_tex_parent >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_parent, ctx->rt_cascade[parent].texture);
   }
-  if (pass->loc_tex_depth >= 0) {
-    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
+  {
+    const Rectangle src = {0.0f, 0.0f, (float)dw, -(float)dh};
+    const Rectangle dst = {0.0f, 0.0f, (float)dw, (float)dh};
+    DrawTexturePro(ctx->rt_cascade[child].texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
   }
-  mod_render_fs_draw(ctx->rt_cascade[child].texture, ctx->rt_merge.texture.width,
-                     ctx->rt_merge.texture.height);
   EndShaderMode();
   EndTextureMode();
 
-  /* Copy merge result into child cascade (full-res merge buffer → child size via blit). */
   BeginTextureMode(ctx->rt_cascade[child]);
   ClearBackground(BLACK);
-  mod_render_fs_draw(ctx->rt_merge.texture, ctx->rt_cascade[child].texture.width,
-                     ctx->rt_cascade[child].texture.height);
+  {
+    const Rectangle src = {0.0f, 0.0f, (float)dw, -(float)dh};
+    const Rectangle dst = {0.0f, 0.0f, (float)dw, (float)dh};
+    DrawTexturePro(ctx->rt_merge.texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+  }
   EndTextureMode();
 }
 
+/** Resolve packed c0 dirs → full-res SS irradiance. */
+static void mod_render_rc_resolve(ModRenderCtx *ctx) {
+  NgRcPassShader *pass = &ctx->rc_resolve;
+  const float res[2] = {(float)ctx->rc_w, (float)ctx->rc_h};
+  const float cres[2] = {(float)ctx->rt_cascade[0].texture.width,
+                         (float)ctx->rt_cascade[0].texture.height};
+  const float probes[2] = {(float)ctx->rc_probes_x[0], (float)ctx->rc_probes_y[0]};
+  const int dir_side = ctx->rc_dir_side[0] > 0 ? ctx->rc_dir_side[0] : 1;
+  const int spacing = ctx->rc_spacing[0] > 0 ? ctx->rc_spacing[0] : 1;
+  BeginTextureMode(ctx->rt_ss_irr);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  if (pass->sh.loc_resolution >= 0) {
+    SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_cascade_res >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cascade_res, cres, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_probes >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_probes, probes, SHADER_UNIFORM_VEC2);
+  }
+  if (pass->loc_dir_side >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_dir_side, &dir_side, SHADER_UNIFORM_INT);
+  }
+  if (pass->loc_spacing >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_spacing, &spacing, SHADER_UNIFORM_INT);
+  }
+  if (pass->loc_tex_depth >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
+  }
+  if (pass->loc_tex_normal >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_normal, ctx->rt_normal.texture);
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_cascade");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_cascade[0].texture);
+    } else if (pass->loc_tex_self >= 0) {
+      SetShaderValueTexture(pass->sh.handle, pass->loc_tex_self, ctx->rt_cascade[0].texture);
+    }
+  }
+  mod_render_fs_draw(ctx->rt_depth.texture, ctx->rt_ss_irr.texture.width, ctx->rt_ss_irr.texture.height);
+  EndShaderMode();
+  EndTextureMode();
+}
+
+/** Compose Direct + WS volume + SS polish. */
 static void mod_render_rc_compose(ModRenderCtx *ctx) {
   NgRcPassShader *pass = &ctx->rc_compose;
-  // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
   const float gi = ctx->gi_strength;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
+  const float ws_w = 0.75f;
+  const float ss_w = 0.35f;
+  const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
+  const Vector3 forward =
+      Vector3Normalize(Vector3Subtract(ctx->camera.target, ctx->camera.position));
+  const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, ctx->camera.up));
+  const Vector3 up = Vector3Normalize(Vector3CrossProduct(right, forward));
+  const float tan_half = tanf(ctx->camera.fovy * 0.5f * DEG2RAD);
+  const float aspect = (ctx->gbuf_h > 0) ? ((float)ctx->gbuf_w / (float)ctx->gbuf_h) : 1.0f;
+  const float cam_pos[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
+  const float cam_f[3] = {forward.x, forward.y, forward.z};
+  const float cam_r[3] = {right.x, right.y, right.z};
+  const float cam_u[3] = {up.x, up.y, up.z};
+  const int ping = ctx->ws_ping & 1;
+
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
   if (pass->loc_gi_strength >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_gi_strength, &gi, SHADER_UNIFORM_FLOAT);
   }
+  if (pass->loc_ws_weight >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_weight, &ws_w, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_ss_weight >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ss_weight, &ss_w, SHADER_UNIFORM_FLOAT);
+  }
   if (pass->loc_sky >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_pos >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_pos, cam_pos, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_forward >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_forward, cam_f, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_right >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_right, cam_r, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_up >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_up, cam_u, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_tan_half_fov >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_tan_half_fov, &tan_half, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_aspect >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_aspect, &aspect, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_ws_origin >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_origin, ctx->ws_origin, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_ws_size >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_size, ctx->ws_size, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_probe_res >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_probe_res, &probe_res, SHADER_UNIFORM_FLOAT);
   }
   if (pass->loc_tex_albedo >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_albedo, ctx->rt_albedo.texture);
@@ -699,16 +1206,204 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
   if (pass->loc_tex_depth >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
   }
-  if (pass->loc_tex_irradiance >= 0) {
-    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance, ctx->rt_cascade[0].texture);
+  if (pass->loc_tex_irradiance_ws >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_ws[ping].texture);
+  }
+  if (pass->loc_tex_irradiance_ss >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ss, ctx->rt_ss_irr.texture);
   }
   mod_render_blit_rt(&ctx->rt_albedo);
   EndShaderMode();
 }
 
+/** GPU probe volume fill into ping dest (through uploaded tex_vox). */
+static void mod_render_rc_ws_vol_fill(ModRenderCtx *ctx, int dest) {
+  NgRcPassShader *pass = &ctx->rc_ws_fill;
+  const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
+  const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
+  const float vox_res = (float)NG_RC_WS_VOX_RES;
+  const int dirs = ctx->ws_cpu.dirs > 0 ? ctx->ws_cpu.dirs : 8;
+  const int cascades = ctx->ws_cpu.cascades > 0 ? ctx->ws_cpu.cascades : 3;
+  const int steps = ctx->ws_cpu.steps > 0 ? ctx->ws_cpu.steps : 5;
+  BeginTextureMode(ctx->rt_ws[dest]);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  if (pass->loc_ws_origin >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_origin, ctx->ws_origin, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_ws_size >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_size, ctx->ws_size, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_probe_res >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_probe_res, &probe_res, SHADER_UNIFORM_FLOAT);
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_vox_res");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &vox_res, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  if (pass->loc_dir_count >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_dir_count, &dirs, SHADER_UNIFORM_INT);
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_cascades");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &cascades, SHADER_UNIFORM_INT);
+    }
+  }
+  if (pass->loc_max_steps >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_max_steps, &steps, SHADER_UNIFORM_INT);
+  }
+  if (pass->loc_sky >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_vox");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_vox);
+    } else if (pass->loc_tex_stamp >= 0) {
+      SetShaderValueTexture(pass->sh.handle, pass->loc_tex_stamp, ctx->ws_cpu.tex_vox);
+    }
+  }
+  mod_render_ws_fs_draw(ctx->ws_cpu.tex_vox, ctx->rt_ws[dest].texture.width,
+                        ctx->rt_ws[dest].texture.height);
+  EndShaderMode();
+  EndTextureMode();
+  ctx->ws_ping = dest;
+}
+
+/** Butter volume irr: mix(prev, curr). */
+static void mod_render_rc_ws_butter(ModRenderCtx *ctx, float butter, int prev_frame) {
+  NgRcPassShader *pass = &ctx->rc_ws_butter;
+  const int curr = ctx->ws_ping & 1;
+  if (curr == prev_frame) {
+    return;
+  }
+  BeginTextureMode(ctx->rt_ws_stamp);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  if (pass->loc_butter >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_butter, &butter, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_tex_prev >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_prev, ctx->rt_ws[prev_frame].texture);
+  }
+  if (pass->loc_tex_curr >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_curr, ctx->rt_ws[curr].texture);
+  }
+  mod_render_ws_fs_draw(ctx->rt_ws[curr].texture, ctx->rt_ws_stamp.texture.width,
+                        ctx->rt_ws_stamp.texture.height);
+  EndShaderMode();
+  EndTextureMode();
+
+  BeginTextureMode(ctx->rt_ws[prev_frame]);
+  ClearBackground(BLACK);
+  mod_render_ws_fs_draw(ctx->rt_ws_stamp.texture, ctx->rt_ws[prev_frame].texture.width,
+                        ctx->rt_ws[prev_frame].texture.height);
+  EndTextureMode();
+  ctx->ws_ping = prev_frame;
+}
+
+/** Screen-resolve WS volume for irradiance debug (draws to current FB). */
+static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
+  NgRcPassShader *pass = &ctx->rc_ws_view;
+  const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
+  const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
+  const Vector3 forward =
+      Vector3Normalize(Vector3Subtract(ctx->camera.target, ctx->camera.position));
+  const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, ctx->camera.up));
+  const Vector3 up = Vector3Normalize(Vector3CrossProduct(right, forward));
+  const float tan_half = tanf(ctx->camera.fovy * 0.5f * DEG2RAD);
+  const float aspect = (ctx->gbuf_h > 0) ? ((float)ctx->gbuf_w / (float)ctx->gbuf_h) : 1.0f;
+  const float cam_pos[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
+  const float cam_f[3] = {forward.x, forward.y, forward.z};
+  const float cam_r[3] = {right.x, right.y, right.z};
+  const float cam_u[3] = {up.x, up.y, up.z};
+  const int ping = ctx->ws_ping & 1;
+
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  if (pass->loc_sky >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_pos >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_pos, cam_pos, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_forward >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_forward, cam_f, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_right >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_right, cam_r, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_cam_up >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_cam_up, cam_u, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_tan_half_fov >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_tan_half_fov, &tan_half, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_aspect >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_aspect, &aspect, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_ws_origin >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_origin, ctx->ws_origin, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_ws_size >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_size, ctx->ws_size, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_probe_res >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_probe_res, &probe_res, SHADER_UNIFORM_FLOAT);
+  }
+  if (pass->loc_tex_depth >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
+  }
+  if (pass->loc_tex_irradiance_ws >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_ws[ping].texture);
+  }
+  mod_render_blit_rt(&ctx->rt_depth);
+  EndShaderMode();
+}
+
+/** Phase 4: WS volume then SS packed. */
+static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
+  const int prev = ctx->ws_ping & 1;
+  if (ng_rc_ws_sync_vox(&ctx->ws_cpu)) {
+    ng_rc_ws_upload_vox(&ctx->ws_cpu);
+  }
+  mod_render_rc_ws_vol_fill(ctx, prev ^ 1);
+  mod_render_rc_ws_butter(ctx, 0.45f, prev);
+
+  int cascades = 3;
+  int shift = 0;
+  int dir_side[NG_RC_CASCADES_MAX];
+  int steps = 6;
+  mod_render_rc_cost(ctx->rc_quality, &cascades, &shift, dir_side, &steps);
+  (void)shift;
+  (void)dir_side;
+
+  static const float k_t0[NG_RC_CASCADES_MAX] = {0.0f, 16.0f, 64.0f};
+  static const float k_t1[NG_RC_CASCADES_MAX] = {16.0f, 64.0f, 256.0f};
+  for (int c = cascades - 1; c >= 0; c--) {
+    if (ctx->rc_dir_side[c] <= 0) {
+      continue;
+    }
+    mod_render_rc_fill_cascade(ctx, c, k_t0[c], k_t1[c], steps);
+  }
+  for (int c = cascades - 2; c >= 0; c--) {
+    if (ctx->rc_dir_side[c] <= 0 || ctx->rc_dir_side[c + 1] <= 0) {
+      continue;
+    }
+    mod_render_rc_merge(ctx, c, c + 1);
+  }
+  mod_render_rc_resolve(ctx);
+}
+
 static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
-  const int w = ng_viewport_width();
-  const int h = ng_viewport_height();
+  int w = 0;
+  int h = 0;
+  mod_render_internal_size(ctx, &w, &h);
   if (w <= 0 || h <= 0) {
     return false;
   }
@@ -834,8 +1529,11 @@ static void mod_render_fill_gbuf_graph(ModRenderCtx *ctx, RenderTexture2D *rt, i
 }
 
 static void mod_render_blit_rt(const RenderTexture2D *rt) {
+  /* Use active FBO size so compose/debug work inside the scaled present RT. */
+  const float dw = (float)GetRenderWidth();
+  const float dh = (float)GetRenderHeight();
   const Rectangle src = {0.0f, 0.0f, (float)rt->texture.width, -(float)rt->texture.height};
-  const Rectangle dst = {0.0f, 0.0f, (float)GetScreenWidth(), (float)GetScreenHeight()};
+  const Rectangle dst = {0.0f, 0.0f, dw, dh};
   DrawTexturePro(rt->texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
 }
 
@@ -913,8 +1611,13 @@ static void mod_render_draw_snapshot(ModRenderCtx *ctx) {
 }
 
 static void mod_render_draw_scene(ModRenderCtx *ctx) {
-  ClearBackground(mod_render_bg_color());
+  ClearBackground(BLACK);
   mod_render_update_camera(ctx);
+
+  if (!mod_render_ensure_present(ctx)) {
+    mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
+    return;
+  }
 
   mod_scene_runtime_use_view();
   const bool graph = mod_scene_view_graph_active() ||
@@ -922,16 +1625,21 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
                      (mod_net_is_authoritative() && mod_scene_is_loaded());
 
   // agent: composer-2.5 | 2026-08-09 | gate RC by scene render mode | 2a6d5a
+  // agent: composer-2.5 | 2026-08-09 | Phase2 GPU FBO RC path | 5642b8
   const NgSceneViewMeta *vmeta = mod_scene_assets_view();
   const NgSceneRenderMode rmode =
       (vmeta && vmeta->valid) ? vmeta->render_mode : NG_SCENE_RENDER_SIMPLE;
   const bool feature_gbuf =
       rmode == NG_SCENE_RENDER_GBUFFER || rmode == NG_SCENE_RENDER_RC;
   const bool feature_rc = rmode == NG_SCENE_RENDER_RC;
-  const bool want_rc = graph && feature_rc && ctx->rc_quality >= 2;
+  const bool want_rc = graph && feature_rc;
   const bool want_gbuf =
       graph && feature_gbuf && (want_rc || ctx->debug_pass != NG_RENDER_PASS_FINAL);
 
+  /* Fill offscreen gbuf/cascades first. Raylib EndTextureMode returns to the
+   * default FB — do not nest those fills inside the present RT. */
+  // agent: composer-2.5 | 2026-08-09 | fix present FBO nesting | c075d5
+  bool composed = false;
   if (want_gbuf) {
     if (mod_net_is_authoritative() && !mod_scene_view_graph_active() && mod_scene_is_loaded()) {
       mod_scene_runtime_use_server();
@@ -945,67 +1653,64 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_glow, 2);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_depth, 3);
 
+      bool rc_ready = false;
       if (want_rc && mod_render_ensure_rc(ctx)) {
-        for (int c = NG_RC_CASCADES - 1; c >= 0; c--) {
-          mod_render_rc_fill_cascade(ctx, c);
-        }
-        /* Merge coarse → fine (nearest). */
-        for (int c = NG_RC_CASCADES - 2; c >= 0; c--) {
-          mod_render_rc_merge(ctx, c, c + 1);
-        }
+        mod_render_rc_gpu_tick(ctx);
+        rc_ready = ctx->rc_rt_ready && ctx->ws_rt_ready && ctx->rc_compose.ready;
       }
 
-      if (ctx->debug_pass == NG_RENDER_PASS_ALBEDO) {
-        ClearBackground(BLACK);
-        mod_render_blit_rt(&ctx->rt_albedo);
-      } else if (ctx->debug_pass == NG_RENDER_PASS_NORMAL) {
-        ClearBackground(BLACK);
-        mod_render_blit_rt(&ctx->rt_normal);
-      } else if (ctx->debug_pass == NG_RENDER_PASS_GLOW) {
-        ClearBackground(BLACK);
-        mod_render_blit_rt(&ctx->rt_glow);
-      } else if (ctx->debug_pass == NG_RENDER_PASS_DEPTH) {
-        ClearBackground(BLACK);
-        mod_render_blit_rt(&ctx->rt_depth);
-      } else if (ctx->debug_pass == NG_RENDER_PASS_IRRADIANCE && ctx->rc_rt_ready) {
-        ClearBackground(BLACK);
-        mod_render_blit_rt(&ctx->rt_cascade[0]);
-      } else if (want_rc && ctx->rc_rt_ready) {
-        ClearBackground(mod_render_bg_color());
-        mod_render_rc_compose(ctx);
-      } else if (ctx->debug_pass != NG_RENDER_PASS_FINAL) {
-        ClearBackground(BLACK);
-        mod_render_blit_rt(&ctx->rt_albedo);
-      } else {
-        /* quality < 2 and final: fall through to forward */
-        goto forward_lit;
+      if (ctx->debug_pass != NG_RENDER_PASS_FINAL || want_rc) {
+        BeginTextureMode(ctx->rt_present);
+        if (ctx->debug_pass == NG_RENDER_PASS_ALBEDO) {
+          ClearBackground(BLACK);
+          mod_render_blit_rt(&ctx->rt_albedo);
+        } else if (ctx->debug_pass == NG_RENDER_PASS_NORMAL) {
+          ClearBackground(BLACK);
+          mod_render_blit_rt(&ctx->rt_normal);
+        } else if (ctx->debug_pass == NG_RENDER_PASS_GLOW) {
+          ClearBackground(BLACK);
+          mod_render_blit_rt(&ctx->rt_glow);
+        } else if (ctx->debug_pass == NG_RENDER_PASS_DEPTH) {
+          ClearBackground(BLACK);
+          mod_render_blit_rt(&ctx->rt_depth);
+        } else if (ctx->debug_pass == NG_RENDER_PASS_IRRADIANCE && rc_ready) {
+          ClearBackground(BLACK);
+          mod_render_rc_ws_view(ctx);
+        } else if (rc_ready) {
+          ClearBackground(mod_render_bg_color());
+          mod_render_rc_compose(ctx);
+        } else {
+          ClearBackground(BLACK);
+          mod_render_blit_rt(&ctx->rt_albedo);
+        }
+        EndTextureMode();
+        composed = true;
       }
-      mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
-      if (ctx->debug_pass != NG_RENDER_PASS_FINAL) {
-        DrawText(TextFormat("pass=%s q=%d", mod_render_pass_name(ctx->debug_pass), ctx->rc_quality),
-                 10, 34, 18, LIME);
-      } else if (want_rc) {
-        DrawText(TextFormat("rc_quality=%d", ctx->rc_quality), 10, 34, 18, LIME);
-      }
-      return;
     }
   }
 
-forward_lit:
-  if (mod_scene_view_graph_active()) {
-    mod_render_draw_scene_graph(ctx);
-  } else if (ctx->have_curr && ctx->curr.entity_count > 0) {
-    mod_render_draw_snapshot(ctx);
-  } else if (mod_scene_view_is_loaded()) {
-    mod_render_draw_scene_graph(ctx);
-  } else if (mod_net_is_authoritative() && mod_scene_is_loaded()) {
-    mod_scene_runtime_use_server();
-    mod_render_draw_scene_graph(ctx);
-  } else if (ctx->have_curr) {
-    mod_render_draw_snapshot(ctx);
+  if (!composed) {
+    BeginTextureMode(ctx->rt_present);
+    ClearBackground(mod_render_bg_color());
+    if (mod_scene_view_graph_active()) {
+      mod_render_draw_scene_graph(ctx);
+    } else if (ctx->have_curr && ctx->curr.entity_count > 0) {
+      mod_render_draw_snapshot(ctx);
+    } else if (mod_scene_view_is_loaded()) {
+      mod_render_draw_scene_graph(ctx);
+    } else if (mod_net_is_authoritative() && mod_scene_is_loaded()) {
+      mod_scene_runtime_use_server();
+      mod_render_draw_scene_graph(ctx);
+    } else if (ctx->have_curr) {
+      mod_render_draw_snapshot(ctx);
+    }
+    EndTextureMode();
   }
 
+  mod_render_present_to_screen(ctx);
   mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
+  DrawText(TextFormat("scale=%.2f %dx%d", ctx->render_scale, ctx->present_w, ctx->present_h), 10,
+           34, 18, LIME);
 }
 // agent: composer-2.5 | 2026-07-26 | session bootstrap render state | d8e9f0
 void mod_render_apply_session(const NgSessionState *session) {
@@ -1100,9 +1805,25 @@ static bool mod_render_init(void *vctx) {
   memset(ctx, 0, sizeof(*ctx));
   ctx->scene_label[0] = '\0';
   ctx->debug_pass = NG_RENDER_PASS_FINAL;
+  // agent: composer-2.5 | 2026-08-09 | Phase2 GPU FBO RC path | 5642b8
+  // agent: composer-2.5 | 2026-08-09 | WS then SS pipeline wire | ed5dfb
   ctx->rc_quality = 2;
   // agent: composer-2.5 | 2026-08-09 | default gi_strength 1.0 | 6674ef
   ctx->gi_strength = 1.0f;
+  ctx->render_scale = 1.0f;
+  ctx->ws_origin[0] = -6.0f;
+  ctx->ws_origin[1] = -0.5f;
+  ctx->ws_origin[2] = -6.0f;
+  ctx->ws_size[0] = 12.0f;
+  ctx->ws_size[1] = 5.5f;
+  ctx->ws_size[2] = 12.0f;
+  ng_rc_ws_init(&ctx->ws_cpu);
+  ctx->ws_cpu.origin[0] = ctx->ws_origin[0];
+  ctx->ws_cpu.origin[1] = ctx->ws_origin[1];
+  ctx->ws_cpu.origin[2] = ctx->ws_origin[2];
+  ctx->ws_cpu.size[0] = ctx->ws_size[0];
+  ctx->ws_cpu.size[1] = ctx->ws_size[1];
+  ctx->ws_cpu.size[2] = ctx->ws_size[2];
   mod_render_init_camera(ctx);
   return true;
 }
@@ -1112,6 +1833,7 @@ static void mod_render_shutdown(void *vctx) {
   mod_render_clear_cache(ctx);
   mod_render_unload_gbuf(ctx);
   mod_render_unload_rc(ctx);
+  mod_render_unload_present(ctx);
 }
 
 // agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 220dba
@@ -1173,6 +1895,8 @@ bool mod_render_set(const char *path, const char *value) {
   if (!path || !value) {
     return false;
   }
+  // agent: composer-2.5 | 2026-08-09 | CLI set render.rc tree | 28de10
+  // agent: composer-2.5 | 2026-08-09 | pass under debug.render | c088d1
   if (strcmp(path, "debug.render.pass") == 0) {
     NgRenderDebugPass pass;
     if (!mod_render_pass_from_name(value, &pass)) {
@@ -1181,21 +1905,32 @@ bool mod_render_set(const char *path, const char *value) {
     g_render_ctx.debug_pass = pass;
     return true;
   }
-  if (strcmp(path, "debug.render.rc_quality") == 0) {
+  if (strcmp(path, "render.rc.quality") == 0) {
     const int q = atoi(value);
-    if (q < 0 || q > 2) {
+    if (q < 0 || q > 4) {
       return false;
     }
     g_render_ctx.rc_quality = q;
     return true;
   }
-  // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
-  if (strcmp(path, "debug.render.gi_strength") == 0) {
+  if (strcmp(path, "render.rc.gi_strength") == 0) {
     const float g = (float)atof(value);
     if (g < 0.0f || g > 8.0f) {
       return false;
     }
     g_render_ctx.gi_strength = g;
+    return true;
+  }
+  if (strcmp(path, "render.scale") == 0) {
+    const float s = (float)atof(value);
+    if (s < 0.25f || s > 2.0f) {
+      return false;
+    }
+    g_render_ctx.render_scale = s;
+    /* Recreate all scaled RTs next frame. */
+    mod_render_unload_gbuf(&g_render_ctx);
+    mod_render_unload_rc(&g_render_ctx);
+    mod_render_unload_present(&g_render_ctx);
     return true;
   }
   return false;
@@ -1209,13 +1944,16 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
     snprintf(out, cap, "%s", mod_render_pass_name(g_render_ctx.debug_pass));
     return true;
   }
-  if (strcmp(path, "debug.render.rc_quality") == 0) {
+  if (strcmp(path, "render.rc.quality") == 0) {
     snprintf(out, cap, "%d", g_render_ctx.rc_quality);
     return true;
   }
-  // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
-  if (strcmp(path, "debug.render.gi_strength") == 0) {
+  if (strcmp(path, "render.rc.gi_strength") == 0) {
     snprintf(out, cap, "%.2f", g_render_ctx.gi_strength);
+    return true;
+  }
+  if (strcmp(path, "render.scale") == 0) {
+    snprintf(out, cap, "%.2f", g_render_ctx.render_scale);
     return true;
   }
   return false;
@@ -1240,3 +1978,20 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-09 | gi_strength CLI render | a5a86e
 // agent: composer-2.5 | 2026-08-09 | default gi_strength 1.0 | 6674ef
 // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | 4e7ce8
+// agent: composer-2.5 | 2026-08-09 | CLI set render.rc tree | 28de10
+// agent: composer-2.5 | 2026-08-09 | pass under debug.render | c088d1
+// agent: composer-2.5 | 2026-08-09 | present RT for render.scale | 2c679e
+// agent: composer-2.5 | 2026-08-09 | fix present FBO nesting | c075d5
+// agent: composer-2.5 | 2026-08-09 | wire WS RC quality path | d68d00
+// agent: composer-2.5 | 2026-08-09 | uniform WS quality cost scale | 45673f
+// agent: composer-2.5 | 2026-08-09 | Phase2 GPU FBO RC path | 5642b8
+// agent: composer-2.5 | 2026-08-09 | WS then SS pipeline wire | ed5dfb
+// agent: composer-2.5 | 2026-08-09 | stamp seed prop butter order | b9a6eb
+// agent: composer-2.5 | 2026-08-09 | XZ splat emitters-only stamp | bd73fb
+// agent: composer-2.5 | 2026-08-09 | WS fs draw no Y flip | 07886c
+// agent: composer-2.5 | 2026-08-09 | wire WS radial RC | 18204b
+// agent: composer-2.5 | 2026-08-09 | half-res WS casc bilinear merge | 187201
+// agent: composer-2.5 | 2026-08-09 | WS blit use raylib Y flip | 7f49b1
+// agent: composer-2.5 | 2026-08-09 | wire SS packed RC | 7ba28e
+// agent: composer-2.5 | 2026-08-10 | RC cost shift dirs cut | d9bceb
+// agent: composer-2.5 | 2026-08-10 | wire WS volume RC tick | 0fd9cd

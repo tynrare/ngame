@@ -81,10 +81,11 @@ set(NG_CLIENT_SOURCES
   src/net/mod_net.c
   ${NG_SCENE_SOURCES}
   src/client/render.c
+  src/client/render_rc_ws.c
   src/ng_viewport.c
   src/ng_shader.c
 )
-
+# agent: composer-2.5 | 2026-08-10 | cmake link render_rc_ws | 0c74f6
 set(NG_SERVER_SOURCES
   src/server/main_server.c
   src/server/ng_app_server.c
@@ -225,3 +226,5 @@ endif()
 # agent: composer-2.5 | 2026-08-01 | add jsact to cmake | f0e545
 # agent: composer-2.5 | 2026-08-09 | link server into ngame | 3ae9cf
 # agent: composer-2.5 | 2026-08-09 | link web ws stubs | 2cadd9
+# agent: composer-2.5 | 2026-08-09 | add render_rc_ws to cmake | b34752
+# agent: composer-2.5 | 2026-08-10 | cmake link render_rc_ws | 0c74f6
