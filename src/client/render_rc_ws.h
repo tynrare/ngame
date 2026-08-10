@@ -1,6 +1,4 @@
-// agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild API | 2508fb
-// agent: composer-2.5 | 2026-08-10 | fixed world cell for vox snap | b66afd
-// agent: composer-2.5 | 2026-08-10 | rc-ws header SDF plan | 37c406
+// agent: composer-2.5 | 2026-08-10 | demote vox header API | 0cb6a2
 #ifndef NG_RENDER_RC_WS_H
 #define NG_RENDER_RC_WS_H
 
@@ -8,23 +6,37 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define NG_RC_WS_VOX_RES 32
 #define NG_RC_WS_PROBE_MAX 16
 #define NG_RC_WS_GI_NEAR 0.25f
 #define NG_RC_WS_GI_FAR 28.0f
-/** Fixed world meters per voxel — atlas stays world-aligned (no adaptive remesh). */
+/** Fixed world meters per cell — clip cube extent = VOX_RES legacy count × CELL. */
 #define NG_RC_WS_CELL 0.4f
-/** Phase 6.2: max analytic SDF prims (cube/sphere from describe). */
+/** Clip cube resolution (cells per axis); extent = CELL * this. */
+#define NG_RC_WS_VOX_RES 32
+/** Max analytic SDF prims (cube/sphere from describe). */
 #define NG_RC_WS_PRIM_MAX 64
+/** tex_prim columns: center+type, half, quat, lit+rough, albedo+metal, emit+flags. */
+#define NG_RC_WS_PRIM_COLS 6
+
+typedef struct NgRcWsPrim {
+  float center[3];
+  float half[3];
+  float quat[4];
+  float lit[3];
+  float albedo[3];
+  float emit[3];
+  float roughness;
+  float metalness;
+  int type; /* 0 box, 1 sphere */
+} NgRcWsPrim;
 
 typedef struct NgRcWsCtx {
   bool ready;
-  bool vox_tex_ready;
-  Texture2D tex_vox; /* VOX × VOX²; RGB=lit A=occ */
-  unsigned char *vox_rgba;
-  unsigned char *vox_occ;
-  unsigned char *vox_alb;
-  unsigned char *vox_emit;
+  bool prim_tex_ready;
+  Texture2D tex_prim; /* PRIM_COLS × PRIM_MAX RGBA32F */
+  float *prim_rgba;
+  NgRcWsPrim prims[NG_RC_WS_PRIM_MAX];
+  int prim_count;
   float origin[3];
   float size[3];
   int probe_n;
@@ -37,18 +49,13 @@ typedef struct NgRcWsCtx {
 
 void ng_rc_ws_init(NgRcWsCtx *ws);
 void ng_rc_ws_shutdown(NgRcWsCtx *ws);
-/** Ensure vox scratch + tex_vox; quality → probe_n/dirs/cascades/steps. */
+/** Ensure prim texture; quality → probe_n/dirs/cascades/steps. */
 bool ng_rc_ws_ensure(NgRcWsCtx *ws, int quality);
 uint32_t ng_rc_ws_scene_hash(void);
-/**
- * Instance stamp AABB + lit RGB. false if missing/skip (floor slab).
- * lit = emit*boost + albedo*bounce (clamped).
- */
-bool ng_rc_ws_inst_stamp(int i, float center[3], float half[3], float lit[3]);
-/** Clear + stamp overlapping instances into atlas using ws->origin/size; upload tex_vox. */
-void ng_rc_ws_rebuild_vox(NgRcWsCtx *ws);
+/** Fill NgRcWsPrim from graph inst (pose + materials). false if skip. */
+bool ng_rc_ws_inst_prim(int i, NgRcWsPrim *out);
+/** Rebuild analytic SDF prims overlapping clip; upload tex_prim. */
+void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws);
 
 #endif
-// agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild API | 2508fb
-// agent: composer-2.5 | 2026-08-10 | fixed world cell for vox snap | b66afd
-// agent: composer-2.5 | 2026-08-10 | rc-ws header SDF plan | 37c406
+// agent: composer-2.5 | 2026-08-10 | demote vox header API | 0cb6a2

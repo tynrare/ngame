@@ -1,5 +1,5 @@
-// agent: composer-2.5 | 2026-08-10 | hard-nearest WS cell sample | 186c17
-/* Direct + albedo*irr*gi + glow. WS irr = screen resolve (2D) after 5b. */
+// agent: composer-2.5 | 2026-08-10 | compose balance GI bleed | 219985
+/* Direct (modest) + albedo*irr*gi + glow. WS irr from soft-nearest SH resolve. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_albedo;
@@ -23,7 +23,7 @@ void main() {
   vec2 uv = gl_FragCoord.xy / max(ng_resolution, vec2(1.0));
   vec4 depth_pack = texture(tex_depth, uv);
   if (depth_pack.a < 0.5) {
-    finalColor = vec4(ng_sky * 0.25, 1.0);
+    finalColor = vec4(ng_sky * 0.22, 1.0);
     return;
   }
 
@@ -33,7 +33,6 @@ void main() {
 
   float ws_w = max(ng_ws_weight, 0.0);
   float ss_w = max(ng_ss_weight, 0.0);
-  /* Resolved screen irradiance (nearest probe × N·ω done in resolve pass). */
   vec3 irr_ws = texture(tex_irradiance_ws, uv).rgb;
   vec3 irr_ss = (ss_w > 0.0) ? texture(tex_irradiance_ss, uv).rgb : vec3(0.0);
 
@@ -43,10 +42,11 @@ void main() {
   vec3 c1 = vec3(0.45, 0.55, 1.0);
   float ndl0 = max(dot(n, l0), 0.0);
   float ndl1 = max(dot(n, l1), 0.0);
-  vec3 direct = albedo * (c0 * ndl0 + c1 * ndl1 * 0.55);
-  vec3 ambient = albedo * 0.04;
+  /* Keep direct modest so WS bleed reads in final. */
+  vec3 direct = albedo * (c0 * ndl0 + c1 * ndl1 * 0.55) * 0.42;
+  vec3 ambient = albedo * 0.03;
   vec3 irr = irr_ws * ws_w + irr_ss * ss_w;
   vec3 gi = albedo * irr * ng_gi_strength;
   finalColor = vec4(ambient + direct + gi + glow, 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | hard-nearest WS cell sample | 186c17
+// agent: composer-2.5 | 2026-08-10 | compose balance GI bleed | 219985

@@ -1,23 +1,27 @@
-// agent: composer-2.5 | 2026-08-10 | dir-packed WS cascade fill | 165350
-/* One atlas texel = (probe, dir) → (RGB, opacity) for cascade interval [t0,t1]. */
+// agent: composer-2.5 | 2026-08-10 | fill emit albedo bounce hit | 90671f
+/* Dir-packed WS cascade: SDF march; hit RGB = emit*boost + albedo*bounce. */
 in vec2 fragTexCoord;
 
-uniform sampler2D tex_vox;
+uniform sampler2D tex_prim;
 uniform vec3 ng_ws_origin;
 uniform vec3 ng_ws_size;
 uniform float ng_probe_res;
-uniform float ng_vox_res;
 uniform int ng_dir_count;
 uniform int ng_max_steps;
+uniform int ng_prim_count;
 uniform float ng_t0;
 uniform float ng_t1;
 uniform vec3 ng_sky;
 
 out vec4 finalColor;
 
-const float EMIT_SCALE = 1.0;
-const float HIT_A = 0.92;
+const float EMIT_BOOST = 2.4;
+const float BOUNCE = 1.15;
+const float HIT_A = 0.9;
+const float HIT_EPS = 0.015;
 const int DIR_MAX = 48;
+const int PRIM_MAX = 64;
+const float PRIM_COLS = 6.0;
 
 vec3 dir_from_index(int i, int n) {
   float t = (float(i) + 0.5) / float(max(n, 1));
@@ -27,16 +31,73 @@ vec3 dir_from_index(int i, int n) {
   return vec3(cos(a) * r, z, sin(a) * r);
 }
 
-vec4 sample_vox(vec3 world) {
-  vec3 uvw = (world - ng_ws_origin) / max(ng_ws_size, vec3(0.001));
-  if (uvw.x < 0.0 || uvw.y < 0.0 || uvw.z < 0.0 || uvw.x > 1.0 || uvw.y > 1.0 || uvw.z > 1.0) {
-    return vec4(0.0);
+/** Rotate v by unit quat conjugate (inverse rotation). */
+vec3 quat_inv_rotate(vec4 q, vec3 v) {
+  vec3 qv = -q.xyz;
+  float qw = q.w;
+  vec3 t = 2.0 * cross(qv, v);
+  return v + qw * t + cross(qv, t);
+}
+
+float sd_box(vec3 p, vec3 b) {
+  vec3 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float sd_sphere(vec3 p, float r) {
+  return length(p) - r;
+}
+
+vec4 fetch_prim_col(int row, int col) {
+  float u = (float(col) + 0.5) / PRIM_COLS;
+  float v = (float(row) + 0.5) / float(PRIM_MAX);
+  return texture(tex_prim, vec2(u, v));
+}
+
+/** Hit radiance from packed emit + albedo (metal cuts diffuse bounce). */
+vec3 prim_radiance(vec4 alb_metal, vec4 emit_flags) {
+  float metal = clamp(alb_metal.w, 0.0, 1.0);
+  float bounce = BOUNCE * (1.0 - 0.7 * metal);
+  return emit_flags.rgb * EMIT_BOOST + alb_metal.rgb * bounce;
+}
+
+/** Closest scene SDF + radiance at world p. */
+vec4 scene_sdf(vec3 p) {
+  float best_d = 1e9;
+  vec3 best_rad = vec3(0.0);
+  int n = clamp(ng_prim_count, 0, PRIM_MAX);
+  for (int i = 0; i < PRIM_MAX; i++) {
+    if (i >= n) {
+      break;
+    }
+    vec4 c0 = fetch_prim_col(i, 0);
+    vec4 c1 = fetch_prim_col(i, 1);
+    vec4 c2 = fetch_prim_col(i, 2);
+    vec4 c4 = fetch_prim_col(i, 4);
+    vec4 c5 = fetch_prim_col(i, 5);
+    vec3 center = c0.xyz;
+    float typ = c0.w;
+    vec3 halfv = c1.xyz;
+    vec4 quat = c2;
+    vec3 pl = quat_inv_rotate(quat, p - center);
+    float d;
+    if (typ > 0.5) {
+      d = sd_sphere(pl, halfv.x);
+    } else {
+      d = sd_box(pl, halfv);
+    }
+    if (d < best_d) {
+      best_d = d;
+      best_rad = prim_radiance(c4, c5);
+    }
   }
-  float res = max(ng_vox_res, 1.0);
-  vec3 p = floor(clamp(uvw, 0.0, 0.999999) * res);
-  float u = (p.x + 0.5) / res;
-  float v = (p.y + p.z * res + 0.5) / (res * res);
-  return texture(tex_vox, vec2(u, v));
+  return vec4(best_rad, best_d);
+}
+
+bool inside_clip(vec3 p) {
+  vec3 uvw = (p - ng_ws_origin) / max(ng_ws_size, vec3(0.001));
+  return uvw.x >= 0.0 && uvw.y >= 0.0 && uvw.z >= 0.0 && uvw.x <= 1.0 && uvw.y <= 1.0 &&
+         uvw.z <= 1.0;
 }
 
 void main() {
@@ -59,15 +120,26 @@ void main() {
   float t0 = max(ng_t0, 0.0);
   float t1 = max(ng_t1, t0 + 0.001);
   int steps = max(ng_max_steps, 1);
-  float dt = max((t1 - t0) / float(steps), 0.04);
+  int max_s = clamp(steps * 4, 12, 48);
+  float t = t0;
+  float dt_min = max((t1 - t0) / float(max_s), 0.012);
 
-  for (float t = t0 + dt * 0.5; t <= t1; t += dt) {
-    vec4 s = sample_vox(origin + dir * t);
-    if (s.a > 0.5) {
-      finalColor = vec4(s.rgb * EMIT_SCALE, HIT_A);
+  for (int s = 0; s < 48; s++) {
+    if (s >= max_s || t > t1) {
+      break;
+    }
+    vec3 p = origin + dir * t;
+    if (!inside_clip(p)) {
+      break;
+    }
+    vec4 hit = scene_sdf(p);
+    float dist = hit.a;
+    if (dist < HIT_EPS) {
+      finalColor = vec4(hit.rgb, HIT_A);
       return;
     }
+    t += max(dist, dt_min);
   }
-  finalColor = vec4(ng_sky * 0.06, 0.0);
+  finalColor = vec4(ng_sky * 0.05, 0.0);
 }
-// agent: composer-2.5 | 2026-08-10 | dir-packed WS cascade fill | 165350
+// agent: composer-2.5 | 2026-08-10 | fill emit albedo bounce hit | 90671f

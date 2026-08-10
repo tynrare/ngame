@@ -911,10 +911,7 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
       !mod_render_load_rc_pass(&ctx->rc_ws_resolve, NG_RES_ROOT "shaders/rc_ws_resolve.fs")) {
     return false;
   }
-  if (!ctx->rc_ws_vox_stamp.ready &&
-      !mod_render_load_rc_pass(&ctx->rc_ws_vox_stamp, NG_RES_ROOT "shaders/rc_ws_vox_stamp.fs")) {
-    return false;
-  }
+  /* rc_ws_vox_stamp demoted with dense vox (6.2.4). */
   if (!ctx->rc_ws_view.ready &&
       !mod_render_load_rc_pass(&ctx->rc_ws_view, NG_RES_ROOT "shaders/rc_ws_view.fs")) {
     return false;
@@ -1053,16 +1050,6 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->ws_ping = 0;
     ctx->ws_rt_ready = true;
     ctx->ws_vox_scene_hash = 0;
-  }
-  if (!ctx->vox_rt_ready) {
-    const int vw = NG_RC_WS_VOX_RES;
-    const int vh = NG_RC_WS_VOX_RES * NG_RC_WS_VOX_RES;
-    ctx->rt_vox = LoadRenderTexture(vw, vh);
-    SetTextureFilter(ctx->rt_vox.texture, TEXTURE_FILTER_POINT);
-    BeginTextureMode(ctx->rt_vox);
-    ClearBackground((Color){0, 0, 0, 0});
-    EndTextureMode();
-    ctx->vox_rt_ready = true;
   }
   return true;
 }
@@ -1315,14 +1302,15 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
   EndShaderMode();
 }
 
-/** Fill one WS cascade interval into rt_ws_casc[c]. */
+/** Fill one WS cascade interval into rt_ws_casc[c] (SDF prim march). */
 static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, int c, float t0, float t1) {
+  // agent: composer-2.5 | 2026-08-10 | tick bind rebuild_prims | c31da5
   NgRcPassShader *pass = &ctx->rc_ws_fill;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
   const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
-  const float vox_res = (float)NG_RC_WS_VOX_RES;
   const int dirs = ctx->ws_dirs > 0 ? ctx->ws_dirs : 8;
   const int steps = ctx->ws_cpu.steps > 0 ? ctx->ws_cpu.steps : 5;
+  const int prim_count = ctx->ws_cpu.prim_count;
   RenderTexture2D *dest = &ctx->rt_ws_casc[c];
   BeginTextureMode(*dest);
   ClearBackground(BLACK);
@@ -1337,17 +1325,17 @@ static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, int c, float t0, float
   if (pass->loc_probe_res >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_probe_res, &probe_res, SHADER_UNIFORM_FLOAT);
   }
-  {
-    int loc = GetShaderLocation(pass->sh.handle, "ng_vox_res");
-    if (loc >= 0) {
-      SetShaderValue(pass->sh.handle, loc, &vox_res, SHADER_UNIFORM_FLOAT);
-    }
-  }
   if (pass->loc_dir_count >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_dir_count, &dirs, SHADER_UNIFORM_INT);
   }
   if (pass->loc_max_steps >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_max_steps, &steps, SHADER_UNIFORM_INT);
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_prim_count");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &prim_count, SHADER_UNIFORM_INT);
+    }
   }
   if (pass->loc_interval0 >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_interval0, &t0, SHADER_UNIFORM_FLOAT);
@@ -1371,14 +1359,12 @@ static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, int c, float t0, float
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
   }
   {
-    int loc = GetShaderLocation(pass->sh.handle, "tex_vox");
+    int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
     if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_vox);
-    } else if (pass->loc_tex_stamp >= 0) {
-      SetShaderValueTexture(pass->sh.handle, pass->loc_tex_stamp, ctx->ws_cpu.tex_vox);
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_prim);
     }
   }
-  mod_render_ws_fs_draw(ctx->ws_cpu.tex_vox, dest->texture.width, dest->texture.height);
+  mod_render_ws_fs_draw(ctx->ws_cpu.tex_prim, dest->texture.width, dest->texture.height);
   EndShaderMode();
   EndTextureMode();
 }
@@ -1596,13 +1582,11 @@ static bool mod_render_rc_ws_vox_dirty(ModRenderCtx *ctx) {
   return true;
 }
 
-/** rc-ws steps 3–4: dirty vox → fill → T-merge → SH resolve (6.2 will swap SDF prims). */
+/** rc-ws steps 3–4: dirty prims → SDF fill → T-merge → SH resolve. */
 static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-10 | frustum before gbuf CPU stamp | fff863
-  // agent: composer-2.5 | 2026-08-10 | tick comment rc-ws 6.2 note | 3a1e8d
-  /* rc-ws step 2 done before gbuf; restamp when brick or scene moves. */
+  // agent: composer-2.5 | 2026-08-10 | tick skip rebuild_vox | bb5602
   if (mod_render_rc_ws_vox_dirty(ctx)) {
-    ng_rc_ws_rebuild_vox(&ctx->ws_cpu);
+    ng_rc_ws_rebuild_prims(&ctx->ws_cpu);
   }
 
   const int probe_n = ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12;
@@ -1618,8 +1602,9 @@ static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
     cell = ctx->ws_size[2];
   }
   cell /= (float)probe_n;
-  float t0 = cell * 0.85f;
-  float t1 = cell * 1.25f;
+  // agent: composer-2.5 | 2026-08-10 | tick cascade interval tune | 7c0ad2
+  float t0 = cell * 0.55f;
+  float t1 = cell * 1.45f;
   for (int c = 0; c < nc; c++) {
     mod_render_rc_ws_casc_fill(ctx, c, t0, t1);
     t0 = t1;
@@ -1931,7 +1916,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       if (want_rc && mod_render_ensure_rc(ctx)) {
         mod_render_rc_gpu_tick(ctx);
         rc_ready = ctx->rc_rt_ready && ctx->ws_rt_ready && ctx->rc_compose.ready &&
-                   ctx->ws_cpu.vox_tex_ready;
+                   ctx->ws_cpu.prim_tex_ready;
       }
 
       if (ctx->debug_pass != NG_RENDER_PASS_FINAL || want_rc) {
@@ -2299,3 +2284,6 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | target-center GI clip volume | b97038
 // agent: composer-2.5 | 2026-08-10 | compose view use present size | 316071
 // agent: composer-2.5 | 2026-08-10 | tick comment rc-ws 6.2 note | 3a1e8d
+// agent: composer-2.5 | 2026-08-10 | tick bind rebuild_prims | c31da5
+// agent: composer-2.5 | 2026-08-10 | tick skip rebuild_vox | bb5602
+// agent: composer-2.5 | 2026-08-10 | tick cascade interval tune | 7c0ad2
