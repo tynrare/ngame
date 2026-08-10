@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-09 | pass under debug.render | d0d7e2
+// agent: composer-2.5 | 2026-08-10 | cli debug probes grid atlas | bc502d
 /* Loaded by bus.js — registers set.debug.render.pass */
 if (typeof ng_cli === "undefined") {
   throw new Error("cli/debug.js requires bus.js ng_cli");
@@ -13,7 +14,18 @@ if (!ng_cli.set.debug.render) {
 
 ng_cli.set.debug.render.pass = {
   _help: "fullscreen gbuffer / RC debug pass",
-  _values: ["final", "albedo", "normal", "glow", "depth", "irradiance"],
+  _values: [
+    "final",
+    "albedo",
+    "normal",
+    "glow",
+    "depth",
+    "irradiance",
+    "uvw",
+    "probes",
+    "grid",
+    "atlas",
+  ],
   _get: function () {
     return typeof ng_render_get === "function" ? ng_render_get("debug.render.pass") : null;
   },
@@ -30,3 +42,4 @@ ng_cli.set.debug.render.pass = {
   },
 };
 // agent: composer-2.5 | 2026-08-09 | pass under debug.render | d0d7e2
+// agent: composer-2.5 | 2026-08-10 | cli debug probes grid atlas | bc502d

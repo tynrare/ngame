@@ -1,25 +1,37 @@
 /*
- * World-space RC geometry + quality (Track A). North star: docs/radiance-cascades-3d.md
+ * World-space RC geometry + quality. North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (look-at–locked clip before gbuf; fill/merge/SH/resolve)
+ * Related: src/client/render.c (dual look-at clipmap; fill/merge/SH/resolve)
  * Downstream: res/shaders/rc_ws_fill.fs (march backend)
+ * Debug: set debug.render.pass probes|uvw|grid|atlas|irradiance
  *
- * rc-ws flow:
- * 1) ensure → tex_prim; quality → N/dirs/cascades/steps
- * 2) render.c → look-at fixed cube, CELL snap, large hysteresis (before gbuf UVW)
- * 3) dirty → rebuild_prims (all mesh entities; pose/quat/lit/PBR) → upload tex_prim
- * 4) fill sphere-traces analytic SDF; merge → SH → trilinear resolve
+ * rc-ws flow (Track A + B.1 + B.2):
+ * 1) ensure → tex_prim + tex_grid; quality → N/dirs/cascades/steps + far_period
+ * 2) render.c → near + far look-at cubes (far=2×); gbuf UVW vs far
+ * 3) dirty (either clip/scene) → rebuild_prims+grid on far → upload; force far fill
+ * 4) fill/merge/SH near every frame; far on cadence; resolve blends shell
+ *
+ * Track B:
+ * B.0) Spec: world lattice CELL; hysteresis; keep SDF+grid+T-merge+SH — done
+ * B.1) Clipmap dual volumes + resolve blend — shipped (no further stabilize)
+ * B.2) Far fill amortize (near every frame; far period by quality) — shipped
+ * B.3) Sparse probe keys + budget + OOV recycle — next (toward B.5)
+ * B.4) Hierarchy/SVO: empty skip; collapse=avg children; split=alloc+fill
+ * B.5) Depth+curvature LOD; dirty-only; near tiny/far huge; AO hitch
  *
  * Branches / invariants:
- * - Clip locked to cam.target (orbit keeps target fixed → brick world-locked).
- * - Never cam-follow or frustum-AABB fit (slides lattice / remaps spacing).
- * - Every described mesh/entity is a prim (no floor special-case).
- * - Prim pose matches DrawMeshInstanced (euler→quat, uniform scale).
- * - Dense tex_vox demoted; product path is SDF prims only.
+ * - Both clips locked to cam.target; near CELL snap, far 2×CELL snap.
+ * - Prim+grid over far clip only; fill grid UVW uses far (ng_grid_*).
+ * - Grid 8³ × 4 slots; overflow nearer-to-cell-center. BVH deferred.
+ * - col1.a = bound R; resolve SELF_BIAS per volume spacing.
+ * - Far SH persists until next far fill; dirty forces both volumes.
  */
-// agent: composer-2.5 | 2026-08-10 | demote vox drop floor skip | 0c617e
-// agent: composer-2.5 | 2026-08-10 | playbook look-at lock clip | 3408e3
+// agent: composer-2.5 | 2026-08-10 | rebuild uniform prim grid | a95114
+// agent: composer-2.5 | 2026-08-10 | playbook Track B roadmap | d1e2af
+// agent: composer-2.5 | 2026-08-10 | B1 playbook clipmap shipped | 55ab7b
+// agent: composer-2.5 | 2026-08-10 | B2 playbook amortize shipped | ee4fd1
+// agent: composer-2.5 | 2026-08-10 | playbook B3-B5 sparse hierarchy | 0b0624
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -30,6 +42,8 @@
 #include <string.h>
 
 #define NG_RC_WS_PRIM_FLOATS (NG_RC_WS_PRIM_MAX * NG_RC_WS_PRIM_COLS * 4)
+#define NG_RC_WS_GRID_EMPTY 255u
+#define NG_RC_WS_GRID_HALF_PAD 1.12f
 
 void ng_rc_ws_init(NgRcWsCtx *ws) {
   if (!ws) {
@@ -56,21 +70,30 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
     UnloadTexture(ws->tex_prim);
     ws->prim_tex_ready = false;
   }
+  if (ws->grid_tex_ready) {
+    UnloadTexture(ws->tex_grid);
+    ws->grid_tex_ready = false;
+  }
   free(ws->prim_rgba);
   ws->prim_rgba = NULL;
+  free(ws->grid_rgba);
+  ws->grid_rgba = NULL;
   ws->prim_count = 0;
   ws->ready = false;
 }
 
-/** Allocate prim GPU/CPU scratch. */
+/** Allocate prim + grid GPU/CPU scratch. */
 static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
-  if (ws->ready && ws->prim_tex_ready && ws->prim_rgba) {
+  if (ws->ready && ws->prim_tex_ready && ws->prim_rgba && ws->grid_tex_ready && ws->grid_rgba) {
     return true;
   }
   if (!ws->prim_rgba) {
     ws->prim_rgba = (float *)calloc((size_t)NG_RC_WS_PRIM_FLOATS, sizeof(float));
   }
-  if (!ws->prim_rgba) {
+  if (!ws->grid_rgba) {
+    ws->grid_rgba = (unsigned char *)calloc((size_t)NG_RC_WS_GRID_BYTES, 1);
+  }
+  if (!ws->prim_rgba || !ws->grid_rgba) {
     ng_rc_ws_shutdown(ws);
     return false;
   }
@@ -91,6 +114,25 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
     SetTextureFilter(ws->tex_prim, TEXTURE_FILTER_POINT);
     SetTextureWrap(ws->tex_prim, TEXTURE_WRAP_CLAMP);
     ws->prim_tex_ready = true;
+  }
+  if (!ws->grid_tex_ready) {
+    memset(ws->grid_rgba, NG_RC_WS_GRID_EMPTY, (size_t)NG_RC_WS_GRID_BYTES);
+    Image gimg = {0};
+    gimg.data = ws->grid_rgba;
+    gimg.width = NG_RC_WS_GRID_RES;
+    gimg.height = NG_RC_WS_GRID_RES * NG_RC_WS_GRID_RES;
+    gimg.mipmaps = 1;
+    gimg.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    ws->tex_grid = LoadTextureFromImage(gimg);
+    gimg.data = NULL;
+    UnloadImage(gimg);
+    if (ws->tex_grid.id == 0) {
+      ng_rc_ws_shutdown(ws);
+      return false;
+    }
+    SetTextureFilter(ws->tex_grid, TEXTURE_FILTER_POINT);
+    SetTextureWrap(ws->tex_grid, TEXTURE_WRAP_CLAMP);
+    ws->grid_tex_ready = true;
   }
   ws->ready = true;
   return true;
@@ -239,6 +281,27 @@ static bool ng_rc_ws_prim_overlaps_clip(const NgRcWsCtx *ws, const NgRcWsPrim *p
            amin[2] > bmax[2] || amax[2] < bmin[2]);
 }
 
+/** Insert prim into cell slots; if full keep nearer-to-cell-center. */
+static void ng_rc_ws_grid_insert(unsigned char *slots, float *dists, int pid, float d2) {
+  for (int s = 0; s < NG_RC_WS_GRID_SLOT; s++) {
+    if (slots[s] == NG_RC_WS_GRID_EMPTY) {
+      slots[s] = (unsigned char)pid;
+      dists[s] = d2;
+      return;
+    }
+  }
+  int worst = 0;
+  for (int s = 1; s < NG_RC_WS_GRID_SLOT; s++) {
+    if (dists[s] > dists[worst]) {
+      worst = s;
+    }
+  }
+  if (d2 < dists[worst]) {
+    slots[worst] = (unsigned char)pid;
+    dists[worst] = d2;
+  }
+}
+
 void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
   if (!ws || !ws->ready || !ws->prim_tex_ready || !ws->prim_rgba) {
     return;
@@ -257,7 +320,6 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     const int row = ws->prim_count;
     ws->prims[row] = p;
     float *rowf = ws->prim_rgba + row * NG_RC_WS_PRIM_COLS * 4;
-    // agent: composer-2.5 | 2026-08-10 | prim pack emit in col3 | 3eafc7
     rowf[0] = p.center[0];
     rowf[1] = p.center[1];
     rowf[2] = p.center[2];
@@ -265,12 +327,11 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     rowf[4] = p.half[0];
     rowf[5] = p.half[1];
     rowf[6] = p.half[2];
-    rowf[7] = 1.0f;
+    rowf[7] = ng_rc_ws_prim_bound_r(&p);
     rowf[8] = p.quat[0];
     rowf[9] = p.quat[1];
     rowf[10] = p.quat[2];
     rowf[11] = p.quat[3];
-    /* col3: emit + roughness (fill radiance; was lit-clamped→grey for dark tint) */
     rowf[12] = p.emit[0];
     rowf[13] = p.emit[1];
     rowf[14] = p.emit[2];
@@ -287,6 +348,82 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
   }
   UpdateTexture(ws->tex_prim, ws->prim_rgba);
 }
-// agent: composer-2.5 | 2026-08-10 | demote vox drop floor skip | 0c617e
-// agent: composer-2.5 | 2026-08-10 | prim pack emit in col3 | 3eafc7
-// agent: composer-2.5 | 2026-08-10 | playbook look-at lock clip | 3408e3
+
+void ng_rc_ws_rebuild_grid(NgRcWsCtx *ws) {
+  if (!ws || !ws->ready || !ws->grid_tex_ready || !ws->grid_rgba) {
+    return;
+  }
+  memset(ws->grid_rgba, NG_RC_WS_GRID_EMPTY, (size_t)NG_RC_WS_GRID_BYTES);
+  float dists[NG_RC_WS_GRID_CELLS * NG_RC_WS_GRID_SLOT];
+  for (int i = 0; i < NG_RC_WS_GRID_CELLS * NG_RC_WS_GRID_SLOT; i++) {
+    dists[i] = 1e30f;
+  }
+
+  const int gr = NG_RC_WS_GRID_RES;
+  const float ox = ws->origin[0];
+  const float oy = ws->origin[1];
+  const float oz = ws->origin[2];
+  const float sx = ws->size[0] > 1e-5f ? ws->size[0] : 1.0f;
+  const float sy = ws->size[1] > 1e-5f ? ws->size[1] : 1.0f;
+  const float sz = ws->size[2] > 1e-5f ? ws->size[2] : 1.0f;
+  const float invx = (float)gr / sx;
+  const float invy = (float)gr / sy;
+  const float invz = (float)gr / sz;
+  const float cellx = sx / (float)gr;
+  const float celly = sy / (float)gr;
+  const float cellz = sz / (float)gr;
+
+  for (int pi = 0; pi < ws->prim_count; pi++) {
+    const NgRcWsPrim *p = &ws->prims[pi];
+    const float r = ng_rc_ws_prim_bound_r(p) * NG_RC_WS_GRID_HALF_PAD;
+    int x0 = (int)floorf((p->center[0] - r - ox) * invx);
+    int y0 = (int)floorf((p->center[1] - r - oy) * invy);
+    int z0 = (int)floorf((p->center[2] - r - oz) * invz);
+    int x1 = (int)floorf((p->center[0] + r - ox) * invx);
+    int y1 = (int)floorf((p->center[1] + r - oy) * invy);
+    int z1 = (int)floorf((p->center[2] + r - oz) * invz);
+    if (x0 < 0) {
+      x0 = 0;
+    }
+    if (y0 < 0) {
+      y0 = 0;
+    }
+    if (z0 < 0) {
+      z0 = 0;
+    }
+    if (x1 >= gr) {
+      x1 = gr - 1;
+    }
+    if (y1 >= gr) {
+      y1 = gr - 1;
+    }
+    if (z1 >= gr) {
+      z1 = gr - 1;
+    }
+    if (x0 > x1 || y0 > y1 || z0 > z1) {
+      continue;
+    }
+    for (int iz = z0; iz <= z1; iz++) {
+      for (int iy = y0; iy <= y1; iy++) {
+        for (int ix = x0; ix <= x1; ix++) {
+          const int cell = ix + iy * gr + iz * gr * gr;
+          const float cx = ox + ((float)ix + 0.5f) * cellx;
+          const float cy = oy + ((float)iy + 0.5f) * celly;
+          const float cz = oz + ((float)iz + 0.5f) * cellz;
+          const float dx = p->center[0] - cx;
+          const float dy = p->center[1] - cy;
+          const float dz = p->center[2] - cz;
+          const float d2 = dx * dx + dy * dy + dz * dz;
+          unsigned char *slots = ws->grid_rgba + cell * NG_RC_WS_GRID_SLOT;
+          ng_rc_ws_grid_insert(slots, dists + cell * NG_RC_WS_GRID_SLOT, pi, d2);
+        }
+      }
+    }
+  }
+  UpdateTexture(ws->tex_grid, ws->grid_rgba);
+}
+// agent: composer-2.5 | 2026-08-10 | rebuild uniform prim grid | a95114
+// agent: composer-2.5 | 2026-08-10 | playbook Track B roadmap | d1e2af
+// agent: composer-2.5 | 2026-08-10 | B1 playbook clipmap shipped | 55ab7b
+// agent: composer-2.5 | 2026-08-10 | B2 playbook amortize shipped | ee4fd1
+// agent: composer-2.5 | 2026-08-10 | playbook B3-B5 sparse hierarchy | 0b0624

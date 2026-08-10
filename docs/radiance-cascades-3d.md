@@ -1,38 +1,39 @@
-<!-- agent: composer-2.5 | 2026-08-10 | doc brighter unity look | bd4e64 -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc uniform prim grid | 2b41bd -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc Track B clipmap plan | ba2f47 -->
+<!-- agent: composer-2.5 | 2026-08-10 | B1 doc clipmap shipped | 41a4da -->
+<!-- agent: composer-2.5 | 2026-08-10 | B2 doc amortize shipped | ccf229 -->
+<!-- agent: composer-2.5 | 2026-08-10 | roadmap B3-B5 sparse hierarchy | a30c7a -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
 Product path = **world-space Radiance Cascades**.  
-Compose: `ambient×1 + directional×1 + gi_strength×1·kd·irr + glow` (brightness via bases + fill bounce).
+Compose: `ambient×1 + directional×1 + gi_strength×1·kd·irr + glow`.
+
+**End state (Track B):** sparse hierarchical probe cache — near cells tiny, far huge; LOD from **depth + SDF curvature**; rebuild only dirty / newly visible cells; collapse = **average children** (no full recalc); free OOV cells and reassign; optional **AO** from same probes.
 
 ## What ships (aligned with code)
 
 | Piece | Implementation |
 |-------|----------------|
-| Gbuffer | albedo+**rough(A)** / normal+**metal(A)** / glow / depth (`RGB=UVW`, `A=inside`) |
-| Clip | Fixed cube on **look-at**; large hysteresis |
-| Geometry (**6.2**) | Analytic SDF prims (`tex_prim`) |
-| Fill | SDF march; hit = `emit·EMIT + albedo·bounce(rough,metal)` |
-| Merge / SH / Resolve | T-merge → L1 SH → trilinear `texelFetch` |
-| Compose | `AMBIENT=1`, `DIRECTIONAL=1`; GI via `gi_strength` (default 1); gbuf rough/metal |
-| Quality | Scales **probe_n / dirs / cascades / steps** only |
+| Gbuffer | albedo+**rough(A)** / normal+**metal(A)** / glow / depth (`RGB=UVW`, `A=inside` **far**) |
+| Clip | **Near + far** look-at cubes; CELL / 2×CELL snap; hysteresis |
+| Geometry | Analytic SDF prims (`tex_prim`); col1.a = bound R |
+| Grid | **8³** uniform over **far**; **4** slots/cell (`tex_grid` RGBA8); dirty-gated |
+| Fill | Dense volumes for now; far cadence (B.2); → sparse keys in **B.3** |
+| Merge / SH / Resolve | T-merge → L1 SH **per volume**; resolve near/far + **1-cell blend** |
+| Compose | `AMBIENT=1`, `DIRECTIONAL=1`; `gi_strength` default 1 |
+| Quality | Scales **probe_n / dirs / cascades / steps** + far update period |
 
-**Materials (revalidated):**
-| Prop | Direct (`rc.fs` / compose) | Fill bounce (GI inject) |
-|------|---------------------------|-------------------------|
-| **Roughness** | Shininess ↑ when smooth; spec dimmed when rough | More Lambert bounce when rough (`mix(0.45,1,rough)`) |
-| **Metalness** | Diffuse ↓; spec tint → albedo | Diffuse bounce × `(1−metal)` (specular not marched) |
-| **Specular** | Blinn-Phong on compose/direct only | **Not** in cascade hit (L1 SH is diffuse-ish) |
-| **Glow/emit** | Screen add in compose | `EMIT_BOOST` in fill |
+**Upload:** prim + grid rebuild only when either clip moves or scene hash changes.  
+**Gateway:** `src/client/render_rc_ws.c` (`Flow id: rc-ws`).  
+**Debug:** `set debug.render.pass` → `final|albedo|normal|glow|depth|irradiance|uvw|probes|grid|atlas`.
 
-**Look knobs:** `EMIT_BOOST≈6`, `BOUNCE≈1.1` (color bleed restored); compose GI `×~1.05` with `kd` metal cut so sphere bottoms pick up floor without washing metals.  
-**Gateway:** `src/client/render_rc_ws.c` (`Flow id: rc-ws`).
-
-## Pipeline
+## Pipeline (current dense)
 
 ```
-look-at cube → gbuf (albedo+rough, n+metal, glow, UVW)
-→ rebuild_prims → SDF fill → T-merge → SH → resolve → compose
+near+far look-at cubes → gbuf (UVW vs far)
+→ dirty? rebuild_prims + rebuild_grid (far); force far fill
+→ fill near; fill far if due → resolve blend → compose
 ```
 
 ## Phases
@@ -41,47 +42,74 @@ look-at cube → gbuf (albedo+rough, n+metal, glow, UVW)
 |------:|------|--------|
 | 0–5 | Scene → WS RC + SH | **done** |
 | **6.1–6.2** | Look-at clip + SDF prims | **done** |
-| **Look** | Bounce + PBR compose | **landed** (tune via `gi_strength`) |
-| **6.2.3** | March AABB / classic SDF opts | **next** |
-| **6.3** | SVO | **later** |
-| **B** | Sparse / clipmap | **after look + 6.2.3** |
+| **Look / P2** | Bounce, PBR, self-bias | **done** |
+| **6.2.3** | Bound early-out | **done** |
+| **Grid** | Uniform candidate lists | **done** |
+| **BVH** | If slot overflow / ≫64 | **deferred** |
+| **B.1** | Clipmap dual volumes | **done** (stabilize skipped; B.3+ supersedes) |
+| **B.2** | Amortize far fill | **done** |
+| **B.3** | Sparse probe keys + budget | **next** |
+| **B.4** | Hierarchy / SVO collapse-avg | later |
+| **B.5** | Depth+curvature LOD + dirty + AO | later |
 
-### Tracks
+---
 
-| Track | Work | State |
+## Track B — probe placement / storage
+
+| Spine | Idea | Status |
 |-------|------|--------|
-| **A** | Clip + SDF + PBR look | **done** |
-| **A** | Classic SDF march opts (6.2.3+) | **next** |
-| **A** | SVO | **6.3 later** |
-| **B** | Sparse / clipmap | **after A opts** |
+| **B.1** clipmap | Near fine + far 2× dense volumes; resolve blend | **done** |
+| **B.2** amortize | Near every frame; far period by quality | **done** |
+| **B.3** sparse | Texture-backed keys; seed from gbuf depth; fill budget; OOV free→reuse | **next** |
+| **B.4** hierarchy | SVO empty-skip; leaf = key; **collapse = avg children**; split = alloc+fill | later |
+| **B.5** adaptive | LOD from depth+curvature; dirty cells only; near tiny / far huge; AO | later |
+
+### B.1–B.2 shipped (dense baseline)
+
+- Near: `CELL×VOX_RES`, snap `CELL`; far: `2×` extent, snap `2×CELL`.
+- Gbuf packs vs far; fill grid lookups use far origin/size.
+- Resolve every frame; far SH persists until next far fill; dirty forces both.
+- Dual UVW / float gbuf polish **not** pursued — B.3 sparse keys replace dense UVW resolve path.
+
+### B.3 — sparse keys (toward B.5)
+
+Storage spine only — still mostly single spacing:
+
+- Fixed probe **slot pool** (atlas / SH rows) + **key → slot** map (CPU and/or texture).
+- Seed keys from **gbuf depth** (screen → world → cell id); optional pad ring.
+- **Fill only active keys** up to quality budget; rest keep last SH or miss → parent/fallback later.
+- **Evict** keys outside view frustum / far AABB; recycle slots to new keys.
+- Resolve samples nearest key (or miss = ambient) — drop dual dense volume requirement when ready.
+- Keep SDF prim + 8³ grid for march; probes become sparse, not geometry.
+
+### B.4 — hierarchy (toward B.5)
+
+- SVO / octree over world: empty nodes skipped; occupied **leaves** are B.3 keys.
+- **Collapse:** parent SH = average of children (no refill).
+- **Split:** allocate child keys + fill when detail needed.
+- Enables continuous **near tiny / far huge** without two hard clip volumes.
+
+### B.5 — adaptive cache (end goal)
+
+- LOD from **depth + SDF curvature** (high curve / near cam → finer leaves).
+- Rebuild **only** dirty cells (cam move, movers, new visibility); free OOV → reassign.
+- Optional **AO** from same sparse probes in this pass.
+- Quality only changes budget / max depth / dirs — not algorithm.
+
+Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 
 ---
 
-## Look (current)
+## Look / self-bias (current dense)
 
-| Knob | Default | Role |
-|------|---------|------|
-| `AMBIENT` / `DIRECTIONAL` | **1** | Scales only — leave at 1 |
-| `AMBIENT_ALBEDO` | **0.22** | Brightness under ambient=1 |
-| Light `c0`/`c1` | ~1.15 / fill | Brightness under directional=1 |
-| `ng_gi_strength` | **1** | `gi = kd × irr × this` |
-| Fill `BOUNCE` / `E_LIT` | ~1.65 / ~1.35 | Floor→underside; exitance at exposure 1 |
-| Fill `EMIT_BOOST` | ~6 | Glow inject |
-
-Sphere bottoms are N·L≈0 — only ambient + down-hemisphere GI. Raise bounce/`E_LIT` (not ambient scale) for floor light.
-
----
-
-## 6.2.3 + classic SDF opts (next)
-
-1. Bound sphere / AABB per prim (skip SDF on miss)  
-2. Scene ∩ clip bound  
-3. Conservative `min(d, dt_max)` near hits  
-4. Hit/miss step budget  
-5. Pack bound radius in prim row  
-6. Grid/BVH candidate lists (many prims)  
-7. **6.3** SVO empty-skip  
-8. No triangle bake / no SSBO requirement on WebGL2  
+| Knob | Default |
+|------|---------|
+| `AMBIENT` / `DIRECTIONAL` | 1 |
+| `AMBIENT_ALBEDO` | 0.22 |
+| Fill bounce / E_LIT / emit | ~1.65 / ~1.35 / ~6 |
+| `SELF_T_MIN` / resolve `SELF_BIAS` | ~0.1 / ~0.09∨0.25·cell |
+| Grid | 8³ × 4 over far; empty=255 |
+| Far period (q0–q4) | 4 / 3 / 2 / 2 / 1 |
 
 ---
 
@@ -89,25 +117,27 @@ Sphere bottoms are N·L≈0 — only ambient + down-hemisphere GI. Raise bounce/
 
 | Priority | Item |
 |---------:|------|
-| 1 | Verify look (red floor bleed, sphere undersides, metal vs rough highlights) |
-| 2 | **6.2.3** + SDF opts |
-| 3 | Grid/BVH for many prims |
-| 4 | **Track B** sparse/clipmap |
-| 5 | **6.3** SVO |
-| 6 | Optional: GGX compose; specular lobe in higher SH (hard) |
-| 7 | Bloom / L2 SH / bilinear-fix merge |
-| 8 | SS shelved until WS look OK |
+| 1 | **B.3** sparse keys + budget + OOV recycle |
+| 2 | **B.4** hierarchy collapse-avg / split-fill |
+| 3 | **B.5** depth+curvature LOD + dirty + AO |
+| 4 | BVH if 4 slots overflow often |
+| 5 | Bloom / L2 SH |
 
 ## Anti-patterns
 
-- Crushing `BOUNCE` until color bleed dies  
-- Ignoring packed roughness in fill  
-- Compose without rough/metal (flat spheres, no spec)  
-- Cam-follow clip; clamped UVW faces  
-- Track B before march opts / look OK  
+- Rebuilding prim/grid every orbit frame (use dirty gate)  
+- Cam-follow clip; clamped UVW  
+- BVH before grid proves insufficient  
+- Skipping far fill after clip snap without force  
+- Full dense refill when only a few cells dirty (B.5)  
+- Collapse that re-marches instead of averaging children (B.4)  
 
 ## References
 
-- https://radiance.wiki/ · jason.today/rc · Split RC arXiv:2607.20384 · arXiv:2408.14425  
+- https://radiance.wiki/ · jason.today/rc · Split RC · DDGI self-bias  
 
-<!-- agent: composer-2.5 | 2026-08-10 | doc brighter unity look | bd4e64 -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc uniform prim grid | 2b41bd -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc Track B clipmap plan | ba2f47 -->
+<!-- agent: composer-2.5 | 2026-08-10 | B1 doc clipmap shipped | 41a4da -->
+<!-- agent: composer-2.5 | 2026-08-10 | B2 doc amortize shipped | ccf229 -->
+<!-- agent: composer-2.5 | 2026-08-10 | roadmap B3-B5 sparse hierarchy | a30c7a -->
