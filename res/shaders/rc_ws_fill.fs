@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-08-10 | fill emit col3 texelFetch | e7332d
-/* Dir-packed WS cascade: SDF march; hit = emit*boost + albedo*bounce (texelFetch). */
+// agent: composer-2.5 | 2026-08-10 | fill stronger floor bounce | a0063f
+/* Dir-packed WS cascade: SDF march; hit radiance from emit + rough/metal bounce. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_prim;
@@ -15,11 +16,13 @@ uniform vec3 ng_sky;
 
 out vec4 finalColor;
 
-const float EMIT_BOOST = 4.5;
-const float BOUNCE = 1.25;
+const float EMIT_BOOST = 6.0;
+/* Floor/wall exitance into probes — sphere undersides need strong down-hemisphere. */
+const float BOUNCE = 1.65;
+const float E_LIT = 1.35; /* assume surfaces lit at exposure 1 when hit */
 const float HIT_A = 0.88;
 const float HIT_EPS = 0.02;
-const float HALF_PAD = 1.18; /* slightly fat prims so small glow hits */
+const float HALF_PAD = 1.12;
 const int DIR_MAX = 48;
 const int PRIM_MAX = 64;
 
@@ -51,10 +54,12 @@ vec4 fetch_prim_col(int row, int col) {
   return texelFetch(tex_prim, ivec2(col, row), 0);
 }
 
-/** emit in col3.rgb, albedo+metal in col4. */
+/** emit+rough in col3; albedo+metal in col4. Diffuse bounce only (spec not marched). */
 vec3 prim_radiance(vec4 emit_rough, vec4 alb_metal) {
+  float rough = clamp(emit_rough.a, 0.04, 1.0);
   float metal = clamp(alb_metal.w, 0.0, 1.0);
-  float bounce = BOUNCE * (1.0 - 0.65 * metal);
+  /* Rough → more Lambert bounce; metal → almost none. E_LIT ≈ direct exposure on hit. */
+  float bounce = BOUNCE * (1.0 - metal) * mix(0.45, 1.0, rough) * E_LIT;
   return emit_rough.rgb * EMIT_BOOST + alb_metal.rgb * bounce;
 }
 
@@ -139,3 +144,4 @@ void main() {
   finalColor = vec4(ng_sky * 0.05, 0.0);
 }
 // agent: composer-2.5 | 2026-08-10 | fill emit col3 texelFetch | e7332d
+// agent: composer-2.5 | 2026-08-10 | fill stronger floor bounce | a0063f

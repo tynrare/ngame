@@ -205,6 +205,7 @@ Scene.prototype._orbit_apply = function () {
 };
 
 Scene.prototype.step = function (dt) {
+  // agent: composer-2.5 | 2026-08-10 | rc right-drag XZ pan | 88004e
   var o = this._orbit;
   if (!o) {
     return;
@@ -213,15 +214,27 @@ Scene.prototype.step = function (dt) {
   if (!mouse) {
     return;
   }
-  if (mouse.left) {
-    if (!o.last) {
-      o.last = { x: mouse.x, y: mouse.y };
-      return;
-    }
-    var mdx = mouse.x - o.last.x;
-    var mdy = mouse.y - o.last.y;
-    o.last.x = mouse.x;
-    o.last.y = mouse.y;
+  var dragging = mouse.left || mouse.right;
+  if (!dragging) {
+    o.last = null;
+    return;
+  }
+  if (!o.last) {
+    o.last = { x: mouse.x, y: mouse.y };
+    return;
+  }
+  var mdx = mouse.x - o.last.x;
+  var mdy = mouse.y - o.last.y;
+  o.last.x = mouse.x;
+  o.last.y = mouse.y;
+  if (mouse.right) {
+    /* Pan look-at on XZ in camera ground frame (grab-drag). */
+    var sy = Math.sin(o.yaw);
+    var cy = Math.cos(o.yaw);
+    var sens = 0.012 * Math.max(o.radius, 1);
+    o.target.x -= (cy * mdx + sy * mdy) * sens;
+    o.target.z -= (-sy * mdx + cy * mdy) * sens;
+  } else {
     o.yaw -= mdx * 0.005;
     o.pitch += mdy * 0.005;
     if (o.pitch > 1.2) {
@@ -229,10 +242,8 @@ Scene.prototype.step = function (dt) {
     } else if (o.pitch < -0.2) {
       o.pitch = -0.2;
     }
-    this._orbit_apply();
-  } else {
-    o.last = null;
   }
+  this._orbit_apply();
 };
 Scene.prototype.stop = function () {};
 Scene.prototype.dispose = function () {};
@@ -242,3 +253,4 @@ global.module(Scene);
 // agent: composer-2.5 | 2026-08-09 | rc scene render rc opt-in | c4d815
 // agent: composer-2.5 | 2026-08-09 | rc mouse drag orbit cam | 14f14d
 // agent: composer-2.5 | 2026-08-09 | hotter glow props rc | 82c10e
+// agent: composer-2.5 | 2026-08-10 | rc right-drag XZ pan | 88004e

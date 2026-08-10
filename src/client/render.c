@@ -1277,6 +1277,11 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
   if (pass->loc_probe_res >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_probe_res, &probe_res, SHADER_UNIFORM_FLOAT);
   }
+  // agent: composer-2.5 | 2026-08-10 | compose bind cam for specular | d19ab3
+  if (pass->loc_cam_pos >= 0) {
+    const float cam[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
+    SetShaderValue(pass->sh.handle, pass->loc_cam_pos, cam, SHADER_UNIFORM_VEC3);
+  }
   if (pass->loc_tex_albedo >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_albedo, ctx->rt_albedo.texture);
   }
@@ -1519,17 +1524,16 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
 }
 
 
-/** Fixed-cell world-snapped clip volume (VOX_RES³), anchored on look-at. */
+/** Fixed cube locked to look-at; orbit must not slide the probe lattice. */
 static void mod_render_rc_ws_update_frustum_aabb(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-10 | target-center GI clip volume | b97038
+  // agent: composer-2.5 | 2026-08-10 | look-at lock clip no cam follow | 66d9b3
   const Camera3D *cam = &ctx->camera;
   const float cell = NG_RC_WS_CELL;
   const float extent = cell * (float)NG_RC_WS_VOX_RES;
   const Vector3 size = {extent, extent, extent};
 
-  /* Frustum-AABB center is dominated by far corners: as the camera orbits a fixed
-   * target it swings sideways (not along cam motion). Anchor on look-at so orbit
-   * keeps the brick world-locked; pan/dolly of target slides it on the grid. */
+  /* rc.js orbits with a fixed target — cam-biased / frustum-AABB placement slides the
+   * brick every frame and remaps size/N or UVW → cell crawl + blink. Anchor on target. */
   const Vector3 anchor = cam->target;
   Vector3 desired = {anchor.x - extent * 0.5f, anchor.y - extent * 0.5f,
                      anchor.z - extent * 0.5f};
@@ -1538,9 +1542,10 @@ static void mod_render_rc_ws_update_frustum_aabb(ModRenderCtx *ctx) {
   desired.z = floorf(desired.z / cell) * cell;
 
   Vector3 origin = {ctx->ws_origin[0], ctx->ws_origin[1], ctx->ws_origin[2]};
-  const float hold = cell * 0.5f;
-  if (fabsf(desired.x - origin.x) >= hold || fabsf(desired.y - origin.y) >= hold ||
-      fabsf(desired.z - origin.z) >= hold || ctx->ws_size[0] < extent * 0.5f) {
+  const float hold = extent * 0.25f; /* pan moves brick; pure orbit (fixed target) never does */
+  const int need_init = (ctx->ws_size[0] < extent * 0.5f);
+  if (need_init || fabsf(desired.x - origin.x) >= hold || fabsf(desired.y - origin.y) >= hold ||
+      fabsf(desired.z - origin.z) >= hold) {
     origin = desired;
   }
 
@@ -2282,8 +2287,12 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | frustum before gbuf CPU stamp | fff863
 // agent: composer-2.5 | 2026-08-10 | world-snap fixed cell GI volume | 69d77e
 // agent: composer-2.5 | 2026-08-10 | target-center GI clip volume | b97038
+// agent: composer-2.5 | 2026-08-10 | frustum AABB coverage clip | 6e1150
+// agent: composer-2.5 | 2026-08-10 | fixed cube cam-biased clip | c96f11
+// agent: composer-2.5 | 2026-08-10 | look-at lock clip no cam follow | 66d9b3
 // agent: composer-2.5 | 2026-08-10 | compose view use present size | 316071
 // agent: composer-2.5 | 2026-08-10 | tick comment rc-ws 6.2 note | 3a1e8d
 // agent: composer-2.5 | 2026-08-10 | tick bind rebuild_prims | c31da5
 // agent: composer-2.5 | 2026-08-10 | tick skip rebuild_vox | bb5602
 // agent: composer-2.5 | 2026-08-10 | tick cascade interval tune | 7c0ad2
+// agent: composer-2.5 | 2026-08-10 | compose bind cam for specular | d19ab3

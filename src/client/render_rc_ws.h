@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-10 | demote vox header API | 0cb6a2
+// agent: composer-2.5 | 2026-08-10 | clip drop cam bias define | 32ad68
 #ifndef NG_RENDER_RC_WS_H
 #define NG_RENDER_RC_WS_H
 
@@ -9,9 +10,9 @@
 #define NG_RC_WS_PROBE_MAX 16
 #define NG_RC_WS_GI_NEAR 0.25f
 #define NG_RC_WS_GI_FAR 28.0f
-/** Fixed world meters per cell — clip cube extent = VOX_RES legacy count × CELL. */
+/** Fixed world meters for origin snap lattice. */
 #define NG_RC_WS_CELL 0.4f
-/** Clip cube resolution (cells per axis); extent = CELL * this. */
+/** Clip cube extent = CELL × this (fixed; never cam/frustum stretch). */
 #define NG_RC_WS_VOX_RES 32
 /** Max analytic SDF prims (cube/sphere from describe). */
 #define NG_RC_WS_PRIM_MAX 64
@@ -60,3 +61,4 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws);
 #endif
 // agent: composer-2.5 | 2026-08-10 | demote vox header API | 0cb6a2
 // agent: composer-2.5 | 2026-08-10 | prim pack emit in col3 | 3eafc7
+// agent: composer-2.5 | 2026-08-10 | clip drop cam bias define | 32ad68

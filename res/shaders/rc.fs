@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-08-09 | rc material N L glow rough | 48ab83
+// agent: composer-2.5 | 2026-08-10 | brighter unity ambient rc.fs | 1fd03f
 in vec3 fragPosition;
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -13,6 +13,10 @@ uniform float ng_metalness;
 
 out vec4 finalColor;
 
+const float AMBIENT = 1.0;
+const float DIRECTIONAL = 1.0;
+const float AMBIENT_ALBEDO = 0.22;
+
 void main() {
   vec3 n = normalize(fragNormal);
   vec3 albedo = ng_tint;
@@ -21,8 +25,8 @@ void main() {
   /* Two hardcoded lights until a light describe API exists. */
   vec3 l0 = normalize(vec3(0.45, 0.85, 0.2));
   vec3 l1 = normalize(vec3(-0.55, 0.35, 0.65));
-  vec3 c0 = vec3(1.0, 0.95, 0.85);
-  vec3 c1 = vec3(0.45, 0.55, 1.0);
+  vec3 c0 = vec3(1.15, 1.08, 0.95);
+  vec3 c1 = vec3(0.55, 0.65, 1.15);
 
   float ndl0 = max(dot(n, l0), 0.0);
   float ndl1 = max(dot(n, l1), 0.0);
@@ -38,8 +42,8 @@ void main() {
   vec3 spec_col = mix(vec3(0.04), albedo, metal);
   vec3 specular = spec_col * (c0 * spec0 + c1 * spec1 * 0.4) * (1.0 - rough * 0.65);
 
-  vec3 ambient = albedo * 0.12;
-  vec3 col = ambient + mix(diffuse, diffuse * (1.0 - metal * 0.85), metal) + specular + ng_glow;
-  finalColor = vec4(col, 1.0);
+  vec3 ambient = albedo * AMBIENT_ALBEDO * AMBIENT;
+  vec3 direct = (mix(diffuse, diffuse * (1.0 - metal * 0.85), metal) + specular) * DIRECTIONAL;
+  finalColor = vec4(ambient + direct + ng_glow, 1.0);
 }
-// agent: composer-2.5 | 2026-08-09 | rc material N L glow rough | 48ab83
+// agent: composer-2.5 | 2026-08-10 | brighter unity ambient rc.fs | 1fd03f

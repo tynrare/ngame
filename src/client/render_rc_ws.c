@@ -2,22 +2,24 @@
  * World-space RC geometry + quality (Track A). North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (look-at clip before gbuf; fill/merge/SH/resolve)
+ * Related: src/client/render.c (look-at–locked clip before gbuf; fill/merge/SH/resolve)
  * Downstream: res/shaders/rc_ws_fill.fs (march backend)
  *
  * rc-ws flow:
  * 1) ensure → tex_prim; quality → N/dirs/cascades/steps
- * 2) render.c → look-at–snapped clip origin/size (before gbuf UVW)
+ * 2) render.c → look-at fixed cube, CELL snap, large hysteresis (before gbuf UVW)
  * 3) dirty → rebuild_prims (all mesh entities; pose/quat/lit/PBR) → upload tex_prim
- * 4) fill sphere-traces analytic SDF; merge → SH → soft-nearest resolve
+ * 4) fill sphere-traces analytic SDF; merge → SH → trilinear resolve
  *
  * Branches / invariants:
- * - Clip anchors on cam.target (not frustum AABB).
+ * - Clip locked to cam.target (orbit keeps target fixed → brick world-locked).
+ * - Never cam-follow or frustum-AABB fit (slides lattice / remaps spacing).
  * - Every described mesh/entity is a prim (no floor special-case).
  * - Prim pose matches DrawMeshInstanced (euler→quat, uniform scale).
  * - Dense tex_vox demoted; product path is SDF prims only.
  */
 // agent: composer-2.5 | 2026-08-10 | demote vox drop floor skip | 0c617e
+// agent: composer-2.5 | 2026-08-10 | playbook look-at lock clip | 3408e3
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -287,3 +289,4 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
 }
 // agent: composer-2.5 | 2026-08-10 | demote vox drop floor skip | 0c617e
 // agent: composer-2.5 | 2026-08-10 | prim pack emit in col3 | 3eafc7
+// agent: composer-2.5 | 2026-08-10 | playbook look-at lock clip | 3408e3
