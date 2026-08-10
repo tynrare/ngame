@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-08-10 | sh encode texelFetch cascade | cb332d
-/* Dir-packed cascade → L1 SH per probe. Atlas W=N*4 (L0,L1x,L1y,L1z), H=N*N. */
+// agent: composer-2.5 | 2026-08-10 | B3 sparse SH slot rows | 43834b
+/* Dir-packed sparse cascade → L1 SH. Atlas W=4 bands, H=slots. Cascade W=dirs H=slots. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_cascade;
@@ -20,15 +21,11 @@ vec3 dir_from_index(int i, int n) {
 }
 
 void main() {
-  float n = max(ng_probe_res, 1.0);
+  float nslots = max(ng_probe_res, 1.0);
   int nd = clamp(ng_dir_count, 1, DIR_MAX);
-  float px = floor(gl_FragCoord.x);
-  float pyz = floor(gl_FragCoord.y);
-  float band = floor(px / n);
-  float ix = mod(px, n);
-  float iy = mod(pyz, n);
-  float iz = floor(pyz / n);
-  if (band > 3.0 || ix >= n || iy >= n || iz >= n) {
+  float band = floor(gl_FragCoord.x);
+  float slot = floor(gl_FragCoord.y);
+  if (band > 3.0 || slot >= nslots) {
     finalColor = vec4(0.0);
     return;
   }
@@ -37,13 +34,12 @@ void main() {
   vec3 shx = vec3(0.0);
   vec3 shy = vec3(0.0);
   vec3 shz = vec3(0.0);
+  int sy = int(slot);
   for (int i = 0; i < DIR_MAX; i++) {
     if (i >= nd) {
       break;
     }
-    int ax = int(float(i) * n + ix);
-    int ay = int(iy + iz * n);
-    vec3 rad = texelFetch(tex_cascade, ivec2(ax, ay), 0).rgb;
+    vec3 rad = texelFetch(tex_cascade, ivec2(i, sy), 0).rgb;
     vec3 d = dir_from_index(i, nd);
     sh0 += rad;
     shx += rad * d.x;
@@ -67,3 +63,4 @@ void main() {
   finalColor = vec4(outc, 1.0);
 }
 // agent: composer-2.5 | 2026-08-10 | sh encode texelFetch cascade | cb332d
+// agent: composer-2.5 | 2026-08-10 | B3 sparse SH slot rows | 43834b

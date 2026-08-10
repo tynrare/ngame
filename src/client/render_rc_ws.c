@@ -2,36 +2,35 @@
  * World-space RC geometry + quality. North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (dual look-at clipmap; fill/merge/SH/resolve)
- * Downstream: res/shaders/rc_ws_fill.fs (march backend)
+ * Related: src/client/render.c (seed downsample; sparse fill/SH/resolve)
+ * Downstream: res/shaders/rc_ws_fill.fs (slot-meta march)
  * Debug: set debug.render.pass probes|uvw|grid|atlas|irradiance
  *
- * rc-ws flow (Track A + B.1 + B.2):
- * 1) ensure → tex_prim + tex_grid; quality → N/dirs/cascades/steps + far_period
- * 2) render.c → near + far look-at cubes (far=2×); gbuf UVW vs far
- * 3) dirty (either clip/scene) → rebuild_prims+grid on far → upload; force far fill
- * 4) fill/merge/SH near every frame; far on cadence; resolve blends shell
+ * rc-ws flow (Track A + B.1–B.3):
+ * 1) ensure → tex_prim + tex_grid + tex_meta/hash; quality → slots/dirs/cascades
+ * 2) render.c → far look-at cube; gbuf UVW vs far; downsample depth seed
+ * 3) dirty → rebuild_prims+grid; sparse_seed from seed pixels → meta+hash
+ * 4) sparse fill/merge/SH (S×dirs); resolve linear-probe hash
  *
  * Track B:
- * B.0) Spec: world lattice CELL; hysteresis; keep SDF+grid+T-merge+SH — done
- * B.1) Clipmap dual volumes + resolve blend — shipped (no further stabilize)
- * B.2) Far fill amortize (near every frame; far period by quality) — shipped
- * B.3) Sparse probe keys + budget + OOV recycle — next (toward B.5)
+ * B.0–B.2) Dense clipmap baseline — shipped
+ * B.3) Screen-seeded sparse hashmap — shipping
  * B.4) Hierarchy/SVO: empty skip; collapse=avg children; split=alloc+fill
  * B.5) Depth+curvature LOD; dirty-only; near tiny/far huge; AO hitch
  *
  * Branches / invariants:
- * - Both clips locked to cam.target; near CELL snap, far 2×CELL snap.
- * - Prim+grid over far clip only; fill grid UVW uses far (ng_grid_*).
+ * - Clip locked to cam.target; far 2×CELL snap (grid/prim bounds).
+ * - Prim+grid over far clip; fill uses slot world centers from tex_meta.
  * - Grid 8³ × 4 slots; overflow nearer-to-cell-center. BVH deferred.
- * - col1.a = bound R; resolve SELF_BIAS per volume spacing.
- * - Far SH persists until next far fill; dirty forces both volumes.
+ * - Sparse slots ≤ SLOT_MAX; hash open-address; stable cell→slot; OOV freed.
  */
 // agent: composer-2.5 | 2026-08-10 | rebuild uniform prim grid | a95114
 // agent: composer-2.5 | 2026-08-10 | playbook Track B roadmap | d1e2af
 // agent: composer-2.5 | 2026-08-10 | B1 playbook clipmap shipped | 55ab7b
 // agent: composer-2.5 | 2026-08-10 | B2 playbook amortize shipped | ee4fd1
 // agent: composer-2.5 | 2026-08-10 | playbook B3-B5 sparse hierarchy | 0b0624
+// agent: composer-2.5 | 2026-08-10 | B3 sparse hashmap seed slots | e1bc85
+// agent: composer-2.5 | 2026-08-10 | B3 seed flip stable slots | 4258ae
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -56,7 +55,8 @@ void ng_rc_ws_init(NgRcWsCtx *ws) {
   ws->size[0] = 12.0f;
   ws->size[1] = 5.5f;
   ws->size[2] = 12.0f;
-  ws->probe_n = 12;
+  ws->probe_n = 128;
+  ws->slot_cap = 128;
   ws->dirs = 8;
   ws->cascades = 3;
   ws->steps = 5;
@@ -78,7 +78,17 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
   ws->prim_rgba = NULL;
   free(ws->grid_rgba);
   ws->grid_rgba = NULL;
+  if (ws->sparse_tex_ready) {
+    UnloadTexture(ws->tex_meta);
+    UnloadTexture(ws->tex_hash);
+    ws->sparse_tex_ready = false;
+  }
+  free(ws->meta_rgba);
+  ws->meta_rgba = NULL;
+  free(ws->hash_rgba);
+  ws->hash_rgba = NULL;
   ws->prim_count = 0;
+  ws->slot_count = 0;
   ws->ready = false;
 }
 
@@ -138,8 +148,72 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
   return true;
 }
 
+
+/** Allocate sparse meta/hash GPU+CPU scratch for slot_cap. */
+static bool ng_rc_ws_sparse_alloc(NgRcWsCtx *ws) {
+  int cap = ws->slot_cap > 0 ? ws->slot_cap : 128;
+  if (cap > NG_RC_WS_SLOT_MAX) {
+    cap = NG_RC_WS_SLOT_MAX;
+  }
+  int hsz = 1;
+  while (hsz < cap * 2 && hsz < NG_RC_WS_HASH_MAX) {
+    hsz <<= 1;
+  }
+  if (hsz < 64) {
+    hsz = 64;
+  }
+  const int need_realloc =
+      !ws->meta_rgba || !ws->hash_rgba || ws->slot_cap != cap || ws->hash_size != hsz;
+  if (need_realloc) {
+    if (ws->sparse_tex_ready) {
+      UnloadTexture(ws->tex_meta);
+      UnloadTexture(ws->tex_hash);
+      ws->sparse_tex_ready = false;
+    }
+    free(ws->meta_rgba);
+    free(ws->hash_rgba);
+    ws->meta_rgba = (float *)calloc((size_t)cap * 4u, sizeof(float));
+    ws->hash_rgba = (float *)calloc((size_t)hsz * 4u, sizeof(float));
+    if (!ws->meta_rgba || !ws->hash_rgba) {
+      return false;
+    }
+    ws->slot_cap = cap;
+    ws->hash_size = hsz;
+    ws->probe_n = cap;
+  }
+  if (!ws->sparse_tex_ready) {
+    Image mimg = {0};
+    mimg.data = ws->meta_rgba;
+    mimg.width = 1;
+    mimg.height = cap;
+    mimg.mipmaps = 1;
+    mimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+    ws->tex_meta = LoadTextureFromImage(mimg);
+    mimg.data = NULL;
+    UnloadImage(mimg);
+    Image himg = {0};
+    himg.data = ws->hash_rgba;
+    himg.width = hsz;
+    himg.height = 1;
+    himg.mipmaps = 1;
+    himg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+    ws->tex_hash = LoadTextureFromImage(himg);
+    himg.data = NULL;
+    UnloadImage(himg);
+    if (ws->tex_meta.id == 0 || ws->tex_hash.id == 0) {
+      return false;
+    }
+    SetTextureFilter(ws->tex_meta, TEXTURE_FILTER_POINT);
+    SetTextureFilter(ws->tex_hash, TEXTURE_FILTER_POINT);
+    SetTextureWrap(ws->tex_meta, TEXTURE_WRAP_CLAMP);
+    SetTextureWrap(ws->tex_hash, TEXTURE_WRAP_CLAMP);
+    ws->sparse_tex_ready = true;
+  }
+  return true;
+}
+
 bool ng_rc_ws_ensure(NgRcWsCtx *ws, int quality) {
-  static const int k_probe[5] = {8, 10, 12, 16, 16};
+  static const int k_slots[5] = {128, 192, 256, 384, 512};
   static const int k_dirs[5] = {12, 16, 24, 32, 48};
   static const int k_cascades[5] = {1, 2, 3, 3, 3};
   static const int k_steps[5] = {3, 4, 5, 6, 8};
@@ -155,11 +229,12 @@ bool ng_rc_ws_ensure(NgRcWsCtx *ws, int quality) {
   } else if (q > 4) {
     q = 4;
   }
-  ws->probe_n = k_probe[q];
+  ws->slot_cap = k_slots[q];
+  ws->probe_n = ws->slot_cap;
   ws->dirs = k_dirs[q];
   ws->cascades = k_cascades[q];
   ws->steps = k_steps[q];
-  return true;
+  return ng_rc_ws_sparse_alloc(ws);
 }
 
 static uint32_t ng_rc_ws_hash_u32(uint32_t h, uint32_t v) {
@@ -422,8 +497,246 @@ void ng_rc_ws_rebuild_grid(NgRcWsCtx *ws) {
   }
   UpdateTexture(ws->tex_grid, ws->grid_rgba);
 }
+
+/** Mix cell coords into open-address hash. */
+static uint32_t ng_rc_ws_cell_hash(int32_t ix, int32_t iy, int32_t iz) {
+  uint32_t h = (uint32_t)ix * 73856093u;
+  h ^= (uint32_t)iy * 19349663u;
+  h ^= (uint32_t)iz * 83492791u;
+  return h;
+}
+
+/** Index of used slot with cell, or -1. */
+static int ng_rc_ws_slot_find(const NgRcWsCtx *ws, int32_t ix, int32_t iy, int32_t iz) {
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (ws->slots[i].used && ws->slots[i].ix == ix && ws->slots[i].iy == iy &&
+        ws->slots[i].iz == iz) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Append unique cell into dense wanted[0..*nwant). */
+static void ng_rc_ws_want_add(NgRcWsSlot *wanted, int *nwant, int cap, int32_t ix, int32_t iy,
+                              int32_t iz) {
+  if (*nwant >= cap) {
+    return;
+  }
+  for (int i = 0; i < *nwant; i++) {
+    if (wanted[i].ix == ix && wanted[i].iy == iy && wanted[i].iz == iz) {
+      return;
+    }
+  }
+  wanted[*nwant].ix = ix;
+  wanted[*nwant].iy = iy;
+  wanted[*nwant].iz = iz;
+  wanted[*nwant].used = 1;
+  wanted[*nwant].dirty = 0;
+  (*nwant)++;
+}
+
+/** First free slot index, or -1. */
+static int ng_rc_ws_slot_alloc(NgRcWsCtx *ws) {
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Write meta row for one slot (xyz center; a=1 clean / 2 dirty). */
+static void ng_rc_ws_meta_write(NgRcWsCtx *ws, int i, float cell) {
+  float *m = ws->meta_rgba + i * 4;
+  if (!ws->slots[i].used) {
+    m[0] = m[1] = m[2] = m[3] = 0.0f;
+    return;
+  }
+  m[0] = ((float)ws->slots[i].ix + 0.5f) * cell;
+  m[1] = ((float)ws->slots[i].iy + 0.5f) * cell;
+  m[2] = ((float)ws->slots[i].iz + 0.5f) * cell;
+  m[3] = ws->slots[i].dirty ? 2.0f : 1.0f;
+}
+
+static void ng_rc_ws_rebuild_hash(NgRcWsCtx *ws) {
+  const int hsz = ws->hash_size;
+  const uint32_t mask = (uint32_t)hsz - 1u;
+  for (int i = 0; i < hsz; i++) {
+    ws->hash_tab[i] = -1;
+    float *hr = ws->hash_rgba + i * 4;
+    hr[0] = hr[1] = hr[2] = hr[3] = 0.0f;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    uint32_t h = ng_rc_ws_cell_hash(ws->slots[i].ix, ws->slots[i].iy, ws->slots[i].iz) & mask;
+    for (int step = 0; step < hsz; step++) {
+      if (ws->hash_tab[h] < 0) {
+        ws->hash_tab[h] = i;
+        float *hr = ws->hash_rgba + (int)h * 4;
+        hr[0] = (float)(i + 1);
+        hr[1] = (float)ws->slots[i].ix;
+        hr[2] = (float)ws->slots[i].iy;
+        hr[3] = (float)ws->slots[i].iz;
+        break;
+      }
+      h = (h + 1u) & mask;
+    }
+  }
+  UpdateTexture(ws->tex_hash, ws->hash_rgba);
+}
+
+void ng_rc_ws_sparse_mark_dirty(NgRcWsCtx *ws) {
+  if (!ws || !ws->sparse_tex_ready) {
+    return;
+  }
+  const float cell = NG_RC_WS_CELL;
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (ws->slots[i].used) {
+      ws->slots[i].dirty = 1;
+      ng_rc_ws_meta_write(ws, i, cell);
+    }
+  }
+  UpdateTexture(ws->tex_meta, ws->meta_rgba);
+}
+
+void ng_rc_ws_sparse_clear_dirty(NgRcWsCtx *ws) {
+  if (!ws || !ws->sparse_tex_ready) {
+    return;
+  }
+  const float cell = NG_RC_WS_CELL;
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (ws->slots[i].used && ws->slots[i].dirty) {
+      ws->slots[i].dirty = 0;
+      ng_rc_ws_meta_write(ws, i, cell);
+    }
+  }
+  UpdateTexture(ws->tex_meta, ws->meta_rgba);
+}
+
+void ng_rc_ws_sparse_seed(NgRcWsCtx *ws, const unsigned char *rgba, int w, int h,
+                          const float origin[3], const float size[3]) {
+  // agent: composer-2.5 | 2026-08-10 | B3 retain until OOV seed | f1dc1e
+  if (!ws || !rgba || w <= 0 || h <= 0 || !origin || !size) {
+    return;
+  }
+  if (!ng_rc_ws_sparse_alloc(ws)) {
+    return;
+  }
+  const float cell = NG_RC_WS_CELL;
+  const int cap = ws->slot_cap < NG_RC_WS_SLOT_MAX ? ws->slot_cap : NG_RC_WS_SLOT_MAX;
+
+  uint8_t still[NG_RC_WS_SLOT_MAX];
+  memset(still, 0, (size_t)cap);
+  NgRcWsSlot news[NG_RC_WS_SLOT_MAX];
+  int nnew = 0;
+
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      const unsigned char *p = rgba + ((size_t)(y * w + x) * 4u);
+      if (p[3] < 128) {
+        continue;
+      }
+      const float u = (float)p[0] / 255.0f;
+      const float v = (float)p[1] / 255.0f;
+      const float ww = (float)p[2] / 255.0f;
+      const float px = origin[0] + u * size[0];
+      const float py = origin[1] + v * size[1];
+      const float pz = origin[2] + ww * size[2];
+      const int32_t ix = (int32_t)floorf(px / cell);
+      const int32_t iy = (int32_t)floorf(py / cell);
+      const int32_t iz = (int32_t)floorf(pz / cell);
+      const int si = ng_rc_ws_slot_find(ws, ix, iy, iz);
+      if (si >= 0) {
+        still[si] = 1;
+      } else {
+        ng_rc_ws_want_add(news, &nnew, cap, ix, iy, iz);
+      }
+    }
+  }
+
+  /* Free only OOV; survivors keep index + SH. */
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    if (!still[i]) {
+      ws->slots[i].used = 0;
+      ws->slots[i].dirty = 0;
+    } else {
+      ws->slots[i].dirty = 0;
+    }
+  }
+
+  int nfree = 0;
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      nfree++;
+    }
+  }
+  /* Admit new surface cells into free slots only (no reshuffle of survivors). */
+  if (nnew > nfree) {
+    nnew = nfree;
+  }
+  for (int i = 0; i < nnew; i++) {
+    const int si = ng_rc_ws_slot_alloc(ws);
+    if (si < 0) {
+      break;
+    }
+    ws->slots[si].ix = news[i].ix;
+    ws->slots[si].iy = news[i].iy;
+    ws->slots[si].iz = news[i].iz;
+    ws->slots[si].used = 1;
+    ws->slots[si].dirty = 1;
+  }
+
+  /* Face pad into remaining free slots (does not evict). */
+  static const int32_t k_face[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0},
+                                       {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    for (int f = 0; f < 6; f++) {
+      const int32_t nx = ws->slots[i].ix + k_face[f][0];
+      const int32_t ny = ws->slots[i].iy + k_face[f][1];
+      const int32_t nz = ws->slots[i].iz + k_face[f][2];
+      if (ng_rc_ws_slot_find(ws, nx, ny, nz) >= 0) {
+        continue;
+      }
+      const int si = ng_rc_ws_slot_alloc(ws);
+      if (si < 0) {
+        goto pad_done;
+      }
+      ws->slots[si].ix = nx;
+      ws->slots[si].iy = ny;
+      ws->slots[si].iz = nz;
+      ws->slots[si].used = 1;
+      ws->slots[si].dirty = 1;
+    }
+  }
+pad_done:
+
+  int count = 0;
+  memset(ws->meta_rgba, 0, (size_t)ws->slot_cap * 4u * sizeof(float));
+  for (int i = 0; i < ws->slot_cap; i++) {
+    ng_rc_ws_meta_write(ws, i, cell);
+    if (ws->slots[i].used) {
+      count++;
+    }
+  }
+  ws->slot_count = count;
+  UpdateTexture(ws->tex_meta, ws->meta_rgba);
+  ng_rc_ws_rebuild_hash(ws);
+}
 // agent: composer-2.5 | 2026-08-10 | rebuild uniform prim grid | a95114
 // agent: composer-2.5 | 2026-08-10 | playbook Track B roadmap | d1e2af
 // agent: composer-2.5 | 2026-08-10 | B1 playbook clipmap shipped | 55ab7b
 // agent: composer-2.5 | 2026-08-10 | B2 playbook amortize shipped | ee4fd1
 // agent: composer-2.5 | 2026-08-10 | playbook B3-B5 sparse hierarchy | 0b0624
+// agent: composer-2.5 | 2026-08-10 | B3 sparse hashmap seed slots | e1bc85
+// agent: composer-2.5 | 2026-08-10 | B3 seed flip stable slots | 4258ae
+// agent: composer-2.5 | 2026-08-10 | B3 fair seed incremental fill | 806cdd
+// agent: composer-2.5 | 2026-08-10 | B3 retain until OOV seed | f1dc1e

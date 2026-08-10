@@ -3,6 +3,7 @@
 <!-- agent: composer-2.5 | 2026-08-10 | B1 doc clipmap shipped | 41a4da -->
 <!-- agent: composer-2.5 | 2026-08-10 | B2 doc amortize shipped | ccf229 -->
 <!-- agent: composer-2.5 | 2026-08-10 | roadmap B3-B5 sparse hierarchy | a30c7a -->
+<!-- agent: composer-2.5 | 2026-08-10 | B3 doc sparse hashmap path | 882e2d -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -16,24 +17,26 @@ Compose: `ambient×1 + directional×1 + gi_strength×1·kd·irr + glow`.
 | Piece | Implementation |
 |-------|----------------|
 | Gbuffer | albedo+**rough(A)** / normal+**metal(A)** / glow / depth (`RGB=UVW`, `A=inside` **far**) |
-| Clip | **Near + far** look-at cubes; CELL / 2×CELL snap; hysteresis |
+| Clip | Far look-at cube (near nested for scroll); CELL / 2×CELL snap; hysteresis |
 | Geometry | Analytic SDF prims (`tex_prim`); col1.a = bound R |
 | Grid | **8³** uniform over **far**; **4** slots/cell (`tex_grid` RGBA8); dirty-gated |
-| Fill | Dense volumes for now; far cadence (B.2); → sparse keys in **B.3** |
-| Merge / SH / Resolve | T-merge → L1 SH **per volume**; resolve near/far + **1-cell blend** |
+| Sparse | Screen-seeded CELL keys → slot pool; `tex_meta` + open-address `tex_hash` |
+| Fill | Atlas **W=dirs × H=slots**; SDF march from meta centers |
+| Merge / SH / Resolve | T-merge → L1 SH rows; resolve **hash probe** (+ face neighbor) |
 | Compose | `AMBIENT=1`, `DIRECTIONAL=1`; `gi_strength` default 1 |
-| Quality | Scales **probe_n / dirs / cascades / steps** + far update period |
+| Quality | Scales **slots / dirs / cascades / steps** |
 
-**Upload:** prim + grid rebuild only when either clip moves or scene hash changes.  
+**Upload:** prim + grid dirty-gated; meta/hash each frame from 64² depth seed.  
 **Gateway:** `src/client/render_rc_ws.c` (`Flow id: rc-ws`).  
 **Debug:** `set debug.render.pass` → `final|albedo|normal|glow|depth|irradiance|uvw|probes|grid|atlas`.
 
-## Pipeline (current dense)
+## Pipeline
 
 ```
-near+far look-at cubes → gbuf (UVW vs far)
-→ dirty? rebuild_prims + rebuild_grid (far); force far fill
-→ fill near; fill far if due → resolve blend → compose
+far look-at cube → gbuf (UVW vs far)
+→ dirty? rebuild_prims + rebuild_grid
+→ downsample depth 64² → CPU unique CELL keys + hashmap → tex_meta/hash
+→ sparse fill/merge/SH → hash resolve → compose
 ```
 
 ## Phases
@@ -46,9 +49,9 @@ near+far look-at cubes → gbuf (UVW vs far)
 | **6.2.3** | Bound early-out | **done** |
 | **Grid** | Uniform candidate lists | **done** |
 | **BVH** | If slot overflow / ≫64 | **deferred** |
-| **B.1** | Clipmap dual volumes | **done** (stabilize skipped; B.3+ supersedes) |
-| **B.2** | Amortize far fill | **done** |
-| **B.3** | Sparse probe keys + budget | **next** |
+| **B.1** | Clipmap dual volumes | **done** (stabilize skipped; B.3 supersedes fill) |
+| **B.2** | Amortize far fill | **done** (dense era) |
+| **B.3** | Sparse screen-seeded hashmap | **done** |
 | **B.4** | Hierarchy / SVO collapse-avg | later |
 | **B.5** | Depth+curvature LOD + dirty + AO | later |
 
@@ -60,27 +63,24 @@ near+far look-at cubes → gbuf (UVW vs far)
 |-------|------|--------|
 | **B.1** clipmap | Near fine + far 2× dense volumes; resolve blend | **done** |
 | **B.2** amortize | Near every frame; far period by quality | **done** |
-| **B.3** sparse | Texture-backed keys; seed from gbuf depth; fill budget; OOV free→reuse | **next** |
+| **B.3** sparse | GPU downsample depth → CPU keys/hash → sparse fill/resolve | **done** |
 | **B.4** hierarchy | SVO empty-skip; leaf = key; **collapse = avg children**; split = alloc+fill | later |
 | **B.5** adaptive | LOD from depth+curvature; dirty cells only; near tiny / far huge; AO | later |
 
-### B.1–B.2 shipped (dense baseline)
+### B.1–B.2 shipped (dense baseline, superseded for fill)
 
-- Near: `CELL×VOX_RES`, snap `CELL`; far: `2×` extent, snap `2×CELL`.
-- Gbuf packs vs far; fill grid lookups use far origin/size.
-- Resolve every frame; far SH persists until next far fill; dirty forces both.
-- Dual UVW / float gbuf polish **not** pursued — B.3 sparse keys replace dense UVW resolve path.
+- Near/far look-at cubes; gbuf vs far; prim/grid on far.
+- Dense dual fill retired by B.3.
 
-### B.3 — sparse keys (toward B.5)
+### B.3 — sparse keys (shipped)
 
-Storage spine only — still mostly single spacing:
+One path (no GPU/CPU mode switch):
 
-- Fixed probe **slot pool** (atlas / SH rows) + **key → slot** map (CPU and/or texture).
-- Seed keys from **gbuf depth** (screen → world → cell id); optional pad ring.
-- **Fill only active keys** up to quality budget; rest keep last SH or miss → parent/fallback later.
-- **Evict** keys outside view frustum / far AABB; recycle slots to new keys.
-- Resolve samples nearest key (or miss = ambient) — drop dual dense volume requirement when ready.
-- Keep SDF prim + 8³ grid for march; probes become sparse, not geometry.
+1. Blit `rt_depth` → 64² seed; `ReadPixels` that only.
+2. CPU: unique `floor(p/CELL)` keys + face pad; slot pool by quality (128…512).
+3. Upload `tex_meta` (center+occ) + `tex_hash` (slot+1, cell xyz).
+4. Fill/merge/SH on **dirs × slots** atlas; resolve linear-probe hash (face fallback).
+5. OOV dropped by full reseed each frame.
 
 ### B.4 — hierarchy (toward B.5)
 
@@ -100,7 +100,7 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 
 ---
 
-## Look / self-bias (current dense)
+## Look / self-bias (current)
 
 | Knob | Default |
 |------|---------|
@@ -109,7 +109,7 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 | Fill bounce / E_LIT / emit | ~1.65 / ~1.35 / ~6 |
 | `SELF_T_MIN` / resolve `SELF_BIAS` | ~0.1 / ~0.09∨0.25·cell |
 | Grid | 8³ × 4 over far; empty=255 |
-| Far period (q0–q4) | 4 / 3 / 2 / 2 / 1 |
+| Slots (q0–q4) | 128 / 192 / 256 / 384 / 512 |
 
 ---
 
@@ -117,20 +117,19 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 
 | Priority | Item |
 |---------:|------|
-| 1 | **B.3** sparse keys + budget + OOV recycle |
-| 2 | **B.4** hierarchy collapse-avg / split-fill |
-| 3 | **B.5** depth+curvature LOD + dirty + AO |
-| 4 | BVH if 4 slots overflow often |
-| 5 | Bloom / L2 SH |
+| 1 | **B.4** hierarchy collapse-avg / split-fill |
+| 2 | **B.5** depth+curvature LOD + dirty + AO |
+| 3 | BVH if 4 slots overflow often |
+| 4 | Bloom / L2 SH |
 
 ## Anti-patterns
 
 - Rebuilding prim/grid every orbit frame (use dirty gate)  
 - Cam-follow clip; clamped UVW  
 - BVH before grid proves insufficient  
-- Skipping far fill after clip snap without force  
 - Full dense refill when only a few cells dirty (B.5)  
 - Collapse that re-marches instead of averaging children (B.4)  
+- Full-screen depth readback (seed is 64² only)  
 
 ## References
 
@@ -141,3 +140,4 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 <!-- agent: composer-2.5 | 2026-08-10 | B1 doc clipmap shipped | 41a4da -->
 <!-- agent: composer-2.5 | 2026-08-10 | B2 doc amortize shipped | ccf229 -->
 <!-- agent: composer-2.5 | 2026-08-10 | roadmap B3-B5 sparse hierarchy | a30c7a -->
+<!-- agent: composer-2.5 | 2026-08-10 | B3 doc sparse hashmap path | 882e2d -->

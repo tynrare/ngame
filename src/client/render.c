@@ -32,6 +32,9 @@
 // agent: composer-2.5 | 2026-08-10 | wire ws origin gbuf world | 4bc5ef
 // agent: composer-2.5 | 2026-08-10 | gbuf disable blend pack | 8655f8
 // agent: composer-2.5 | 2026-08-10 | SS fill world dist uniforms | 9b6064
+// agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
+// agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
+// agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
 #include "render.h"
 #include "render_rc_ws.h"
 #include "engine/ng_action.h"
@@ -206,10 +209,13 @@ typedef struct ModRenderCtx {
   int rc_probes_x[NG_RC_CASCADES_MAX];
   int rc_probes_y[NG_RC_CASCADES_MAX];
   int rc_spacing[NG_RC_CASCADES_MAX];
-  /* WS RC: dual clipmap volumes + shared SDF/grid + screen irr. */
+  /* WS RC: look-at clip + sparse screen-seeded probes + screen irr. */
   // agent: composer-2.5 | 2026-08-10 | B1 dual clip near far RTs | d8ac7a
+  // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
   NgRcWsClip ws_clip[NG_RC_WS_CLIP_COUNT];
   RenderTexture2D rt_ws[2];
+  RenderTexture2D rt_ws_seed; /* NG_RC_WS_SEED² depth downsample */
+  bool ws_seed_ready;
   RenderTexture2D rt_vox; /* VOX × VOX² frustum-fit stamp atlas */
   bool vox_rt_ready;
   uint32_t ws_vox_scene_hash;
@@ -720,6 +726,10 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     }
     UnloadRenderTexture(ctx->rt_ws[0]);
     UnloadRenderTexture(ctx->rt_ws[1]);
+    if (ctx->ws_seed_ready) {
+      UnloadRenderTexture(ctx->rt_ws_seed);
+      ctx->ws_seed_ready = false;
+    }
     ctx->ws_rt_ready = false;
     ctx->ws_probe_n = 0;
     ctx->ws_dirs = 0;
@@ -1077,12 +1087,17 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     }
     UnloadRenderTexture(ctx->rt_ws[0]);
     UnloadRenderTexture(ctx->rt_ws[1]);
+    if (ctx->ws_seed_ready) {
+      UnloadRenderTexture(ctx->rt_ws_seed);
+      ctx->ws_seed_ready = false;
+    }
     ctx->ws_rt_ready = false;
   }
   if (!ctx->ws_rt_ready) {
-    const int aw = probe_n * ws_dirs;
-    const int ah = probe_n * probe_n;
-    const int sh_w = probe_n * 4;
+    // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
+    const int aw = ws_dirs;
+    const int ah = probe_n;
+    const int sh_w = 4;
     for (int v = 0; v < NG_RC_WS_CLIP_COUNT; v++) {
       NgRcWsClip *clip = &ctx->ws_clip[v];
       for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
@@ -1107,6 +1122,9 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->rt_ws[1] = LoadRenderTexture(w, h);
     SetTextureFilter(ctx->rt_ws[0].texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(ctx->rt_ws[1].texture, TEXTURE_FILTER_BILINEAR);
+    ctx->rt_ws_seed = LoadRenderTexture(NG_RC_WS_SEED, NG_RC_WS_SEED);
+    SetTextureFilter(ctx->rt_ws_seed.texture, TEXTURE_FILTER_BILINEAR);
+    ctx->ws_seed_ready = true;
     BeginTextureMode(ctx->rt_ws[0]);
     ClearBackground(BLACK);
     EndTextureMode();
@@ -1381,10 +1399,10 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
   EndShaderMode();
 }
 
-/** Fill one WS cascade interval for a clip volume (SDF prim march). */
+/** Fill one WS cascade interval (sparse slots; dirty-only when requested). */
 static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, NgRcWsClip *clip, int c, float t0,
-                                      float t1) {
-  // agent: composer-2.5 | 2026-08-10 | B1 dual clip near far RTs | d8ac7a
+                                      float t1, int dirty_only) {
+  // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
   NgRcPassShader *pass = &ctx->rc_ws_fill;
   const NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
@@ -1392,9 +1410,12 @@ static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, NgRcWsClip *clip, int 
   const int dirs = ctx->ws_dirs > 0 ? ctx->ws_dirs : 8;
   const int steps = ctx->ws_cpu.steps > 0 ? ctx->ws_cpu.steps : 5;
   const int prim_count = ctx->ws_cpu.prim_count;
+  const float dirty_f = dirty_only ? 1.0f : 0.0f;
   RenderTexture2D *dest = &clip->casc[c];
   BeginTextureMode(*dest);
-  ClearBackground(BLACK);
+  if (!dirty_only) {
+    ClearBackground(BLACK);
+  }
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
   if (pass->loc_ws_origin >= 0) {
@@ -1461,6 +1482,18 @@ static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, NgRcWsClip *clip, int 
     int loc = GetShaderLocation(pass->sh.handle, "tex_grid");
     if (loc >= 0 && ctx->ws_cpu.grid_tex_ready) {
       SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_grid);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_meta");
+    if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_meta);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_fill_dirty_only");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &dirty_f, SHADER_UNIFORM_FLOAT);
     }
   }
   {
@@ -1534,9 +1567,9 @@ static void mod_render_rc_ws_sh_encode(ModRenderCtx *ctx, NgRcWsClip *clip, Text
   EndTextureMode();
 }
 
-/** Fill+merge+SH for one clip; cascade intervals in world meters (CELL). */
-static void mod_render_rc_ws_fill_volume(ModRenderCtx *ctx, NgRcWsClip *clip) {
-  // agent: composer-2.5 | 2026-08-10 | CELL meter intervals no far gain | 1f82f9
+/** Fill+merge+SH; dirty_only skips clear and remarch of clean slots. */
+static void mod_render_rc_ws_fill_volume(ModRenderCtx *ctx, NgRcWsClip *clip, int dirty_only) {
+  // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
   int nc = ctx->ws_cpu.cascades > 0 ? ctx->ws_cpu.cascades : 3;
   if (nc > NG_RC_CASCADES_MAX) {
     nc = NG_RC_CASCADES_MAX;
@@ -1545,7 +1578,7 @@ static void mod_render_rc_ws_fill_volume(ModRenderCtx *ctx, NgRcWsClip *clip) {
   float t0 = cell * 0.55f;
   float t1 = cell * 1.45f;
   for (int c = 0; c < nc; c++) {
-    mod_render_rc_ws_casc_fill(ctx, clip, c, t0, t1);
+    mod_render_rc_ws_casc_fill(ctx, clip, c, t0, t1, dirty_only);
     t0 = t1;
     t1 *= 2.0f;
   }
@@ -1561,16 +1594,16 @@ static void mod_render_rc_ws_fill_volume(ModRenderCtx *ctx, NgRcWsClip *clip) {
   mod_render_rc_ws_sh_encode(ctx, clip, merged);
 }
 
-/** Soft-nearest SH eval near+far blend → screen irr. */
+/** Soft-nearest SH eval sparse hash → screen irr. */
 static void mod_render_rc_ws_resolve(ModRenderCtx *ctx, int dest) {
-  // agent: composer-2.5 | 2026-08-10 | B1 dual clip near far RTs | d8ac7a
+  // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
   NgRcPassShader *pass = &ctx->rc_ws_resolve;
-  const NgRcWsClip *near = &ctx->ws_clip[NG_RC_WS_CLIP_NEAR];
   const NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
-  const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
-  const float sres[2] = {(float)near->sh.texture.width, (float)near->sh.texture.height};
+  const float sres[2] = {(float)far->sh.texture.width, (float)far->sh.texture.height};
   const float res[2] = {(float)ctx->rt_ws[dest].texture.width, (float)ctx->rt_ws[dest].texture.height};
+  const float world_cell = NG_RC_WS_CELL;
+  const float hash_size = (float)(ctx->ws_cpu.hash_size > 0 ? ctx->ws_cpu.hash_size : 64);
   BeginTextureMode(ctx->rt_ws[dest]);
   ClearBackground(BLACK);
   BeginShaderMode(pass->sh.handle);
@@ -1580,12 +1613,6 @@ static void mod_render_rc_ws_resolve(ModRenderCtx *ctx, int dest) {
   }
   if (pass->loc_sky >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_ws_origin >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_ws_origin, near->origin, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_ws_size >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_ws_size, near->size, SHADER_UNIFORM_VEC3);
   }
   {
     int loc = GetShaderLocation(pass->sh.handle, "ng_far_origin");
@@ -1599,15 +1626,16 @@ static void mod_render_rc_ws_resolve(ModRenderCtx *ctx, int dest) {
       SetShaderValue(pass->sh.handle, loc, far->size, SHADER_UNIFORM_VEC3);
     }
   }
-  if (pass->loc_probe_res >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_probe_res, &probe_res, SHADER_UNIFORM_FLOAT);
-  }
-  // agent: composer-2.5 | 2026-08-10 | CELL meter intervals no far gain | 1f82f9
   {
-    const float world_cell = NG_RC_WS_CELL;
     int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
     if (loc >= 0) {
       SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_hash_size");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &hash_size, SHADER_UNIFORM_FLOAT);
     }
   }
   {
@@ -1625,13 +1653,19 @@ static void mod_render_rc_ws_resolve(ModRenderCtx *ctx, int dest) {
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_sh");
     if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, near->sh.texture);
+      SetShaderValueTexture(pass->sh.handle, loc, far->sh.texture);
     }
   }
   {
-    int loc = GetShaderLocation(pass->sh.handle, "tex_sh_far");
-    if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, far->sh.texture);
+    int loc = GetShaderLocation(pass->sh.handle, "tex_meta");
+    if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_meta);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
+    if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
     }
   }
   mod_render_fs_draw(ctx->rt_depth.texture, ctx->rt_ws[dest].texture.width,
@@ -1744,6 +1778,26 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
       SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_grid);
     }
   }
+  {
+    const float world_cell = NG_RC_WS_CELL;
+    int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    const float hash_size = (float)(ctx->ws_cpu.hash_size > 0 ? ctx->ws_cpu.hash_size : 64);
+    int loc = GetShaderLocation(pass->sh.handle, "ng_hash_size");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &hash_size, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
+    if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
+    }
+  }
   DrawRectangle(0, 0, pw, ph, WHITE);
   EndShaderMode();
 }
@@ -1831,32 +1885,45 @@ static bool mod_render_rc_ws_vox_dirty(ModRenderCtx *ctx) {
   return true;
 }
 
-/** rc-ws: dirty prims → near fill every frame; far on cadence/force → resolve. */
+/** rc-ws: dirty prims → seed sparse keys → fill → resolve. */
 static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-10 | B2 amortize far fill cadence | e09d1a
+  // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
   const int force = mod_render_rc_ws_vox_dirty(ctx) ? 1 : 0;
   if (force) {
     ng_rc_ws_rebuild_prims(&ctx->ws_cpu);
     ng_rc_ws_rebuild_grid(&ctx->ws_cpu);
   }
 
-  /* Far every frame while nested blend is live — amortize re-enable with SH butter. */
-  // agent: composer-2.5 | 2026-08-10 | lockstep clip scroll soft blend | 23e626
-  static const int k_far_period[5] = {1, 1, 1, 1, 1};
-  int q = ctx->rc_quality;
-  if (q < 0) {
-    q = 0;
-  } else if (q > 4) {
-    q = 4;
+  NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
+  if (ctx->ws_seed_ready && ctx->gbuf_ready) {
+    // agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
+    BeginTextureMode(ctx->rt_ws_seed);
+    ClearBackground(BLANK);
+    {
+      const Rectangle src = {0.0f, 0.0f, (float)ctx->rt_depth.texture.width,
+                             (float)ctx->rt_depth.texture.height};
+      const Rectangle dst = {0.0f, 0.0f, (float)NG_RC_WS_SEED, (float)NG_RC_WS_SEED};
+      DrawTexturePro(ctx->rt_depth.texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+    }
+    EndTextureMode();
+    SetTraceLogLevel(LOG_WARNING);
+    Image seed = LoadImageFromTexture(ctx->rt_ws_seed.texture);
+    SetTraceLogLevel(LOG_INFO);
+    if (seed.data && seed.width > 0 && seed.height > 0) {
+      ImageFormat(&seed, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+      ImageFlipVertical(&seed);
+      ng_rc_ws_sparse_seed(&ctx->ws_cpu, (const unsigned char *)seed.data, seed.width, seed.height,
+                           far->origin, far->size);
+    }
+    UnloadImage(seed);
   }
-  const int far_period = k_far_period[q];
-  const int due_far = force || (ctx->ws_frame % far_period) == 0;
+  if (force) {
+    ng_rc_ws_sparse_mark_dirty(&ctx->ws_cpu);
+  }
 
-  // agent: composer-2.5 | 2026-08-10 | CELL meter intervals no far gain | 1f82f9
-  mod_render_rc_ws_fill_volume(ctx, &ctx->ws_clip[NG_RC_WS_CLIP_NEAR]);
-  if (due_far) {
-    mod_render_rc_ws_fill_volume(ctx, &ctx->ws_clip[NG_RC_WS_CLIP_FAR]);
-  }
+  /* Dirty-only when not forced — survivors keep cascade/SH rows. */
+  mod_render_rc_ws_fill_volume(ctx, far, force ? 0 : 1);
+  ng_rc_ws_sparse_clear_dirty(&ctx->ws_cpu);
   mod_render_rc_ws_resolve(ctx, ctx->ws_ping & 1);
   ctx->ws_frame++;
 
@@ -2565,3 +2632,6 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | shared near cell intervals fill | e61290
 // agent: composer-2.5 | 2026-08-10 | CELL meter intervals no far gain | 1f82f9
 // agent: composer-2.5 | 2026-08-10 | lockstep clip scroll soft blend | 23e626
+// agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
+// agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
+// agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e

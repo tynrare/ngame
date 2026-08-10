@@ -1,10 +1,13 @@
 // agent: composer-2.5 | 2026-08-10 | fill grid candidate SDF | 5c2c07
 // agent: composer-2.5 | 2026-08-10 | B1 fill grid uses far clip | d95529
-/* Dir-packed WS cascade: grid candidates + bound early-out SDF; self-hit skip. */
+// agent: composer-2.5 | 2026-08-10 | B3 sparse fill slot meta | 22f918
+// agent: composer-2.5 | 2026-08-10 | B3 fill discard non-dirty rows | 4bd01c
+/* Sparse slot×dir WS cascade: tex_meta centers + grid SDF. Atlas W=dirs H=slots. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_prim;
 uniform sampler2D tex_grid;
+uniform sampler2D tex_meta;
 uniform vec3 ng_ws_origin;
 uniform vec3 ng_ws_size;
 uniform vec3 ng_grid_origin;
@@ -17,6 +20,7 @@ uniform int ng_prim_count;
 uniform float ng_t0;
 uniform float ng_t1;
 uniform vec3 ng_sky;
+uniform float ng_fill_dirty_only; /* 1 = discard live clean rows (keep FBO) */
 
 out vec4 finalColor;
 
@@ -129,21 +133,25 @@ bool inside_clip(vec3 p) {
 }
 
 void main() {
-  float n = max(ng_probe_res, 1.0);
+  float nslots = max(ng_probe_res, 1.0);
   int nd = clamp(ng_dir_count, 1, DIR_MAX);
-  float px = floor(gl_FragCoord.x);
-  float pyz = floor(gl_FragCoord.y);
-  float d = floor(px / n);
-  float ix = mod(px, n);
-  float iy = mod(pyz, n);
-  float iz = floor(pyz / n);
-  if (d >= float(nd) || ix >= n || iy >= n || iz >= n) {
+  float d = floor(gl_FragCoord.x);
+  float slot = floor(gl_FragCoord.y);
+  if (d >= float(nd) || slot >= nslots) {
     finalColor = vec4(0.0);
     return;
   }
 
-  vec3 uvw = (vec3(ix, iy, iz) + 0.5) / n;
-  vec3 origin = ng_ws_origin + uvw * ng_ws_size;
+  vec4 meta = texelFetch(tex_meta, ivec2(0, int(slot)), 0);
+  if (meta.w < 0.5) {
+    finalColor = vec4(0.0);
+    return;
+  }
+  /* a>=1.5 → dirty; survivors keep previous cascade texel. */
+  if (ng_fill_dirty_only > 0.5 && meta.w < 1.5) {
+    discard;
+  }
+  vec3 origin = meta.xyz;
   vec3 dir = dir_from_index(int(d), nd);
   float t0 = max(ng_t0, 0.0);
   float t1 = max(ng_t1, t0 + 0.001);
@@ -178,3 +186,5 @@ void main() {
 }
 // agent: composer-2.5 | 2026-08-10 | fill grid candidate SDF | 5c2c07
 // agent: composer-2.5 | 2026-08-10 | B1 fill grid uses far clip | d95529
+// agent: composer-2.5 | 2026-08-10 | B3 sparse fill slot meta | 22f918
+// agent: composer-2.5 | 2026-08-10 | B3 fill discard non-dirty rows | 4bd01c
