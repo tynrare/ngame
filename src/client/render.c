@@ -187,12 +187,17 @@ typedef struct ModRenderCtx {
   int rc_probes_x[NG_RC_CASCADES_MAX];
   int rc_probes_y[NG_RC_CASCADES_MAX];
   int rc_spacing[NG_RC_CASCADES_MAX];
-  /* WS true RC: dir-packed cascade atlases + L1 SH + screen resolved irr. */
-  // agent: composer-2.5 | 2026-08-10 | wire SH encode after merge | 57cf52
+  /* WS true RC: dir-packed cascade atlases + L1 SH + frustum GPU vox. */
+  // agent: composer-2.5 | 2026-08-10 | frustum AABB GPU vox tick | e8fa02
   RenderTexture2D rt_ws_casc[NG_RC_CASCADES_MAX];
-  RenderTexture2D rt_ws_stamp; /* merge dest / merged atlas */
-  RenderTexture2D rt_ws_sh;    /* L1 SH atlas N*4 × N*N */
-  RenderTexture2D rt_ws[2];    /* screen irr butter ping-pong */
+  RenderTexture2D rt_ws_stamp;
+  RenderTexture2D rt_ws_sh;
+  RenderTexture2D rt_ws[2];
+  RenderTexture2D rt_vox; /* VOX × VOX² frustum-fit stamp atlas */
+  bool vox_rt_ready;
+  float ws_snap_origin[3];
+  float ws_snap_size[3];
+  uint32_t ws_vox_scene_hash;
   int ws_ping;
   bool ws_rt_ready;
   int ws_probe_n;
@@ -212,6 +217,7 @@ typedef struct ModRenderCtx {
   NgRcPassShader rc_ws_sh_encode;
   NgRcPassShader rc_ws_resolve;
   NgRcPassShader rc_ws_view;
+  NgRcPassShader rc_ws_vox_stamp;
 } ModRenderCtx;
 
 static ModRenderCtx g_render_ctx;
@@ -669,6 +675,10 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     ctx->ws_probe_n = 0;
     ctx->ws_dirs = 0;
   }
+  if (ctx->vox_rt_ready) {
+    UnloadRenderTexture(ctx->rt_vox);
+    ctx->vox_rt_ready = false;
+  }
   ng_rc_ws_shutdown(&ctx->ws_cpu);
   if (ctx->rc_fill.ready) {
     ng_shader_unload(&ctx->rc_fill.sh);
@@ -705,6 +715,10 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
   if (ctx->rc_ws_resolve.ready) {
     ng_shader_unload(&ctx->rc_ws_resolve.sh);
     ctx->rc_ws_resolve.ready = false;
+  }
+  if (ctx->rc_ws_vox_stamp.ready) {
+    ng_shader_unload(&ctx->rc_ws_vox_stamp.sh);
+    ctx->rc_ws_vox_stamp.ready = false;
   }
   if (ctx->rc_ws_view.ready) {
     ng_shader_unload(&ctx->rc_ws_view.sh);
@@ -897,6 +911,10 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
       !mod_render_load_rc_pass(&ctx->rc_ws_resolve, NG_RES_ROOT "shaders/rc_ws_resolve.fs")) {
     return false;
   }
+  if (!ctx->rc_ws_vox_stamp.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_vox_stamp, NG_RES_ROOT "shaders/rc_ws_vox_stamp.fs")) {
+    return false;
+  }
   if (!ctx->rc_ws_view.ready &&
       !mod_render_load_rc_pass(&ctx->rc_ws_view, NG_RES_ROOT "shaders/rc_ws_view.fs")) {
     return false;
@@ -1034,10 +1052,17 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->ws_irr_h = h;
     ctx->ws_ping = 0;
     ctx->ws_rt_ready = true;
-    ctx->ws_cpu.scene_hash = 0;
-    ctx->ws_cpu.frames_since_vox = 999;
-    (void)ng_rc_ws_sync_vox(&ctx->ws_cpu);
-    ng_rc_ws_upload_vox(&ctx->ws_cpu);
+    ctx->ws_vox_scene_hash = 0;
+  }
+  if (!ctx->vox_rt_ready) {
+    const int vw = NG_RC_WS_VOX_RES;
+    const int vh = NG_RC_WS_VOX_RES * NG_RC_WS_VOX_RES;
+    ctx->rt_vox = LoadRenderTexture(vw, vh);
+    SetTextureFilter(ctx->rt_vox.texture, TEXTURE_FILTER_POINT);
+    BeginTextureMode(ctx->rt_vox);
+    ClearBackground((Color){0, 0, 0, 0});
+    EndTextureMode();
+    ctx->vox_rt_ready = true;
   }
   return true;
 }
@@ -1233,7 +1258,11 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
   const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
   // agent: composer-2.5 | 2026-08-10 | true WS RC tick cascade chain | 82877c
   const int ping = ctx->ws_ping & 1;
-  const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
+  // agent: composer-2.5 | 2026-08-10 | compose view use present size | 316071
+  int pw = 0;
+  int ph = 0;
+  mod_render_internal_size(ctx, &pw, &ph);
+  const float res[2] = {(float)pw, (float)ph};
 
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
@@ -1282,7 +1311,7 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ss, ctx->rt_ss_irr.texture);
   }
   /* Carrier = depth so unit0 is not white if a sampler misses a slot. */
-  mod_render_fs_draw(ctx->rt_depth.texture, GetRenderWidth(), GetRenderHeight());
+  mod_render_fs_draw(ctx->rt_depth.texture, pw, ph);
   EndShaderMode();
 }
 
@@ -1470,7 +1499,11 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
   const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
   const int ping = ctx->ws_ping & 1;
-  const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
+  // agent: composer-2.5 | 2026-08-10 | compose view use present size | 316071
+  int pw = 0;
+  int ph = 0;
+  mod_render_internal_size(ctx, &pw, &ph);
+  const float res[2] = {(float)pw, (float)ph};
 
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
@@ -1495,21 +1528,80 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
   if (pass->loc_tex_irradiance_ws >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_ws[ping].texture);
   }
-  DrawRectangle(0, 0, GetRenderWidth(), GetRenderHeight(), WHITE);
+  DrawRectangle(0, 0, pw, ph, WHITE);
   EndShaderMode();
 }
 
-/** Phase 5b: WS dir-packed fill → T-merge → resolve. SS shelved. */
-static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-10 | true WS RC tick cascade chain | 82877c
-  static int s_force_vox = 1;
-  if (s_force_vox) {
-    ctx->ws_cpu.scene_hash = 0;
-    ctx->ws_cpu.frames_since_vox = 999;
-    s_force_vox = 0;
+
+/** Fixed-cell world-snapped clip volume (VOX_RES³), anchored on look-at. */
+static void mod_render_rc_ws_update_frustum_aabb(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-10 | target-center GI clip volume | b97038
+  const Camera3D *cam = &ctx->camera;
+  const float cell = NG_RC_WS_CELL;
+  const float extent = cell * (float)NG_RC_WS_VOX_RES;
+  const Vector3 size = {extent, extent, extent};
+
+  /* Frustum-AABB center is dominated by far corners: as the camera orbits a fixed
+   * target it swings sideways (not along cam motion). Anchor on look-at so orbit
+   * keeps the brick world-locked; pan/dolly of target slides it on the grid. */
+  const Vector3 anchor = cam->target;
+  Vector3 desired = {anchor.x - extent * 0.5f, anchor.y - extent * 0.5f,
+                     anchor.z - extent * 0.5f};
+  desired.x = floorf(desired.x / cell) * cell;
+  desired.y = floorf(desired.y / cell) * cell;
+  desired.z = floorf(desired.z / cell) * cell;
+
+  Vector3 origin = {ctx->ws_origin[0], ctx->ws_origin[1], ctx->ws_origin[2]};
+  const float hold = cell * 0.5f;
+  if (fabsf(desired.x - origin.x) >= hold || fabsf(desired.y - origin.y) >= hold ||
+      fabsf(desired.z - origin.z) >= hold || ctx->ws_size[0] < extent * 0.5f) {
+    origin = desired;
   }
-  if (ng_rc_ws_sync_vox(&ctx->ws_cpu)) {
-    ng_rc_ws_upload_vox(&ctx->ws_cpu);
+
+  ctx->ws_origin[0] = origin.x;
+  ctx->ws_origin[1] = origin.y;
+  ctx->ws_origin[2] = origin.z;
+  ctx->ws_size[0] = size.x;
+  ctx->ws_size[1] = size.y;
+  ctx->ws_size[2] = size.z;
+  ctx->ws_cpu.origin[0] = origin.x;
+  ctx->ws_cpu.origin[1] = origin.y;
+  ctx->ws_cpu.origin[2] = origin.z;
+  ctx->ws_cpu.size[0] = size.x;
+  ctx->ws_cpu.size[1] = size.y;
+  ctx->ws_cpu.size[2] = size.z;
+}
+
+/** True if frustum snap or scene content changed enough to restamp vox. */
+static bool mod_render_rc_ws_vox_dirty(ModRenderCtx *ctx) {
+  const uint32_t h = ng_rc_ws_scene_hash();
+  const float eps = 1e-3f;
+  const int moved =
+      fabsf(ctx->ws_origin[0] - ctx->ws_snap_origin[0]) > eps ||
+      fabsf(ctx->ws_origin[1] - ctx->ws_snap_origin[1]) > eps ||
+      fabsf(ctx->ws_origin[2] - ctx->ws_snap_origin[2]) > eps ||
+      fabsf(ctx->ws_size[0] - ctx->ws_snap_size[0]) > eps ||
+      fabsf(ctx->ws_size[1] - ctx->ws_snap_size[1]) > eps ||
+      fabsf(ctx->ws_size[2] - ctx->ws_snap_size[2]) > eps;
+  if (!moved && h == ctx->ws_vox_scene_hash) {
+    return false;
+  }
+  ctx->ws_snap_origin[0] = ctx->ws_origin[0];
+  ctx->ws_snap_origin[1] = ctx->ws_origin[1];
+  ctx->ws_snap_origin[2] = ctx->ws_origin[2];
+  ctx->ws_snap_size[0] = ctx->ws_size[0];
+  ctx->ws_snap_size[1] = ctx->ws_size[1];
+  ctx->ws_snap_size[2] = ctx->ws_size[2];
+  ctx->ws_vox_scene_hash = h;
+  return true;
+}
+
+/** Phase 6.1: frustum AABB + CPU vox stamp → dir-packed fill → T-merge → SH resolve. */
+static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-10 | frustum before gbuf CPU stamp | fff863
+  /* origin/size already set before gbuf; restamp when brick or scene moves. */
+  if (mod_render_rc_ws_vox_dirty(ctx)) {
+    ng_rc_ws_rebuild_vox(&ctx->ws_cpu);
   }
 
   const int probe_n = ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12;
@@ -1825,6 +1917,9 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       mod_scene_runtime_use_view();
     }
     if (mod_render_ensure_gbuf(ctx)) {
+      /* Frustum volume must match gbuf UVW packing this frame. */
+      // agent: composer-2.5 | 2026-08-10 | frustum before gbuf CPU stamp | fff863
+      mod_render_rc_ws_update_frustum_aabb(ctx);
       mod_render_collect_graph_batches(ctx);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_albedo, 0);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_normal, 1);
@@ -1834,7 +1929,8 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       bool rc_ready = false;
       if (want_rc && mod_render_ensure_rc(ctx)) {
         mod_render_rc_gpu_tick(ctx);
-        rc_ready = ctx->rc_rt_ready && ctx->ws_rt_ready && ctx->rc_compose.ready;
+        rc_ready = ctx->rc_rt_ready && ctx->ws_rt_ready && ctx->rc_compose.ready &&
+                   ctx->ws_cpu.vox_tex_ready;
       }
 
       if (ctx->debug_pass != NG_RENDER_PASS_FINAL || want_rc) {
@@ -2195,3 +2291,9 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | gi_strength default 1.0 again | 95a834
 // agent: composer-2.5 | 2026-08-10 | true WS RC tick cascade chain | 82877c
 // agent: composer-2.5 | 2026-08-10 | wire SH encode after merge | 57cf52
+
+// agent: composer-2.5 | 2026-08-10 | frustum AABB GPU vox tick | e8fa02
+// agent: composer-2.5 | 2026-08-10 | frustum before gbuf CPU stamp | fff863
+// agent: composer-2.5 | 2026-08-10 | world-snap fixed cell GI volume | 69d77e
+// agent: composer-2.5 | 2026-08-10 | target-center GI clip volume | b97038
+// agent: composer-2.5 | 2026-08-10 | compose view use present size | 316071

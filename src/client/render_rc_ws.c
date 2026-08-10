@@ -1,22 +1,16 @@
 /*
- * World-space RC: AABB voxelize → vox slice atlas for GPU dir-packed RC.
+ * World-space RC: quality + frustum-volume CPU vox stamp for GPU fill.
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (GPU fill/merge/resolve/compose)
+ * Related: src/client/render.c (frustum AABB before gbuf, fill/merge/SH)
  *
  * rc-ws flow:
- * 1) ensure → allocate vox scratch + tex_vox; quality → N/dirs/cascades/steps
- * 2) sync_vox → stamp graph AABBs when scene_hash dirty
- * 3) upload_vox → RGBA slice atlas for GPU march
- * Invariant: quality scales cost only. XZ flatland is not this path.
- * GPU (render.c): casc fill → T-merge → L1 SH encode → soft-nearest SH×N → compose.
+ * 1) ensure → scratch + tex_vox; quality → N/dirs/cascades/steps
+ * 2) render.c sets frustum-fit origin/size
+ * 3) rebuild_vox → stamp AABBs → upload atlas
+ * 4) fill samples tex_vox
  */
-// agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
-// agent: composer-2.5 | 2026-08-10 | playbook notes GPU resolve path | fd74c2
-// agent: composer-2.5 | 2026-08-10 | playbook SH soft-nearest align | da064d
-// agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
-// agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
-// agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
+// agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild impl | 689264
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -64,7 +58,7 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
 }
 
 static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
-  if (ws->ready) {
+  if (ws->ready && ws->vox_tex_ready && ws->vox_rgba) {
     return true;
   }
   ws->vox_occ = (unsigned char *)calloc((size_t)NG_RC_WS_VOX_N, 1);
@@ -75,7 +69,7 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
     ng_rc_ws_shutdown(ws);
     return false;
   }
-  Image img = GenImageColor(NG_RC_WS_VOX_RES, NG_RC_WS_VOX_RES * NG_RC_WS_VOX_RES, BLACK);
+  Image img = GenImageColor(NG_RC_WS_VOX_RES, NG_RC_WS_VOX_RES * NG_RC_WS_VOX_RES, BLANK);
   ws->tex_vox = LoadTextureFromImage(img);
   UnloadImage(img);
   if (ws->tex_vox.id == 0) {
@@ -90,8 +84,6 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
 
 bool ng_rc_ws_ensure(NgRcWsCtx *ws, int quality) {
   static const int k_probe[5] = {8, 10, 12, 16, 16};
-  /* More dirs (same probe_n) — kills star/ray artifacts; cost scales with dirs. */
-  // agent: composer-2.5 | 2026-08-10 | raise WS dirs quality ladder | 0478ff
   static const int k_dirs[5] = {12, 16, 24, 32, 48};
   static const int k_cascades[5] = {1, 2, 3, 3, 3};
   static const int k_steps[5] = {3, 4, 5, 6, 8};
@@ -119,9 +111,9 @@ static uint32_t ng_rc_ws_hash_u32(uint32_t h, uint32_t v) {
   return h;
 }
 
-static uint32_t ng_rc_ws_scene_hash(void) {
+uint32_t ng_rc_ws_scene_hash(void) {
   uint32_t h = 2166136261u;
-  h = ng_rc_ws_hash_u32(h, 0xF1002u); /* floor-slab skip policy */
+  h = ng_rc_ws_hash_u32(h, 0xF1002u);
   const int n = mod_scene_graph_inst_count();
   h = ng_rc_ws_hash_u32(h, (uint32_t)n);
   for (int i = 0; i < n; i++) {
@@ -137,6 +129,62 @@ static uint32_t ng_rc_ws_scene_hash(void) {
   return h;
 }
 
+bool ng_rc_ws_inst_stamp(int i, float center[3], float half[3], float lit[3]) {
+  if (!center || !half || !lit) {
+    return false;
+  }
+  const NgSceneInst *inst = mod_scene_graph_inst_at(i);
+  if (!inst || !inst->alive || !inst->model[0]) {
+    return false;
+  }
+  NgSceneResolvedModel resolved;
+  if (!mod_scene_assets_resolve_model(inst->model, &resolved) || !resolved.ok) {
+    return false;
+  }
+  const float s = inst->scale > 0.0f ? inst->scale : 1.0f;
+  float hx;
+  float hy;
+  float hz;
+  if (resolved.mesh_kind == NG_SCENE_MESH_SPHERE) {
+    hx = hy = hz = resolved.mesh_w * s;
+  } else {
+    const float k = 1.5f * 0.5f;
+    hx = resolved.mesh_w * k * s;
+    hy = resolved.mesh_h * k * s;
+    hz = resolved.mesh_d * k * s;
+  }
+  if (hy < 0.35f && hx >= 2.0f && hz >= 2.0f) {
+    return false;
+  }
+  center[0] = inst->pos[0];
+  center[1] = inst->pos[1];
+  center[2] = inst->pos[2];
+  half[0] = hx;
+  half[1] = hy;
+  half[2] = hz;
+  const float ar = (resolved.have_tint ? (float)resolved.tint_r : 180.0f) / 255.0f;
+  const float ag = (resolved.have_tint ? (float)resolved.tint_g : 180.0f) / 255.0f;
+  const float ab = (resolved.have_tint ? (float)resolved.tint_b : 180.0f) / 255.0f;
+  const float er = (resolved.have_glow ? (float)resolved.glow_r : 0.0f) / 255.0f;
+  const float eg = (resolved.have_glow ? (float)resolved.glow_g : 0.0f) / 255.0f;
+  const float eb = (resolved.have_glow ? (float)resolved.glow_b : 0.0f) / 255.0f;
+  const float emit_boost = 2.2f;
+  const float bounce = 1.35f;
+  lit[0] = er * emit_boost + ar * bounce;
+  lit[1] = eg * emit_boost + ag * bounce;
+  lit[2] = eb * emit_boost + ab * bounce;
+  if (lit[0] > 1.0f) {
+    lit[0] = 1.0f;
+  }
+  if (lit[1] > 1.0f) {
+    lit[1] = 1.0f;
+  }
+  if (lit[2] > 1.0f) {
+    lit[2] = 1.0f;
+  }
+  return true;
+}
+
 static int ng_rc_ws_vox_index(int x, int y, int z) {
   return (z * NG_RC_WS_VOX_RES + y) * NG_RC_WS_VOX_RES + x;
 }
@@ -148,12 +196,11 @@ static void ng_rc_ws_world_to_vox(const NgRcWsCtx *ws, float wx, float wy, float
   *oz = (int)floorf((wz - ws->origin[2]) / ws->size[2] * (float)NG_RC_WS_VOX_RES);
 }
 
-static void ng_rc_ws_stamp_box(NgRcWsCtx *ws, float cx, float cy, float cz, float hx, float hy,
-                               float hz, unsigned char ar, unsigned char ag, unsigned char ab,
-                               unsigned char er, unsigned char eg, unsigned char eb) {
+static void ng_rc_ws_stamp_box(NgRcWsCtx *ws, const float c[3], const float h[3],
+                               const float lit[3]) {
   int x0, y0, z0, x1, y1, z1;
-  ng_rc_ws_world_to_vox(ws, cx - hx, cy - hy, cz - hz, &x0, &y0, &z0);
-  ng_rc_ws_world_to_vox(ws, cx + hx, cy + hy, cz + hz, &x1, &y1, &z1);
+  ng_rc_ws_world_to_vox(ws, c[0] - h[0], c[1] - h[1], c[2] - h[2], &x0, &y0, &z0);
+  ng_rc_ws_world_to_vox(ws, c[0] + h[0], c[1] + h[1], c[2] + h[2], &x1, &y1, &z1);
   if (x0 > x1) {
     int t = x0;
     x0 = x1;
@@ -191,94 +238,53 @@ static void ng_rc_ws_stamp_box(NgRcWsCtx *ws, float cx, float cy, float cz, floa
   if (z1 >= NG_RC_WS_VOX_RES) {
     z1 = NG_RC_WS_VOX_RES - 1;
   }
+  const unsigned char r = (unsigned char)(lit[0] * 255.0f);
+  const unsigned char g = (unsigned char)(lit[1] * 255.0f);
+  const unsigned char b = (unsigned char)(lit[2] * 255.0f);
   for (int z = z0; z <= z1; z++) {
     for (int y = y0; y <= y1; y++) {
       for (int x = x0; x <= x1; x++) {
         const int i = ng_rc_ws_vox_index(x, y, z);
         ws->vox_occ[i] = 255;
-        ws->vox_alb[i * 3 + 0] = ar;
-        ws->vox_alb[i * 3 + 1] = ag;
-        ws->vox_alb[i * 3 + 2] = ab;
-        if (er | eg | eb) {
-          ws->vox_emit[i * 3 + 0] = er;
-          ws->vox_emit[i * 3 + 1] = eg;
-          ws->vox_emit[i * 3 + 2] = eb;
-        }
+        ws->vox_alb[i * 3 + 0] = r;
+        ws->vox_alb[i * 3 + 1] = g;
+        ws->vox_alb[i * 3 + 2] = b;
       }
     }
   }
 }
 
-static void ng_rc_ws_voxelize(NgRcWsCtx *ws) {
+void ng_rc_ws_rebuild_vox(NgRcWsCtx *ws) {
+  if (!ws || !ws->ready || !ws->vox_tex_ready || !ws->vox_rgba) {
+    return;
+  }
   memset(ws->vox_occ, 0, (size_t)NG_RC_WS_VOX_N);
   memset(ws->vox_alb, 0, (size_t)NG_RC_WS_VOX_N * 3u);
   memset(ws->vox_emit, 0, (size_t)NG_RC_WS_VOX_N * 3u);
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
-    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (!inst || !inst->alive || !inst->model[0]) {
+    float center[3];
+    float half[3];
+    float lit[3];
+    if (!ng_rc_ws_inst_stamp(i, center, half, lit)) {
       continue;
     }
-    NgSceneResolvedModel resolved;
-    if (!mod_scene_assets_resolve_model(inst->model, &resolved) || !resolved.ok) {
+    /* Overlap vs volume */
+    const float amin[3] = {center[0] - half[0], center[1] - half[1], center[2] - half[2]};
+    const float amax[3] = {center[0] + half[0], center[1] + half[1], center[2] + half[2]};
+    const float bmin[3] = {ws->origin[0], ws->origin[1], ws->origin[2]};
+    const float bmax[3] = {ws->origin[0] + ws->size[0], ws->origin[1] + ws->size[1],
+                           ws->origin[2] + ws->size[2]};
+    if (amin[0] > bmax[0] || amax[0] < bmin[0] || amin[1] > bmax[1] || amax[1] < bmin[1] ||
+        amin[2] > bmax[2] || amax[2] < bmin[2]) {
       continue;
     }
-    const float s = inst->scale > 0.0f ? inst->scale : 1.0f;
-    float hx;
-    float hy;
-    float hz;
-    if (resolved.mesh_kind == NG_SCENE_MESH_SPHERE) {
-      /* GenMeshSphere(mesh_w) — radius = mesh_w. */
-      hx = hy = hz = resolved.mesh_w * s;
-    } else {
-      /* GenMeshCube(w*1.5,…) — half-extent = mesh_* * 0.75 * s. */
-      const float k = 1.5f * 0.5f;
-      hx = resolved.mesh_w * k * s;
-      hy = resolved.mesh_h * k * s;
-      hz = resolved.mesh_d * k * s;
-    }
-    // agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
-    /* Huge thin floors block all wall rays from floor probes — skip for GI vox. */
-    if (hy < 0.35f && hx >= 2.0f && hz >= 2.0f) {
-      continue;
-    }
-    const unsigned char ar = resolved.have_tint ? resolved.tint_r : 180;
-    const unsigned char ag = resolved.have_tint ? resolved.tint_g : 180;
-    const unsigned char ab = resolved.have_tint ? resolved.tint_b : 180;
-    const unsigned char er = resolved.have_glow ? resolved.glow_r : 0;
-    const unsigned char eg = resolved.have_glow ? resolved.glow_g : 0;
-    const unsigned char eb = resolved.have_glow ? resolved.glow_b : 0;
-    ng_rc_ws_stamp_box(ws, inst->pos[0], inst->pos[1], inst->pos[2], hx, hy, hz, ar, ag, ab, er, eg,
-                       eb);
+    ng_rc_ws_stamp_box(ws, center, half, lit);
   }
-}
-
-bool ng_rc_ws_sync_vox(NgRcWsCtx *ws) {
-  if (!ws || !ws->ready) {
-    return false;
-  }
-  const uint32_t h = ng_rc_ws_scene_hash();
-  if (h != ws->scene_hash || ws->frames_since_vox > 30) {
-    ng_rc_ws_voxelize(ws);
-    ws->scene_hash = h;
-    ws->frames_since_vox = 0;
-    return true;
-  }
-  ws->frames_since_vox++;
-  return false;
-}
-
-void ng_rc_ws_upload_vox(NgRcWsCtx *ws) {
-  if (!ws || !ws->ready || !ws->vox_tex_ready || !ws->vox_rgba) {
-    return;
-  }
-  const float emit_boost = 2.2f;
-  const float bounce = 1.35f;
   for (int z = 0; z < NG_RC_WS_VOX_RES; z++) {
     for (int y = 0; y < NG_RC_WS_VOX_RES; y++) {
       for (int x = 0; x < NG_RC_WS_VOX_RES; x++) {
         const int vi = ng_rc_ws_vox_index(x, y, z);
-        /* Atlas: width=VOX, height=VOX*VOX; slice z stacked in Y. */
         const int pi = (z * NG_RC_WS_VOX_RES + y) * NG_RC_WS_VOX_RES + x;
         if (!ws->vox_occ[vi]) {
           ws->vox_rgba[pi * 4 + 0] = 0;
@@ -287,34 +293,13 @@ void ng_rc_ws_upload_vox(NgRcWsCtx *ws) {
           ws->vox_rgba[pi * 4 + 3] = 0;
           continue;
         }
-        float r = (float)ws->vox_emit[vi * 3 + 0] / 255.0f * emit_boost +
-                  (float)ws->vox_alb[vi * 3 + 0] / 255.0f * bounce;
-        float g = (float)ws->vox_emit[vi * 3 + 1] / 255.0f * emit_boost +
-                  (float)ws->vox_alb[vi * 3 + 1] / 255.0f * bounce;
-        float b = (float)ws->vox_emit[vi * 3 + 2] / 255.0f * emit_boost +
-                  (float)ws->vox_alb[vi * 3 + 2] / 255.0f * bounce;
-        if (r > 1.0f) {
-          r = 1.0f;
-        }
-        if (g > 1.0f) {
-          g = 1.0f;
-        }
-        if (b > 1.0f) {
-          b = 1.0f;
-        }
-        ws->vox_rgba[pi * 4 + 0] = (unsigned char)(r * 255.0f);
-        ws->vox_rgba[pi * 4 + 1] = (unsigned char)(g * 255.0f);
-        ws->vox_rgba[pi * 4 + 2] = (unsigned char)(b * 255.0f);
+        ws->vox_rgba[pi * 4 + 0] = ws->vox_alb[vi * 3 + 0];
+        ws->vox_rgba[pi * 4 + 1] = ws->vox_alb[vi * 3 + 1];
+        ws->vox_rgba[pi * 4 + 2] = ws->vox_alb[vi * 3 + 2];
         ws->vox_rgba[pi * 4 + 3] = 255;
       }
     }
   }
   UpdateTexture(ws->tex_vox, ws->vox_rgba);
 }
-// agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
-// agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
-// agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
-// agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
-// agent: composer-2.5 | 2026-08-10 | raise WS dirs quality ladder | 0478ff
-// agent: composer-2.5 | 2026-08-10 | playbook notes GPU resolve path | fd74c2
-// agent: composer-2.5 | 2026-08-10 | playbook SH soft-nearest align | da064d
+// agent: composer-2.5 | 2026-08-10 | CPU frustum vox rebuild impl | 689264
