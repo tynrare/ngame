@@ -1,30 +1,16 @@
-// agent: composer-2.5 | 2026-08-10 | decode depth * FAR | c6839c
+// agent: composer-2.5 | 2026-08-10 | integer 3D probe sample | 5fa5ec
 /* Screen-resolve WS probe volume for irradiance debug. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_depth;
 uniform sampler2D tex_irradiance_ws;
 uniform vec3 ng_sky;
-uniform vec3 ng_cam_pos;
-uniform vec3 ng_cam_forward;
-uniform vec3 ng_cam_right;
-uniform vec3 ng_cam_up;
-uniform float ng_tan_half_fov;
-uniform float ng_aspect;
 uniform vec3 ng_ws_origin;
 uniform vec3 ng_ws_size;
 uniform float ng_probe_res;
+uniform vec2 ng_resolution;
 
 out vec4 finalColor;
-
-const float FAR = 80.0;
-
-vec3 world_from_uv_depth(vec2 uv, float d) {
-  vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-  vec3 dir = normalize(ng_cam_forward + ng_cam_right * (ndc.x * ng_tan_half_fov * ng_aspect) +
-                       ng_cam_up * (ndc.y * ng_tan_half_fov));
-  return ng_cam_pos + dir * d;
-}
 
 vec3 sample_probe_volume(vec3 world) {
   vec3 uvw = (world - ng_ws_origin) / max(ng_ws_size, vec3(0.001));
@@ -32,24 +18,24 @@ vec3 sample_probe_volume(vec3 world) {
     return ng_sky * 0.1;
   }
   float res = max(ng_probe_res, 1.0);
-  float x = uvw.x * (res - 1.0);
-  float y = uvw.y * (res - 1.0);
-  float z = uvw.z * (res - 1.0);
-  float u = (x + 0.5) / res;
-  float v = (y + z * res + 0.5) / (res * res);
+  /* 3D nearest — not 2D atlas nearest (that shears Y into Z). */
+  vec3 p = floor(clamp(uvw, 0.0, 0.999999) * res);
+  float u = (p.x + 0.5) / res;
+  float v = (p.y + p.z * res + 0.5) / (res * res);
   return texture(tex_irradiance_ws, vec2(u, v)).rgb;
 }
 
 void main() {
-  vec2 uv = fragTexCoord;
-  float enc = texture(tex_depth, uv).r;
-  if (enc < 0.0005) {
+  vec2 uv = gl_FragCoord.xy / max(ng_resolution, vec2(1.0));
+  vec4 depth_pack = texture(tex_depth, uv);
+  if (depth_pack.a < 0.5) {
     finalColor = vec4(0.0);
     return;
   }
-  float d = enc * FAR;
-  vec3 world = world_from_uv_depth(uv, d);
-  world -= normalize(world - ng_cam_pos) * 0.08;
+  vec3 world = ng_ws_origin + depth_pack.rgb * ng_ws_size;
+  // agent: composer-2.5 | 2026-08-10 | view match compose sample | ae2fea
+  world.y += 0.12;
   finalColor = vec4(sample_probe_volume(world), 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | decode depth * FAR | c6839c
+// agent: composer-2.5 | 2026-08-10 | view match compose sample | ae2fea
+// agent: composer-2.5 | 2026-08-10 | integer 3D probe sample | 5fa5ec

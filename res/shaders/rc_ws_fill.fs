@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-08-10 | fill FragCoord atlas | 00380b
+// agent: composer-2.5 | 2026-08-10 | integer 3D vox sample | 86060a
 /* Probe volume fill: index by gl_FragCoord (GL y=0 bottom); march tex_vox. */
 in vec2 fragTexCoord;
 
@@ -31,11 +31,10 @@ vec4 sample_vox(vec3 world) {
     return vec4(0.0);
   }
   float res = max(ng_vox_res, 1.0);
-  float x = uvw.x * (res - 1.0);
-  float y = uvw.y * (res - 1.0);
-  float z = uvw.z * (res - 1.0);
-  float u = (x + 0.5) / res;
-  float v = (y + z * res + 0.5) / (res * res);
+  /* 3D nearest voxel — matches CPU stamp lattice. */
+  vec3 p = floor(clamp(uvw, 0.0, 0.999999) * res);
+  float u = (p.x + 0.5) / res;
+  float v = (p.y + p.z * res + 0.5) / (res * res);
   return texture(tex_vox, vec2(u, v));
 }
 
@@ -96,4 +95,4 @@ void main() {
   }
   finalColor = vec4(acc / float(nd), 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | fill FragCoord atlas | 00380b
+// agent: composer-2.5 | 2026-08-10 | integer 3D vox sample | 86060a

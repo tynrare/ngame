@@ -27,6 +27,11 @@
 // agent: composer-2.5 | 2026-08-10 | WS atlas nearest no Vflip | 787633
 // agent: composer-2.5 | 2026-08-10 | WS blit identity no flip | b8e489
 // agent: composer-2.5 | 2026-08-10 | depth far WS simplify | 6dd473
+// agent: composer-2.5 | 2026-08-10 | ss weight zero isolate WS | b458b3
+// agent: composer-2.5 | 2026-08-10 | negate cam_right reconstruct | 95d5a9
+// agent: composer-2.5 | 2026-08-10 | wire ws origin gbuf world | 4bc5ef
+// agent: composer-2.5 | 2026-08-10 | gbuf disable blend pack | 8655f8
+// agent: composer-2.5 | 2026-08-10 | SS fill world dist uniforms | 9b6064
 #include "render.h"
 #include "render_rc_ws.h"
 #include "engine/ng_action.h"
@@ -46,6 +51,7 @@
 #include <limits.h>
 #include <raylib.h>
 #include <raymath.h>
+#include <rlgl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -599,6 +605,17 @@ static void mod_render_set_gbuf_uniforms(ModRenderCtx *ctx, const RenderAsset *a
     const float cam[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
     SetShaderValue(sh->handle, sh->loc_cam_pos, cam, SHADER_UNIFORM_VEC3);
   }
+  // agent: composer-2.5 | 2026-08-10 | wire ws origin gbuf world | 4bc5ef
+  {
+    int loc = GetShaderLocation(sh->handle, "ng_ws_origin");
+    if (loc >= 0) {
+      SetShaderValue(sh->handle, loc, ctx->ws_origin, SHADER_UNIFORM_VEC3);
+    }
+    loc = GetShaderLocation(sh->handle, "ng_ws_size");
+    if (loc >= 0) {
+      SetShaderValue(sh->handle, loc, ctx->ws_size, SHADER_UNIFORM_VEC3);
+    }
+  }
 }
 
 static void mod_render_unload_gbuf(ModRenderCtx *ctx) {
@@ -1012,6 +1029,17 @@ static void mod_render_rc_fill_cascade(ModRenderCtx *ctx, int c, float t0, float
   if (pass->loc_sky >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
   }
+  // agent: composer-2.5 | 2026-08-10 | SS dist from world uvw | 39bad7
+  if (pass->loc_cam_pos >= 0) {
+    const float cam[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
+    SetShaderValue(pass->sh.handle, pass->loc_cam_pos, cam, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_ws_origin >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_origin, ctx->ws_origin, SHADER_UNIFORM_VEC3);
+  }
+  if (pass->loc_ws_size >= 0) {
+    SetShaderValue(pass->sh.handle, pass->loc_ws_size, ctx->ws_size, SHADER_UNIFORM_VEC3);
+  }
   if (pass->loc_tex_depth >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
   }
@@ -1130,63 +1158,26 @@ static void mod_render_rc_resolve(ModRenderCtx *ctx) {
   EndTextureMode();
 }
 
-/** Compose Direct + WS volume + SS polish. */
+/** Compose Direct + WS volume (FragCoord UV; no blit carrier override). */
 static void mod_render_rc_compose(ModRenderCtx *ctx) {
   NgRcPassShader *pass = &ctx->rc_compose;
   const float gi = ctx->gi_strength;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
-  const float ws_w = 0.85f;
-  const float ss_w = 0.15f;
   const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
-  const Vector3 forward =
-      Vector3Normalize(Vector3Subtract(ctx->camera.target, ctx->camera.position));
-  const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, ctx->camera.up));
-  const Vector3 up = Vector3Normalize(Vector3CrossProduct(right, forward));
-  const float tan_half = tanf(ctx->camera.fovy * 0.5f * DEG2RAD);
-  const float aspect = (ctx->gbuf_h > 0) ? ((float)ctx->gbuf_w / (float)ctx->gbuf_h) : 1.0f;
-  const float cam_pos[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
-  const float cam_f[3] = {forward.x, forward.y, forward.z};
-  const float cam_r[3] = {right.x, right.y, right.z};
-  const float cam_u[3] = {up.x, up.y, up.z};
+  // agent: composer-2.5 | 2026-08-10 | compose blit depth carrier | 036788
   const int ping = ctx->ws_ping & 1;
+  const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
 
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
-  {
-    const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
-    if (pass->sh.loc_resolution >= 0) {
-      SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
-    }
+  if (pass->sh.loc_resolution >= 0) {
+    SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
   }
   if (pass->loc_gi_strength >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_gi_strength, &gi, SHADER_UNIFORM_FLOAT);
   }
-  if (pass->loc_ws_weight >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_ws_weight, &ws_w, SHADER_UNIFORM_FLOAT);
-  }
-  if (pass->loc_ss_weight >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_ss_weight, &ss_w, SHADER_UNIFORM_FLOAT);
-  }
   if (pass->loc_sky >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_pos >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_pos, cam_pos, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_forward >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_forward, cam_f, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_right >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_right, cam_r, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_up >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_up, cam_u, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_tan_half_fov >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_tan_half_fov, &tan_half, SHADER_UNIFORM_FLOAT);
-  }
-  if (pass->loc_aspect >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_aspect, &aspect, SHADER_UNIFORM_FLOAT);
   }
   if (pass->loc_ws_origin >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_ws_origin, ctx->ws_origin, SHADER_UNIFORM_VEC3);
@@ -1212,10 +1203,7 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
   if (pass->loc_tex_irradiance_ws >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_ws[ping].texture);
   }
-  if (pass->loc_tex_irradiance_ss >= 0) {
-    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ss, ctx->rt_ss_irr.texture);
-  }
-  mod_render_blit_rt(&ctx->rt_albedo);
+  DrawRectangle(0, 0, GetRenderWidth(), GetRenderHeight(), WHITE);
   EndShaderMode();
 }
 
@@ -1270,6 +1258,7 @@ static void mod_render_rc_ws_vol_fill(ModRenderCtx *ctx, int dest) {
       SetShaderValueTexture(pass->sh.handle, pass->loc_tex_stamp, ctx->ws_cpu.tex_vox);
     }
   }
+  /* Carrier = tex_vox so unit0 bind matches sample_vox. */
   mod_render_ws_fs_draw(ctx->ws_cpu.tex_vox, ctx->rt_ws[dest].texture.width,
                         ctx->rt_ws[dest].texture.height);
   EndShaderMode();
@@ -1315,46 +1304,17 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
   NgRcPassShader *pass = &ctx->rc_ws_view;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
   const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
-  const Vector3 forward =
-      Vector3Normalize(Vector3Subtract(ctx->camera.target, ctx->camera.position));
-  const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, ctx->camera.up));
-  const Vector3 up = Vector3Normalize(Vector3CrossProduct(right, forward));
-  const float tan_half = tanf(ctx->camera.fovy * 0.5f * DEG2RAD);
-  const float aspect = (ctx->gbuf_h > 0) ? ((float)ctx->gbuf_w / (float)ctx->gbuf_h) : 1.0f;
-  const float cam_pos[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
-  const float cam_f[3] = {forward.x, forward.y, forward.z};
-  const float cam_r[3] = {right.x, right.y, right.z};
-  const float cam_u[3] = {up.x, up.y, up.z};
+  // agent: composer-2.5 | 2026-08-10 | compose blit depth carrier | 036788
   const int ping = ctx->ws_ping & 1;
+  const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
 
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
-  {
-    const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
-    if (pass->sh.loc_resolution >= 0) {
-      SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
-    }
+  if (pass->sh.loc_resolution >= 0) {
+    SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
   }
   if (pass->loc_sky >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_pos >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_pos, cam_pos, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_forward >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_forward, cam_f, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_right >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_right, cam_r, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_cam_up >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_cam_up, cam_u, SHADER_UNIFORM_VEC3);
-  }
-  if (pass->loc_tan_half_fov >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_tan_half_fov, &tan_half, SHADER_UNIFORM_FLOAT);
-  }
-  if (pass->loc_aspect >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_aspect, &aspect, SHADER_UNIFORM_FLOAT);
   }
   if (pass->loc_ws_origin >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_ws_origin, ctx->ws_origin, SHADER_UNIFORM_VEC3);
@@ -1371,7 +1331,7 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
   if (pass->loc_tex_irradiance_ws >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_ws[ping].texture);
   }
-  mod_render_blit_rt(&ctx->rt_depth);
+  DrawRectangle(0, 0, GetRenderWidth(), GetRenderHeight(), WHITE);
   EndShaderMode();
 }
 
@@ -1388,7 +1348,10 @@ static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
     ng_rc_ws_upload_vox(&ctx->ws_cpu);
   }
   mod_render_rc_ws_vol_fill(ctx, prev ^ 1);
-  mod_render_rc_ws_butter(ctx, 0.45f, prev);
+  /* Skip butter RT blit — unshadered DrawTexturePro Y-flips the probe atlas (Z mirror). */
+  // agent: composer-2.5 | 2026-08-10 | butter write dest direct | 4ae3f5
+  (void)prev;
+  /* mod_render_rc_ws_butter(ctx, 0.45f, prev); */
 
   int cascades = 3;
   int shift = 0;
@@ -1535,11 +1498,15 @@ static void mod_render_flush_batches_gbuf(ModRenderCtx *ctx, int mode) {
 }
 
 static void mod_render_fill_gbuf_graph(ModRenderCtx *ctx, RenderTexture2D *rt, int mode) {
+  // agent: composer-2.5 | 2026-08-10 | gbuf disable blend pack | 8655f8
+  /* Alpha blend would multiply world-UVW by dist/FAR → black GI. */
   BeginTextureMode(*rt);
   ClearBackground(BLACK);
+  rlDisableColorBlend();
   BeginMode3D(ctx->camera);
   mod_render_flush_batches_gbuf(ctx, mode);
   EndMode3D();
+  rlEnableColorBlend();
   EndTextureMode();
 }
 
@@ -2013,3 +1980,8 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | WS atlas nearest no Vflip | 787633
 // agent: composer-2.5 | 2026-08-10 | WS blit identity no flip | b8e489
 // agent: composer-2.5 | 2026-08-10 | depth far WS simplify | 6dd473
+// agent: composer-2.5 | 2026-08-10 | ss weight zero isolate WS | b458b3
+// agent: composer-2.5 | 2026-08-10 | negate cam_right reconstruct | 95d5a9
+// agent: composer-2.5 | 2026-08-10 | wire ws origin gbuf world | 4bc5ef
+// agent: composer-2.5 | 2026-08-10 | gbuf disable blend pack | 8655f8
+// agent: composer-2.5 | 2026-08-10 | SS fill world dist uniforms | 9b6064

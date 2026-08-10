@@ -13,6 +13,7 @@
 // agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
 // agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
 // agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
+// agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -115,6 +116,7 @@ static uint32_t ng_rc_ws_hash_u32(uint32_t h, uint32_t v) {
 
 static uint32_t ng_rc_ws_scene_hash(void) {
   uint32_t h = 2166136261u;
+  h = ng_rc_ws_hash_u32(h, 0xF1002u); /* floor-slab skip policy */
   const int n = mod_scene_graph_inst_count();
   h = ng_rc_ws_hash_u32(h, (uint32_t)n);
   for (int i = 0; i < n; i++) {
@@ -230,6 +232,11 @@ static void ng_rc_ws_voxelize(NgRcWsCtx *ws) {
       hy = resolved.mesh_h * k * s;
       hz = resolved.mesh_d * k * s;
     }
+    // agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
+    /* Huge thin floors block all wall rays from floor probes — skip for GI vox. */
+    if (hy < 0.35f && hx >= 2.0f && hz >= 2.0f) {
+      continue;
+    }
     const unsigned char ar = resolved.have_tint ? resolved.tint_r : 180;
     const unsigned char ag = resolved.have_tint ? resolved.tint_g : 180;
     const unsigned char ab = resolved.have_tint ? resolved.tint_b : 180;
@@ -260,8 +267,8 @@ void ng_rc_ws_upload_vox(NgRcWsCtx *ws) {
   if (!ws || !ws->ready || !ws->vox_tex_ready || !ws->vox_rgba) {
     return;
   }
-  const float emit_boost = 1.6f;
-  const float bounce = 0.95f;
+  const float emit_boost = 2.2f;
+  const float bounce = 1.35f;
   for (int z = 0; z < NG_RC_WS_VOX_RES; z++) {
     for (int y = 0; y < NG_RC_WS_VOX_RES; y++) {
       for (int x = 0; x < NG_RC_WS_VOX_RES; x++) {
@@ -302,3 +309,4 @@ void ng_rc_ws_upload_vox(NgRcWsCtx *ws) {
 // agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
 // agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
 // agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
+// agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8

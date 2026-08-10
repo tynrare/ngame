@@ -1,5 +1,4 @@
-// agent: composer-2.5 | 2026-08-10 | SS fill albedo bounce | 1319b9
-// agent: composer-2.5 | 2026-08-10 | decode depth FAR SS | 2ba9f2
+// agent: composer-2.5 | 2026-08-10 | SS dist from world uvw | 39bad7
 /* Direction-first packed fill: one texel = one (probe, dir) interval march. */
 in vec2 fragTexCoord;
 
@@ -15,21 +14,33 @@ uniform float ng_interval0;
 uniform float ng_interval1;
 uniform int ng_max_steps;
 uniform vec3 ng_sky;
+uniform vec3 ng_cam_pos;
+uniform vec3 ng_ws_origin;
+uniform vec3 ng_ws_size;
 
 out vec4 finalColor;
 
-const float FAR = 80.0; /* must match rc_gbuf.fs encode */
+const float FAR = 80.0;
 const float EPS = 0.02;
 const float THICKNESS = 0.45;
 const float FRONT_BIAS = 0.12;
 const float EMIT_BOOST = 2.4;
-const float BOUNCE_SCALE = 1.85; /* lit-albedo stand-in for matte bounce */
+const float BOUNCE_SCALE = 1.85;
 const float GLOW_HIT = 0.025;
 const float GEO_OPACITY = 0.8;
 
 vec2 dir_from_index(int i, int n) {
   float a = 6.2831853 * (float(i) + 0.5) / float(max(n, 1));
   return vec2(cos(a), sin(a));
+}
+
+float depth_world_dist(vec2 uv) {
+  vec4 pack = texture(tex_depth, uv);
+  if (pack.a < 0.5) {
+    return 0.0;
+  }
+  vec3 world = ng_ws_origin + pack.rgb * ng_ws_size;
+  return length(world - ng_cam_pos);
 }
 
 void main() {
@@ -41,7 +52,6 @@ void main() {
   int dir_side = max(ng_dir_side, 1);
   int dirs = dir_side * dir_side;
 
-  /* Direction-first: dir tiles of size probes_x × probes_y. */
   int dir_col = int(floor(px / probes_x));
   int dir_row = int(floor(py / probes_y));
   int probe_x = int(mod(px, probes_x));
@@ -60,7 +70,7 @@ void main() {
     return;
   }
 
-  float my_d = texture(tex_depth, uv).r * FAR;
+  float my_d = depth_world_dist(uv);
   if (my_d < EPS) {
     finalColor = vec4(ng_sky * 0.03, 0.0);
     return;
@@ -82,14 +92,13 @@ void main() {
     }
     vec3 g = texture(tex_glow, p).rgb;
     float glow_lum = max(g.r, max(g.g, g.b));
-    float zd = texture(tex_depth, p).r * FAR;
+    float zd = depth_world_dist(p);
     bool geo = false;
     if (zd > EPS && zd < FAR) {
       geo = (zd < my_d - FRONT_BIAS) || (abs(zd - my_d) > THICKNESS);
     }
     if (glow_lum > GLOW_HIT || geo) {
       vec3 a = texture(tex_albedo, p).rgb;
-      /* Glow rim + matte color bounce (albedo as lit proxy). */
       vec3 L = g * EMIT_BOOST + a * BOUNCE_SCALE;
       float opac = glow_lum > GLOW_HIT ? 1.0 : GEO_OPACITY;
       rad += T * L;
@@ -102,5 +111,4 @@ void main() {
   rad += T * ng_sky * 0.015;
   finalColor = vec4(rad, clamp(1.0 - T, 0.0, 1.0));
 }
-// agent: composer-2.5 | 2026-08-10 | SS fill albedo bounce | 1319b9
-// agent: composer-2.5 | 2026-08-10 | decode depth FAR SS | 2ba9f2
+// agent: composer-2.5 | 2026-08-10 | SS dist from world uvw | 39bad7
