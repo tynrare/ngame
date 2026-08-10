@@ -9,6 +9,7 @@
 <!-- agent: composer-2.5 | 2026-08-10 | doc slot reuse blend fix | 25efff -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc merge pingpong not casc | 6dd37b -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc sparse soft-nearest | 77d165 -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc sparse trilinear resolve | 33ef2d -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -27,7 +28,7 @@ Compose: `ambient×1 + directional×1 + gi_strength×1·kd·irr + glow`.
 | Grid | **8³** uniform over **far**; **4** slots/cell (`tex_grid` RGBA8); dirty-gated |
 | Sparse | Screen-seeded CELL keys → slot pool; `tex_meta` + open-address `tex_hash` |
 | Fill | Atlas **W=dirs × H=slots**; SDF march from meta centers |
-| Merge / SH / Resolve | T-merge → L1 SH; resolve **soft-nearest** over hash neighbors |
+| Merge / SH / Resolve | T-merge → L1 SH; resolve **sparse trilinear** (8-corner hash) |
 | Compose | `AMBIENT=1`, `DIRECTIONAL=1`; `gi_strength` default 1 |
 | Quality | Scales **slots / dirs / cascades / steps** |
 
@@ -84,7 +85,7 @@ One path (no GPU/CPU mode switch):
 1. Blit `rt_depth` → 64² seed; `ReadPixels` that only.
 2. CPU: unique `floor(p/CELL)` keys + face pad; slot pool by quality (128…512).
 3. Upload `tex_meta` (center+occ) + `tex_hash` (slot+1, cell xyz).
-4. Fill/merge/SH on **dirs × slots** atlas; resolve soft-nearest (hash; skip missing); fill blend-off.
+4. Fill/merge/SH on **dirs × slots** atlas; resolve sparse trilinear (8 corners; skip miss); fill blend-off.
 5. OOV dropped by full reseed each frame.
 
 ### B.4 — hierarchy (toward B.5)
@@ -112,7 +113,7 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 | `AMBIENT` / `DIRECTIONAL` | 1 |
 | `AMBIENT_ALBEDO` | 0.22 |
 | Fill bounce / E_LIT / emit | ~1.65 / ~1.35 / ~6 |
-| `SELF_T_MIN` / resolve | ~0.1 / soft-nearest `SOFT_BAND=0.2` + bias |
+| `SELF_T_MIN` / resolve | ~0.1 / sparse trilinear + bias |
 | Grid | 8³ × 4 over far; empty=255 |
 | Slots (q0–q4) | 128 / 192 / 256 / 384 / 512 |
 
@@ -153,3 +154,4 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 <!-- agent: composer-2.5 | 2026-08-10 | doc slot reuse blend fix | 25efff -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc merge pingpong not casc | 6dd37b -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc sparse soft-nearest | 77d165 -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc sparse trilinear resolve | 33ef2d -->

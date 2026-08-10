@@ -1,6 +1,6 @@
 // agent: composer-2.5 | 2026-08-10 | B3 sparse hash resolve | f083bd
-// agent: composer-2.5 | 2026-08-10 | sparse soft-nearest resolve | e94a7d
-/* Sparse L1 SH: soft-nearest face blend via hash (skip missing). */
+// agent: composer-2.5 | 2026-08-10 | sparse trilinear resolve | 20653e
+/* Sparse L1 SH: 8-corner trilinear via hash (skip missing, normalize). */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_sh;
@@ -19,7 +19,6 @@ uniform vec2 ng_resolution;
 out vec4 finalColor;
 
 const float SELF_BIAS = 0.09;
-const float SOFT_BAND = 0.2;
 const int PROBE_MAX = 16;
 
 vec3 fetch_band(float slot, float band) {
@@ -62,7 +61,7 @@ float lookup_slot(ivec3 cell) {
 
 /** Accumulate weighted SH if cell is in the sparse hash. */
 void add_probe(ivec3 cell, float w, vec3 n, inout vec3 acc, inout float wsum) {
-  if (w <= 0.0) {
+  if (w <= 1e-6) {
     return;
   }
   float slot = lookup_slot(cell);
@@ -85,37 +84,27 @@ void main() {
   vec3 world = ng_far_origin + depth_pack.rgb * ng_far_size;
   float cell = max(ng_world_cell, 0.001);
   float bias = max(SELF_BIAS, cell * 0.25);
-  vec3 p = world + n * bias;
-  vec3 pf = p / cell;
-  ivec3 ic = ivec3(floor(pf));
-  vec3 fr = fract(pf);
+  /* Probe lattice at cell centers: sample in index space then -0.5 for corners. */
+  vec3 pf = (world + n * bias) / cell - 0.5;
+  ivec3 i0 = ivec3(floor(pf));
+  vec3 f = fract(pf);
+  vec3 f1 = 1.0 - f;
 
   vec3 acc = vec3(0.0);
   float wsum = 0.0;
-  add_probe(ic, 1.0, n, acc, wsum);
+  add_probe(i0 + ivec3(0, 0, 0), f1.x * f1.y * f1.z, n, acc, wsum);
+  add_probe(i0 + ivec3(1, 0, 0), f.x * f1.y * f1.z, n, acc, wsum);
+  add_probe(i0 + ivec3(0, 1, 0), f1.x * f.y * f1.z, n, acc, wsum);
+  add_probe(i0 + ivec3(1, 1, 0), f.x * f.y * f1.z, n, acc, wsum);
+  add_probe(i0 + ivec3(0, 0, 1), f1.x * f1.y * f.z, n, acc, wsum);
+  add_probe(i0 + ivec3(1, 0, 1), f.x * f1.y * f.z, n, acc, wsum);
+  add_probe(i0 + ivec3(0, 1, 1), f1.x * f.y * f.z, n, acc, wsum);
+  add_probe(i0 + ivec3(1, 1, 1), f.x * f.y * f.z, n, acc, wsum);
 
-  /* Dense soft-nearest face bands — only mix neighbors that exist. */
-  if (fr.x < SOFT_BAND) {
-    add_probe(ic + ivec3(-1, 0, 0), (1.0 - fr.x / SOFT_BAND) * 0.5, n, acc, wsum);
-  } else if (fr.x > 1.0 - SOFT_BAND) {
-    add_probe(ic + ivec3(1, 0, 0), ((fr.x - (1.0 - SOFT_BAND)) / SOFT_BAND) * 0.5, n, acc,
-              wsum);
-  }
-  if (fr.y < SOFT_BAND) {
-    add_probe(ic + ivec3(0, -1, 0), (1.0 - fr.y / SOFT_BAND) * 0.5, n, acc, wsum);
-  } else if (fr.y > 1.0 - SOFT_BAND) {
-    add_probe(ic + ivec3(0, 1, 0), ((fr.y - (1.0 - SOFT_BAND)) / SOFT_BAND) * 0.5, n, acc,
-              wsum);
-  }
-  if (fr.z < SOFT_BAND) {
-    add_probe(ic + ivec3(0, 0, -1), (1.0 - fr.z / SOFT_BAND) * 0.5, n, acc, wsum);
-  } else if (fr.z > 1.0 - SOFT_BAND) {
-    add_probe(ic + ivec3(0, 0, 1), ((fr.z - (1.0 - SOFT_BAND)) / SOFT_BAND) * 0.5, n, acc,
-              wsum);
-  }
-
-  /* Coverage when center cell missing (sparse holes / spheres). */
   if (wsum < 1e-5) {
+    /* Coverage: nearest occupied face if all 8 corners miss. */
+    ivec3 ic = ivec3(floor((world + n * bias) / cell));
+    add_probe(ic, 1.0, n, acc, wsum);
     add_probe(ic + ivec3(1, 0, 0), 1.0, n, acc, wsum);
     add_probe(ic + ivec3(-1, 0, 0), 1.0, n, acc, wsum);
     add_probe(ic + ivec3(0, 1, 0), 1.0, n, acc, wsum);
@@ -131,4 +120,4 @@ void main() {
   finalColor = vec4(acc / wsum, 1.0);
 }
 // agent: composer-2.5 | 2026-08-10 | B3 sparse hash resolve | f083bd
-// agent: composer-2.5 | 2026-08-10 | sparse soft-nearest resolve | e94a7d
+// agent: composer-2.5 | 2026-08-10 | sparse trilinear resolve | 20653e
