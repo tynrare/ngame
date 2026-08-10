@@ -1,4 +1,4 @@
-<!-- agent: composer-2.5 | 2026-08-10 | align doc with code deferred | 0883ae -->
+<!-- agent: composer-2.5 | 2026-08-10 | Phase 6 sparse geo HRC later | f4f91d -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -47,10 +47,22 @@ Key files: `src/client/render.c` (GPU tick), `src/client/render_rc_ws.c` (vox),
 | **4** | WS vox + volume shell | **done** |
 | **5a/b** | Dir-packed fill + T-merge | **done** |
 | **5c** | L1 SH + soft-nearest resolve | **done** |
-| **6** | HRC / sparse probes | **later** — cost scaling when dense N³×dirs hurts |
+| **6** | Global geometry + sparse/adaptive voxels & probes | **next** |
 | — | Bloom halo from gbuf glow | **later** (polish; not GI) |
+| — | Holographic HRC | **optional later** (quality; not required for scale) |
 
-**Phase 6 promise:** hierarchical and/or sparse probes so far intervals and empty space cost less — same RC model, not a new GI path.
+### Phase 6 — intent
+
+Break the fixed dense brick (CPU `32³` vox + full `N³` probes in a small AABB). Same RC model (fill → merge → SH → resolve); change **geometry backend** and **where** voxels/probes exist.
+
+| Track | Work |
+|-------|------|
+| **A Geometry** | GPU SDF / SVO / clipmap; raymarch from fill; frustum-only rebuild; octree or clipmap density vs distance |
+| **B Probes** | Sparse or camera clipmap probes (hashmap or rings); amortize updates; optional screen-area-constant spacing |
+
+Suggested order: frustum GPU vox → SDF/SVO march in fill → probe clipmap → hashmap sparse.
+
+**Not Phase 6:** Holographic HRC (different cascade geometry for hard shadows; memory-heavy in 3D — see wiki). Sparse RC ≠ HRC.
 
 ## Dropped / deferred
 
@@ -68,17 +80,21 @@ Kept out of the product path (idle code or not scheduled):
 | XZ billboard / flatland GI | **rejected** | Debug only |
 | L2+ SH / H-basis | **deferred** | L1 is enough for now |
 | Bloom | **deferred** | After GI; compose already shows surface glow |
+| **Holographic HRC** | **optional later** | Hard shadows / volumetrics; not a substitute for sparse world storage ([wiki](https://radiance.wiki/variants/holographic-rc), [arXiv:2505.02041](https://arxiv.org/abs/2505.02041)) |
 
 ## Anti-patterns
 
 - Treating dir-averaged RGB volume as “true RC”
 - 2D-atlas hardware bilinear on Y+Z·N packing (shears)
 - Investing in SS before WS looks right
+- Calling Phase 6 “HRC” when the work is sparse/geo LOD
 
 ## References
 
-- https://radiance.wiki/ · direction-first · bilinear-fix  
+- https://radiance.wiki/ · direction-first · bilinear-fix · [Holographic RC](https://radiance.wiki/variants/holographic-rc)  
 - https://jason.today/rc · https://mini.gmshaders.com/p/radiance-cascades  
+- Sparse 3D RC (Sannikov): hashmap / screen-visible probes; SDF or HW RT backend  
+- Split Radiance Cascades: [arXiv:2607.20384](https://arxiv.org/abs/2607.20384)  
 - https://m4xc.dev/articles/fundamental-rc/ · arXiv:2408.14425 · arXiv:2505.02041  
 
-<!-- agent: composer-2.5 | 2026-08-10 | align doc with code deferred | 0883ae -->
+<!-- agent: composer-2.5 | 2026-08-10 | Phase 6 sparse geo HRC later | f4f91d -->
