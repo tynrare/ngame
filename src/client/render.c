@@ -24,6 +24,9 @@
 // agent: composer-2.5 | 2026-08-09 | wire SS packed RC | 7ba28e
 // agent: composer-2.5 | 2026-08-10 | RC cost shift dirs cut | d9bceb
 // agent: composer-2.5 | 2026-08-10 | wire WS volume RC tick | 0fd9cd
+// agent: composer-2.5 | 2026-08-10 | WS atlas nearest no Vflip | 787633
+// agent: composer-2.5 | 2026-08-10 | WS blit identity no flip | b8e489
+// agent: composer-2.5 | 2026-08-10 | depth far WS simplify | 6dd473
 #include "render.h"
 #include "render_rc_ws.h"
 #include "engine/ng_action.h"
@@ -177,7 +180,7 @@ typedef struct ModRenderCtx {
   int rc_spacing[NG_RC_CASCADES_MAX];
   RenderTexture2D rt_ws_stamp;
   RenderTexture2D rt_ws[2];
-  RenderTexture2D rt_ws_casc[NG_RC_CASCADES_MAX]; /* unused XZ stubs */
+  // agent: composer-2.5 | 2026-08-10 | depth far WS simplify | 6dd473
   int ws_ping;
   bool ws_rt_ready;
   int ws_probe_n;
@@ -629,9 +632,6 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     UnloadRenderTexture(ctx->rt_ws_stamp);
     UnloadRenderTexture(ctx->rt_ws[0]);
     UnloadRenderTexture(ctx->rt_ws[1]);
-    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
-      UnloadRenderTexture(ctx->rt_ws_casc[i]);
-    }
     ctx->ws_rt_ready = false;
     ctx->ws_probe_n = 0;
   }
@@ -929,9 +929,6 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     UnloadRenderTexture(ctx->rt_ws_stamp);
     UnloadRenderTexture(ctx->rt_ws[0]);
     UnloadRenderTexture(ctx->rt_ws[1]);
-    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
-      UnloadRenderTexture(ctx->rt_ws_casc[i]);
-    }
     ctx->ws_rt_ready = false;
   }
   if (!ctx->ws_rt_ready) {
@@ -940,12 +937,9 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->rt_ws_stamp = LoadRenderTexture(aw, ah);
     ctx->rt_ws[0] = LoadRenderTexture(aw, ah);
     ctx->rt_ws[1] = LoadRenderTexture(aw, ah);
-    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
-      ctx->rt_ws_casc[i] = LoadRenderTexture(1, 1);
-    }
-    SetTextureFilter(ctx->rt_ws_stamp.texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(ctx->rt_ws[0].texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(ctx->rt_ws[1].texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(ctx->rt_ws_stamp.texture, TEXTURE_FILTER_POINT);
+    SetTextureFilter(ctx->rt_ws[0].texture, TEXTURE_FILTER_POINT);
+    SetTextureFilter(ctx->rt_ws[1].texture, TEXTURE_FILTER_POINT);
     BeginTextureMode(ctx->rt_ws[0]);
     ClearBackground(BLACK);
     EndTextureMode();
@@ -955,7 +949,9 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->ws_probe_n = probe_n;
     ctx->ws_ping = 0;
     ctx->ws_rt_ready = true;
-    /* Seed vox atlas once RTs exist. */
+    /* Seed vox atlas once RTs exist; force stamp with current AABB policy. */
+    ctx->ws_cpu.scene_hash = 0;
+    ctx->ws_cpu.frames_since_vox = 999;
     (void)ng_rc_ws_sync_vox(&ctx->ws_cpu);
     ng_rc_ws_upload_vox(&ctx->ws_cpu);
   }
@@ -968,9 +964,10 @@ static void mod_render_fs_draw(Texture2D carrier, int dest_w, int dest_h) {
   DrawTexturePro(carrier, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
 }
 
-/** WS atlas ping-pong: same Y flip as gbuffer/SS (raylib RT convention). */
+/** WS volume atlas draw: identity UV (no raylib Y flip) — matches FragCoord fill. */
 static void mod_render_ws_fs_draw(Texture2D carrier, int dest_w, int dest_h) {
-  const Rectangle src = {0.0f, 0.0f, (float)carrier.width, -(float)carrier.height};
+  // agent: composer-2.5 | 2026-08-10 | WS blit identity no flip | b8e489
+  const Rectangle src = {0.0f, 0.0f, (float)carrier.width, (float)carrier.height};
   const Rectangle dst = {0.0f, 0.0f, (float)dest_w, (float)dest_h};
   DrawTexturePro(carrier, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
 }
@@ -1138,8 +1135,8 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
   NgRcPassShader *pass = &ctx->rc_compose;
   const float gi = ctx->gi_strength;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
-  const float ws_w = 0.75f;
-  const float ss_w = 0.35f;
+  const float ws_w = 0.85f;
+  const float ss_w = 0.15f;
   const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
   const Vector3 forward =
       Vector3Normalize(Vector3Subtract(ctx->camera.target, ctx->camera.position));
@@ -1155,6 +1152,12 @@ static void mod_render_rc_compose(ModRenderCtx *ctx) {
 
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
+  {
+    const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
+    if (pass->sh.loc_resolution >= 0) {
+      SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
+    }
+  }
   if (pass->loc_gi_strength >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_gi_strength, &gi, SHADER_UNIFORM_FLOAT);
   }
@@ -1326,6 +1329,12 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
 
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
+  {
+    const float res[2] = {(float)GetRenderWidth(), (float)GetRenderHeight()};
+    if (pass->sh.loc_resolution >= 0) {
+      SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
+    }
+  }
   if (pass->loc_sky >= 0) {
     SetShaderValue(pass->sh.handle, pass->loc_sky, sky, SHADER_UNIFORM_VEC3);
   }
@@ -1368,7 +1377,13 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
 
 /** Phase 4: WS volume then SS packed. */
 static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
+  static int s_force_vox = 1;
   const int prev = ctx->ws_ping & 1;
+  if (s_force_vox) {
+    ctx->ws_cpu.scene_hash = 0;
+    ctx->ws_cpu.frames_since_vox = 999;
+    s_force_vox = 0;
+  }
   if (ng_rc_ws_sync_vox(&ctx->ws_cpu)) {
     ng_rc_ws_upload_vox(&ctx->ws_cpu);
   }
@@ -1995,3 +2010,6 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-09 | wire SS packed RC | 7ba28e
 // agent: composer-2.5 | 2026-08-10 | RC cost shift dirs cut | d9bceb
 // agent: composer-2.5 | 2026-08-10 | wire WS volume RC tick | 0fd9cd
+// agent: composer-2.5 | 2026-08-10 | WS atlas nearest no Vflip | 787633
+// agent: composer-2.5 | 2026-08-10 | WS blit identity no flip | b8e489
+// agent: composer-2.5 | 2026-08-10 | depth far WS simplify | 6dd473

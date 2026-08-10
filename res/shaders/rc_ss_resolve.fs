@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-08-10 | SS resolve hemisphere wt | 39f33d
+// agent: composer-2.5 | 2026-08-10 | decode depth FAR SS | b0fcc5
 /* Hemisphere-weight c0 dirs at screen pixel → irradiance RGB. */
 in vec2 fragTexCoord;
 
@@ -20,8 +20,8 @@ vec2 dir_from_index(int i, int n) {
 
 void main() {
   vec2 uv = fragTexCoord;
-  float d = texture(tex_depth, uv).r;
-  if (d < 0.02) {
+  float enc = texture(tex_depth, uv).r;
+  if (enc < 0.0005) {
     finalColor = vec4(0.0);
     return;
   }
@@ -62,4 +62,4 @@ void main() {
   }
   finalColor = vec4(acc / max(wsum, 1e-3), 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | SS resolve hemisphere wt | 39f33d
+// agent: composer-2.5 | 2026-08-10 | decode depth FAR SS | b0fcc5

@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-10 | SS fill albedo bounce | 1319b9
+// agent: composer-2.5 | 2026-08-10 | decode depth FAR SS | 2ba9f2
 /* Direction-first packed fill: one texel = one (probe, dir) interval march. */
 in vec2 fragTexCoord;
 
@@ -17,7 +18,7 @@ uniform vec3 ng_sky;
 
 out vec4 finalColor;
 
-const float FAR = 80.0;
+const float FAR = 80.0; /* must match rc_gbuf.fs encode */
 const float EPS = 0.02;
 const float THICKNESS = 0.45;
 const float FRONT_BIAS = 0.12;
@@ -59,7 +60,7 @@ void main() {
     return;
   }
 
-  float my_d = texture(tex_depth, uv).r;
+  float my_d = texture(tex_depth, uv).r * FAR;
   if (my_d < EPS) {
     finalColor = vec4(ng_sky * 0.03, 0.0);
     return;
@@ -81,7 +82,7 @@ void main() {
     }
     vec3 g = texture(tex_glow, p).rgb;
     float glow_lum = max(g.r, max(g.g, g.b));
-    float zd = texture(tex_depth, p).r;
+    float zd = texture(tex_depth, p).r * FAR;
     bool geo = false;
     if (zd > EPS && zd < FAR) {
       geo = (zd < my_d - FRONT_BIAS) || (abs(zd - my_d) > THICKNESS);
@@ -102,3 +103,4 @@ void main() {
   finalColor = vec4(rad, clamp(1.0 - T, 0.0, 1.0));
 }
 // agent: composer-2.5 | 2026-08-10 | SS fill albedo bounce | 1319b9
+// agent: composer-2.5 | 2026-08-10 | decode depth FAR SS | 2ba9f2

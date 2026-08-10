@@ -1,5 +1,5 @@
-// agent: composer-2.5 | 2026-08-10 | WS volume probe fill FS | 7d589a
-/* Probe volume fill: atlas N×(N*N) → world dirs × cascade intervals through tex_vox. */
+// agent: composer-2.5 | 2026-08-10 | fill FragCoord atlas | 00380b
+/* Probe volume fill: index by gl_FragCoord (GL y=0 bottom); march tex_vox. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_vox;
@@ -41,9 +41,8 @@ vec4 sample_vox(vec3 world) {
 
 void main() {
   float n = max(ng_probe_res, 1.0);
-  vec2 atlas_px = fragTexCoord * vec2(n, n * n);
-  float px = floor(atlas_px.x);
-  float pyz = floor(atlas_px.y);
+  float px = floor(gl_FragCoord.x);
+  float pyz = floor(gl_FragCoord.y);
   float py = mod(pyz, n);
   float pz = floor(pyz / n);
   if (px >= n || py >= n || pz >= n) {
@@ -97,4 +96,4 @@ void main() {
   }
   finalColor = vec4(acc / float(nd), 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | WS volume probe fill FS | 7d589a
+// agent: composer-2.5 | 2026-08-10 | fill FragCoord atlas | 00380b

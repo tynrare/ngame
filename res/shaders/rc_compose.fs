@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-08-10 | compose WS volume sample | ea4e12
+// agent: composer-2.5 | 2026-08-10 | decode depth * FAR | 27a437
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_albedo;
@@ -23,8 +23,11 @@ uniform float ng_probe_res;
 
 out vec4 finalColor;
 
+const float FAR = 80.0;
+
 vec3 world_from_uv_depth(vec2 uv, float d) {
-  vec2 ndc = uv * 2.0 - 1.0;
+  /* fragTexCoord from DrawTexturePro(-height): y=0 at top → NDC.y flip. */
+  vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
   vec3 dir = normalize(ng_cam_forward + ng_cam_right * (ndc.x * ng_tan_half_fov * ng_aspect) +
                        ng_cam_up * (ndc.y * ng_tan_half_fov));
   return ng_cam_pos + dir * d;
@@ -39,6 +42,7 @@ vec3 sample_probe_volume(vec3 world) {
   float x = uvw.x * (res - 1.0);
   float y = uvw.y * (res - 1.0);
   float z = uvw.z * (res - 1.0);
+  /* Same GL space as fill gl_FragCoord (y=0 bottom). */
   float u = (x + 0.5) / res;
   float v = (y + z * res + 0.5) / (res * res);
   return texture(tex_irradiance_ws, vec2(u, v)).rgb;
@@ -46,17 +50,19 @@ vec3 sample_probe_volume(vec3 world) {
 
 void main() {
   vec2 uv = fragTexCoord;
-  float d = texture(tex_depth, uv).r;
-  if (d < 0.02) {
+  float enc = texture(tex_depth, uv).r;
+  if (enc < 0.0005) {
     finalColor = vec4(ng_sky * 0.25, 1.0);
     return;
   }
+  float d = enc * FAR;
 
   vec3 albedo = texture(tex_albedo, uv).rgb;
   vec3 n = normalize(texture(tex_normal, uv).rgb * 2.0 - 1.0);
   vec3 glow = texture(tex_glow, uv).rgb;
 
   vec3 world = world_from_uv_depth(uv, d);
+  world += n * 0.08;
   vec3 irr_ws = sample_probe_volume(world);
   vec3 irr_ss = texture(tex_irradiance_ss, uv).rgb;
   vec3 irradiance = irr_ws * ng_ws_weight + irr_ss * ng_ss_weight;
@@ -72,4 +78,4 @@ void main() {
   vec3 gi = albedo * irradiance * ng_gi_strength;
   finalColor = vec4(ambient + direct + gi + glow, 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | compose WS volume sample | ea4e12
+// agent: composer-2.5 | 2026-08-10 | decode depth * FAR | 27a437

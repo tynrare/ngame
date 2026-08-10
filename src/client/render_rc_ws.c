@@ -11,6 +11,8 @@
  * Invariant: quality scales cost only. No SH. XZ flatland is not this path.
  */
 // agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
+// agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
+// agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -76,7 +78,7 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
     ng_rc_ws_shutdown(ws);
     return false;
   }
-  SetTextureFilter(ws->tex_vox, TEXTURE_FILTER_BILINEAR);
+  SetTextureFilter(ws->tex_vox, TEXTURE_FILTER_POINT);
   ws->vox_tex_ready = true;
   ws->ready = true;
   return true;
@@ -215,9 +217,19 @@ static void ng_rc_ws_voxelize(NgRcWsCtx *ws) {
       continue;
     }
     const float s = inst->scale > 0.0f ? inst->scale : 1.0f;
-    const float hx = resolved.mesh_w * 0.5f * s;
-    const float hy = resolved.mesh_h * 0.5f * s;
-    const float hz = resolved.mesh_d * 0.5f * s;
+    float hx;
+    float hy;
+    float hz;
+    if (resolved.mesh_kind == NG_SCENE_MESH_SPHERE) {
+      /* GenMeshSphere(mesh_w) — radius = mesh_w. */
+      hx = hy = hz = resolved.mesh_w * s;
+    } else {
+      /* GenMeshCube(w*1.5,…) — half-extent = mesh_* * 0.75 * s. */
+      const float k = 1.5f * 0.5f;
+      hx = resolved.mesh_w * k * s;
+      hy = resolved.mesh_h * k * s;
+      hz = resolved.mesh_d * k * s;
+    }
     const unsigned char ar = resolved.have_tint ? resolved.tint_r : 180;
     const unsigned char ag = resolved.have_tint ? resolved.tint_g : 180;
     const unsigned char ab = resolved.have_tint ? resolved.tint_b : 180;
@@ -288,3 +300,5 @@ void ng_rc_ws_upload_vox(NgRcWsCtx *ws) {
   UpdateTexture(ws->tex_vox, ws->vox_rgba);
 }
 // agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
+// agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
+// agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
