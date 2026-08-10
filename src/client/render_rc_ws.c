@@ -8,11 +8,12 @@
  * 1) ensure → allocate vox scratch + tex_vox; quality → N/dirs/cascades/steps
  * 2) sync_vox → stamp graph AABBs when scene_hash dirty
  * 3) upload_vox → RGBA slice atlas for GPU march
- * Invariant: quality scales cost only. No SH. XZ flatland is not this path.
- * GPU (render.c): casc fill → T-merge → N·ω screen resolve → compose.
+ * Invariant: quality scales cost only. XZ flatland is not this path.
+ * GPU (render.c): casc fill → T-merge → L1 SH encode → soft-nearest SH×N → compose.
  */
 // agent: composer-2.5 | 2026-08-10 | WS vox sync upload | 6edec0
 // agent: composer-2.5 | 2026-08-10 | playbook notes GPU resolve path | fd74c2
+// agent: composer-2.5 | 2026-08-10 | playbook SH soft-nearest align | da064d
 // agent: composer-2.5 | 2026-08-10 | WS vox texture nearest | 9da03a
 // agent: composer-2.5 | 2026-08-10 | vox AABB match mesh 1.5 | 1e7753
 // agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
@@ -316,3 +317,4 @@ void ng_rc_ws_upload_vox(NgRcWsCtx *ws) {
 // agent: composer-2.5 | 2026-08-10 | skip floor slab voxelize | 2f28b8
 // agent: composer-2.5 | 2026-08-10 | raise WS dirs quality ladder | 0478ff
 // agent: composer-2.5 | 2026-08-10 | playbook notes GPU resolve path | fd74c2
+// agent: composer-2.5 | 2026-08-10 | playbook SH soft-nearest align | da064d
