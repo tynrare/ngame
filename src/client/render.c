@@ -36,6 +36,7 @@
 // agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
 // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
 // agent: composer-2.5 | 2026-08-10 | ws fill disable blend dirty | 466455
+// agent: composer-2.5 | 2026-08-10 | merge pingpong not casc | 27d0fe
 #include "render.h"
 #include "render_rc_ws.h"
 #include "engine/ng_action.h"
@@ -160,7 +161,8 @@ typedef struct NgRcWsClip {
   float snap_origin[3];
   float snap_size[3];
   RenderTexture2D casc[NG_RC_CASCADES_MAX];
-  RenderTexture2D stamp;
+  RenderTexture2D stamp;  /* merge ping A — never write casc[] */
+  RenderTexture2D stamp2; /* merge ping B */
   RenderTexture2D sh;
 } NgRcWsClip;
 
@@ -723,6 +725,7 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
         UnloadRenderTexture(clip->casc[i]);
       }
       UnloadRenderTexture(clip->stamp);
+      UnloadRenderTexture(clip->stamp2);
       UnloadRenderTexture(clip->sh);
     }
     UnloadRenderTexture(ctx->rt_ws[0]);
@@ -1084,6 +1087,7 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
         UnloadRenderTexture(clip->casc[i]);
       }
       UnloadRenderTexture(clip->stamp);
+      UnloadRenderTexture(clip->stamp2);
       UnloadRenderTexture(clip->sh);
     }
     UnloadRenderTexture(ctx->rt_ws[0]);
@@ -1111,6 +1115,12 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
       clip->stamp = LoadRenderTexture(aw, ah);
       SetTextureFilter(clip->stamp.texture, TEXTURE_FILTER_POINT);
       BeginTextureMode(clip->stamp);
+      ClearBackground(BLACK);
+      EndTextureMode();
+      // agent: composer-2.5 | 2026-08-10 | merge pingpong not casc | 27d0fe
+      clip->stamp2 = LoadRenderTexture(aw, ah);
+      SetTextureFilter(clip->stamp2.texture, TEXTURE_FILTER_POINT);
+      BeginTextureMode(clip->stamp2);
       ClearBackground(BLACK);
       EndTextureMode();
       clip->sh = LoadRenderTexture(sh_w, ah);
@@ -1589,12 +1599,13 @@ static void mod_render_rc_ws_fill_volume(ModRenderCtx *ctx, NgRcWsClip *clip, in
   }
 
   Texture2D merged = clip->casc[nc - 1].texture;
-  int to_stamp = 1;
+  int to_a = 1;
   for (int c = nc - 2; c >= 0; c--) {
-    RenderTexture2D *dest = to_stamp ? &clip->stamp : &clip->casc[nc - 1];
+    /* Ping-pong stamp/stamp2 only — casc[] stay pure interval fills for dirty-only. */
+    RenderTexture2D *dest = to_a ? &clip->stamp : &clip->stamp2;
     mod_render_rc_ws_merge_to(ctx, clip->casc[c].texture, merged, dest);
     merged = dest->texture;
-    to_stamp ^= 1;
+    to_a ^= 1;
   }
   mod_render_rc_ws_sh_encode(ctx, clip, merged);
 }
@@ -2641,3 +2652,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
 // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
 // agent: composer-2.5 | 2026-08-10 | ws fill disable blend dirty | 466455
+// agent: composer-2.5 | 2026-08-10 | merge pingpong not casc | 27d0fe

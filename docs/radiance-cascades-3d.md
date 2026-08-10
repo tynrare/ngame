@@ -7,6 +7,7 @@
 <!-- agent: composer-2.5 | 2026-08-10 | doc gbuf A resolve exact | 0235b9 -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc resolve surface cell | 859c1f -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc slot reuse blend fix | 25efff -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc merge pingpong not casc | 6dd37b -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -134,6 +135,7 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 - Collapse that re-marches instead of averaging children (B.4)  
 - Full-screen depth readback (seed is 64² only)  
 - Dirty-only cascade fill with alpha blend (a=0 miss keeps prior slot RGB)  
+- Merging into `casc[nc-1]` (destroys far interval; dirty-only survivors corrupt)  
 
 ## References
 
@@ -148,3 +150,4 @@ Refs: Sparse 3D RC (Sannikov), Split RC arXiv:2607.20384, DDGI cascaded volumes.
 <!-- agent: composer-2.5 | 2026-08-10 | doc gbuf A resolve exact | 0235b9 -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc resolve surface cell | 859c1f -->
 <!-- agent: composer-2.5 | 2026-08-10 | doc slot reuse blend fix | 25efff -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc merge pingpong not casc | 6dd37b -->
