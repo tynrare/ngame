@@ -1,5 +1,5 @@
-// agent: composer-2.5 | 2026-08-10 | compose balance GI bleed | 219985
-/* Direct (modest) + albedo*irr*gi + glow. WS irr from soft-nearest SH resolve. */
+// agent: composer-2.5 | 2026-08-10 | compose brighter GI bleed | 321ea9
+/* Direct + albedo*irr*gi + glow. Direct tempered so bleed reads; GI not crushed. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_albedo;
@@ -42,11 +42,10 @@ void main() {
   vec3 c1 = vec3(0.45, 0.55, 1.0);
   float ndl0 = max(dot(n, l0), 0.0);
   float ndl1 = max(dot(n, l1), 0.0);
-  /* Keep direct modest so WS bleed reads in final. */
-  vec3 direct = albedo * (c0 * ndl0 + c1 * ndl1 * 0.55) * 0.42;
-  vec3 ambient = albedo * 0.03;
+  vec3 direct = albedo * (c0 * ndl0 + c1 * ndl1 * 0.55) * 0.62;
+  vec3 ambient = albedo * 0.035;
   vec3 irr = irr_ws * ws_w + irr_ss * ss_w;
-  vec3 gi = albedo * irr * ng_gi_strength;
+  vec3 gi = albedo * irr * ng_gi_strength * 1.15;
   finalColor = vec4(ambient + direct + gi + glow, 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | compose balance GI bleed | 219985
+// agent: composer-2.5 | 2026-08-10 | compose brighter GI bleed | 321ea9

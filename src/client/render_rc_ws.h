@@ -15,7 +15,7 @@
 #define NG_RC_WS_VOX_RES 32
 /** Max analytic SDF prims (cube/sphere from describe). */
 #define NG_RC_WS_PRIM_MAX 64
-/** tex_prim columns: center+type, half, quat, lit+rough, albedo+metal, emit+flags. */
+/** tex_prim columns: center+type, half, quat, emit+rough, albedo+metal, lit+flags. */
 #define NG_RC_WS_PRIM_COLS 6
 
 typedef struct NgRcWsPrim {
@@ -59,3 +59,4 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws);
 
 #endif
 // agent: composer-2.5 | 2026-08-10 | demote vox header API | 0cb6a2
+// agent: composer-2.5 | 2026-08-10 | prim pack emit in col3 | 3eafc7

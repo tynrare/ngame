@@ -255,6 +255,7 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     const int row = ws->prim_count;
     ws->prims[row] = p;
     float *rowf = ws->prim_rgba + row * NG_RC_WS_PRIM_COLS * 4;
+    // agent: composer-2.5 | 2026-08-10 | prim pack emit in col3 | 3eafc7
     rowf[0] = p.center[0];
     rowf[1] = p.center[1];
     rowf[2] = p.center[2];
@@ -267,20 +268,22 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     rowf[9] = p.quat[1];
     rowf[10] = p.quat[2];
     rowf[11] = p.quat[3];
-    rowf[12] = p.lit[0];
-    rowf[13] = p.lit[1];
-    rowf[14] = p.lit[2];
+    /* col3: emit + roughness (fill radiance; was lit-clamped→grey for dark tint) */
+    rowf[12] = p.emit[0];
+    rowf[13] = p.emit[1];
+    rowf[14] = p.emit[2];
     rowf[15] = p.roughness;
     rowf[16] = p.albedo[0];
     rowf[17] = p.albedo[1];
     rowf[18] = p.albedo[2];
     rowf[19] = p.metalness;
-    rowf[20] = p.emit[0];
-    rowf[21] = p.emit[1];
-    rowf[22] = p.emit[2];
+    rowf[20] = p.lit[0];
+    rowf[21] = p.lit[1];
+    rowf[22] = p.lit[2];
     rowf[23] = 1.0f;
     ws->prim_count++;
   }
   UpdateTexture(ws->tex_prim, ws->prim_rgba);
 }
 // agent: composer-2.5 | 2026-08-10 | demote vox drop floor skip | 0c617e
+// agent: composer-2.5 | 2026-08-10 | prim pack emit in col3 | 3eafc7

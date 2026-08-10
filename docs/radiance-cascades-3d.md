@@ -1,4 +1,4 @@
-<!-- agent: composer-2.5 | 2026-08-10 | doc 6.2.2 quality pass | cf892b -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc resolve trilinear note | 5101c2 -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -15,12 +15,13 @@ Compose: `Direct + albedo * (ws·WS_irr) * gi_strength + glow`.
 | Fill | Dir-packed SDF interval march (`rc_ws_fill.fs`) → atlas `W=N·dirs`, `H=N²` |
 | Merge | Same-texel T-merge \(I_n+(1-a_n)I_f\) (`rc_ws_merge.fs`) |
 | SH | L1 encode per probe (`rc_ws_sh_encode.fs`) → atlas `W=N·4`, `H=N²` |
-| Resolve | Soft-nearest SH × surface **N** → screen irr (`rc_ws_resolve.fs`) |
+| Resolve | **Trilinear** L1 SH × **N** via `texelFetch` (`rc_ws_resolve.fs`) |
 | Compose | Sample screen WS irr; `ss_weight=0` (SS tick skipped) |
 | Quality | Scales **probe_n / dirs / cascades / steps** only |
 
 **Clip:** orbit with fixed target keeps the brick world-locked. Do **not** center on frustum AABB (far corners swing off-axis).  
-**Packing / SH / resolve:** unchanged from Phase 5.  
+**Packing / SH:** cascade `(d·N+ix, iy+iz·N)`; SH bands along X; sample with **texelFetch** (no Y+Z shear from bilinear).  
+**Resolve:** 8-corner trilinear of SH coeffs; eval `max(0, L0 + L1·N)`.  
 **Gateway:** `src/client/render_rc_ws.c` (`Flow id: rc-ws`); tick orchestration in `src/client/render.c`.
 
 ## Pipeline (current)
@@ -111,7 +112,7 @@ Use later for empty-space skip, large worlds, or **sparse probe keys** (occupied
 |------|--------|-------|
 | SS bilinear-fix / amortize / miss←WS | **shelved** | `ss_weight=0` |
 | Per-pixel dir loop resolve | **dropped** | Replaced by SH |
-| Full 8-tap trilinear / hard-nearest | **dropped** | Hotspots / voxels |
+| Full 8-tap trilinear of **dir-avg RGB** volume | **dropped** | Hotspots; SH trilinear is OK |
 | Wiki bilinear-fix WS merge | **deferred** | 1:1 texel T-merge |
 | Screen butter | **deferred** | Not in tick |
 | Glow as SS emitters / XZ flatland GI | **rejected** | |
@@ -132,7 +133,7 @@ Use later for empty-space skip, large worlds, or **sparse probe keys** (occupied
 - Centering the clip cube on a long frustum AABB (slides off-axis on orbit)
 - Building SVO before analytic SDF fill works
 - Baking triangle meshes when describe already is box/sphere
-- Special-casing floor/walls in the GI stamp path
+- Soft-nearest sequential axis mixes on Y+Z atlas (per-cell shear gradients)
 
 ## References
 
@@ -142,4 +143,4 @@ Use later for empty-space skip, large worlds, or **sparse probe keys** (occupied
 - Split Radiance Cascades: [arXiv:2607.20384](https://arxiv.org/abs/2607.20384)  
 - https://m4xc.dev/articles/fundamental-rc/ · arXiv:2408.14425 · arXiv:2505.02041  
 
-<!-- agent: composer-2.5 | 2026-08-10 | doc 6.2.2 quality pass | cf892b -->
+<!-- agent: composer-2.5 | 2026-08-10 | doc resolve trilinear note | 5101c2 -->

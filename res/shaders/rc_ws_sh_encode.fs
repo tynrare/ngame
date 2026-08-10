@@ -1,4 +1,4 @@
-// agent: composer-2.5 | 2026-08-10 | L1 SH encode at probes | df9aeb
+// agent: composer-2.5 | 2026-08-10 | sh encode texelFetch cascade | cb332d
 /* Dir-packed cascade → L1 SH per probe. Atlas W=N*4 (L0,L1x,L1y,L1z), H=N*N. */
 in vec2 fragTexCoord;
 
@@ -33,7 +33,6 @@ void main() {
     return;
   }
 
-  vec2 cres = max(ng_cascade_res, vec2(1.0));
   vec3 sh0 = vec3(0.0);
   vec3 shx = vec3(0.0);
   vec3 shy = vec3(0.0);
@@ -42,9 +41,9 @@ void main() {
     if (i >= nd) {
       break;
     }
-    float ax = float(i) * n + ix + 0.5;
-    float ay = iy + iz * n + 0.5;
-    vec3 rad = texture(tex_cascade, vec2(ax, ay) / cres).rgb;
+    int ax = int(float(i) * n + ix);
+    int ay = int(iy + iz * n);
+    vec3 rad = texelFetch(tex_cascade, ivec2(ax, ay), 0).rgb;
     vec3 d = dir_from_index(i, nd);
     sh0 += rad;
     shx += rad * d.x;
@@ -67,4 +66,4 @@ void main() {
   }
   finalColor = vec4(outc, 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | L1 SH encode at probes | df9aeb
+// agent: composer-2.5 | 2026-08-10 | sh encode texelFetch cascade | cb332d

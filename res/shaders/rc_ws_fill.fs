@@ -1,5 +1,5 @@
-// agent: composer-2.5 | 2026-08-10 | fill emit albedo bounce hit | 90671f
-/* Dir-packed WS cascade: SDF march; hit RGB = emit*boost + albedo*bounce. */
+// agent: composer-2.5 | 2026-08-10 | fill emit col3 texelFetch | e7332d
+/* Dir-packed WS cascade: SDF march; hit = emit*boost + albedo*bounce (texelFetch). */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_prim;
@@ -15,13 +15,13 @@ uniform vec3 ng_sky;
 
 out vec4 finalColor;
 
-const float EMIT_BOOST = 2.4;
-const float BOUNCE = 1.15;
-const float HIT_A = 0.9;
-const float HIT_EPS = 0.015;
+const float EMIT_BOOST = 4.5;
+const float BOUNCE = 1.25;
+const float HIT_A = 0.88;
+const float HIT_EPS = 0.02;
+const float HALF_PAD = 1.18; /* slightly fat prims so small glow hits */
 const int DIR_MAX = 48;
 const int PRIM_MAX = 64;
-const float PRIM_COLS = 6.0;
 
 vec3 dir_from_index(int i, int n) {
   float t = (float(i) + 0.5) / float(max(n, 1));
@@ -31,7 +31,6 @@ vec3 dir_from_index(int i, int n) {
   return vec3(cos(a) * r, z, sin(a) * r);
 }
 
-/** Rotate v by unit quat conjugate (inverse rotation). */
 vec3 quat_inv_rotate(vec4 q, vec3 v) {
   vec3 qv = -q.xyz;
   float qw = q.w;
@@ -49,19 +48,16 @@ float sd_sphere(vec3 p, float r) {
 }
 
 vec4 fetch_prim_col(int row, int col) {
-  float u = (float(col) + 0.5) / PRIM_COLS;
-  float v = (float(row) + 0.5) / float(PRIM_MAX);
-  return texture(tex_prim, vec2(u, v));
+  return texelFetch(tex_prim, ivec2(col, row), 0);
 }
 
-/** Hit radiance from packed emit + albedo (metal cuts diffuse bounce). */
-vec3 prim_radiance(vec4 alb_metal, vec4 emit_flags) {
+/** emit in col3.rgb, albedo+metal in col4. */
+vec3 prim_radiance(vec4 emit_rough, vec4 alb_metal) {
   float metal = clamp(alb_metal.w, 0.0, 1.0);
-  float bounce = BOUNCE * (1.0 - 0.7 * metal);
-  return emit_flags.rgb * EMIT_BOOST + alb_metal.rgb * bounce;
+  float bounce = BOUNCE * (1.0 - 0.65 * metal);
+  return emit_rough.rgb * EMIT_BOOST + alb_metal.rgb * bounce;
 }
 
-/** Closest scene SDF + radiance at world p. */
 vec4 scene_sdf(vec3 p) {
   float best_d = 1e9;
   vec3 best_rad = vec3(0.0);
@@ -73,11 +69,11 @@ vec4 scene_sdf(vec3 p) {
     vec4 c0 = fetch_prim_col(i, 0);
     vec4 c1 = fetch_prim_col(i, 1);
     vec4 c2 = fetch_prim_col(i, 2);
+    vec4 c3 = fetch_prim_col(i, 3);
     vec4 c4 = fetch_prim_col(i, 4);
-    vec4 c5 = fetch_prim_col(i, 5);
     vec3 center = c0.xyz;
     float typ = c0.w;
-    vec3 halfv = c1.xyz;
+    vec3 halfv = c1.xyz * HALF_PAD;
     vec4 quat = c2;
     vec3 pl = quat_inv_rotate(quat, p - center);
     float d;
@@ -88,7 +84,7 @@ vec4 scene_sdf(vec3 p) {
     }
     if (d < best_d) {
       best_d = d;
-      best_rad = prim_radiance(c4, c5);
+      best_rad = prim_radiance(c3, c4);
     }
   }
   return vec4(best_rad, best_d);
@@ -120,11 +116,11 @@ void main() {
   float t0 = max(ng_t0, 0.0);
   float t1 = max(ng_t1, t0 + 0.001);
   int steps = max(ng_max_steps, 1);
-  int max_s = clamp(steps * 4, 12, 48);
+  int max_s = clamp(steps * 5, 16, 56);
   float t = t0;
-  float dt_min = max((t1 - t0) / float(max_s), 0.012);
+  float dt_min = max((t1 - t0) / float(max_s), 0.01);
 
-  for (int s = 0; s < 48; s++) {
+  for (int s = 0; s < 56; s++) {
     if (s >= max_s || t > t1) {
       break;
     }
@@ -142,4 +138,4 @@ void main() {
   }
   finalColor = vec4(ng_sky * 0.05, 0.0);
 }
-// agent: composer-2.5 | 2026-08-10 | fill emit albedo bounce hit | 90671f
+// agent: composer-2.5 | 2026-08-10 | fill emit col3 texelFetch | e7332d
