@@ -1,4 +1,5 @@
 // agent: composer-2.5 | 2026-08-10 | brighter unity ambient floor GI | 99a1da
+// agent: composer-2.5 | 2026-08-11 | compose cam-relative world | ec5757
 /* Direct + ambient + GI + glow. AMBIENT/DIRECTIONAL = 1; brighter bases + floor GI. */
 in vec2 fragTexCoord;
 
@@ -47,7 +48,9 @@ void main() {
   vec3 irr_ss = (ss_w > 0.0) ? texture(tex_irradiance_ss, uv).rgb : vec3(0.0);
   vec3 irr = irr_ws * ws_w + irr_ss * ss_w;
 
-  vec3 world = ng_ws_origin + depth_pack.rgb * ng_ws_size;
+  /* depth RT stores world XYZ (float). */
+  // agent: composer-2.5 | 2026-08-11 | compose cam-relative world | ec5757
+  vec3 world = depth_pack.rgb;
   vec3 view_dir = normalize(ng_cam_pos - world);
 
   vec3 l0 = normalize(vec3(0.45, 0.85, 0.2));
@@ -78,3 +81,4 @@ void main() {
   finalColor = vec4(ambient + direct + gi + glow, 1.0);
 }
 // agent: composer-2.5 | 2026-08-10 | brighter unity ambient floor GI | 99a1da
+// agent: composer-2.5 | 2026-08-11 | compose cam-relative world | ec5757

@@ -37,6 +37,10 @@
 // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
 // agent: composer-2.5 | 2026-08-10 | ws fill disable blend dirty | 466455
 // agent: composer-2.5 | 2026-08-10 | merge pingpong not casc | 27d0fe
+// agent: composer-2.5 | 2026-08-10 | LOD bands from camera eye | 4e0c43
+// agent: composer-2.5 | 2026-08-11 | B62 skip fill if no dirty | bcd897
+// agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
+// agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
 #include "render.h"
 #include "render_rc_ws.h"
 #include "engine/ng_action.h"
@@ -73,6 +77,7 @@ typedef enum NgRenderDebugPass {
   NG_RENDER_PASS_PROBES,
   NG_RENDER_PASS_GRID,
   NG_RENDER_PASS_ATLAS,
+  NG_RENDER_PASS_CULLING,
 } NgRenderDebugPass;
 
 typedef struct RenderAsset {
@@ -212,13 +217,13 @@ typedef struct ModRenderCtx {
   int rc_probes_x[NG_RC_CASCADES_MAX];
   int rc_probes_y[NG_RC_CASCADES_MAX];
   int rc_spacing[NG_RC_CASCADES_MAX];
-  /* WS RC: look-at clip + sparse screen-seeded probes + screen irr. */
+  /* WS RC: GPU cull (+ look-at clip when GI on) + sparse pool + screen irr. */
+  // agent: composer-2.5 | 2026-08-11 | wipe look-at cube cull path | bf3c1d
   // agent: composer-2.5 | 2026-08-10 | B1 dual clip near far RTs | d8ac7a
   // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
+  // agent: composer-2.5 | 2026-08-11 | B6 kill seed readback tick | 7c8edc
   NgRcWsClip ws_clip[NG_RC_WS_CLIP_COUNT];
   RenderTexture2D rt_ws[2];
-  RenderTexture2D rt_ws_seed; /* NG_RC_WS_SEED² depth downsample */
-  bool ws_seed_ready;
   RenderTexture2D rt_vox; /* VOX × VOX² frustum-fit stamp atlas */
   bool vox_rt_ready;
   uint32_t ws_vox_scene_hash;
@@ -244,6 +249,17 @@ typedef struct ModRenderCtx {
   // agent: composer-2.5 | 2026-08-10 | debug probes grid atlas wire | 49402d
   NgRcPassShader rc_ws_debug;
   NgRcPassShader rc_ws_vox_stamp;
+  // agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
+  NgRcPassShader rc_ws_prio;
+  NgRcPassShader rc_ws_prio_reduce;
+  RenderTexture2D rt_ws_op; /* 1×1 reduce target for K-list picks */
+  bool ws_prio_gpu_ready;
+  // agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
+  // agent: composer-2.5 | 2026-08-11 | restore GPU cull fix frustum | 15ce06
+  NgRcPassShader rc_ws_cull;
+  RenderTexture2D rt_node_vis; /* BVH_MAX × 1 node frustum flags */
+  RenderTexture2D rt_prim_vis; /* PRIM_MAX × 1 prim frustum flags */
+  bool ws_cull_ready;
 } ModRenderCtx;
 
 static ModRenderCtx g_render_ctx;
@@ -292,6 +308,8 @@ static const char *mod_render_pass_name(NgRenderDebugPass pass) {
     return "grid";
   case NG_RENDER_PASS_ATLAS:
     return "atlas";
+  case NG_RENDER_PASS_CULLING:
+    return "culling";
   case NG_RENDER_PASS_FINAL:
   default:
     return "final";
@@ -341,6 +359,10 @@ static bool mod_render_pass_from_name(const char *name, NgRenderDebugPass *out) 
   }
   if (strcmp(name, "atlas") == 0) {
     *out = NG_RENDER_PASS_ATLAS;
+    return true;
+  }
+  if (strcmp(name, "culling") == 0) {
+    *out = NG_RENDER_PASS_CULLING;
     return true;
   }
   return false;
@@ -730,10 +752,6 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     }
     UnloadRenderTexture(ctx->rt_ws[0]);
     UnloadRenderTexture(ctx->rt_ws[1]);
-    if (ctx->ws_seed_ready) {
-      UnloadRenderTexture(ctx->rt_ws_seed);
-      ctx->ws_seed_ready = false;
-    }
     ctx->ws_rt_ready = false;
     ctx->ws_probe_n = 0;
     ctx->ws_dirs = 0;
@@ -791,6 +809,29 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
   if (ctx->rc_ws_debug.ready) {
     ng_shader_unload(&ctx->rc_ws_debug.sh);
     ctx->rc_ws_debug.ready = false;
+  }
+  // agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
+  if (ctx->rc_ws_prio.ready) {
+    ng_shader_unload(&ctx->rc_ws_prio.sh);
+    ctx->rc_ws_prio.ready = false;
+  }
+  if (ctx->rc_ws_prio_reduce.ready) {
+    ng_shader_unload(&ctx->rc_ws_prio_reduce.sh);
+    ctx->rc_ws_prio_reduce.ready = false;
+  }
+  if (ctx->ws_prio_gpu_ready) {
+    UnloadRenderTexture(ctx->rt_ws_op);
+    ctx->ws_prio_gpu_ready = false;
+  }
+  // agent: composer-2.5 | 2026-08-11 | restore GPU cull fix frustum | 15ce06
+  if (ctx->rc_ws_cull.ready) {
+    ng_shader_unload(&ctx->rc_ws_cull.sh);
+    ctx->rc_ws_cull.ready = false;
+  }
+  if (ctx->ws_cull_ready) {
+    UnloadRenderTexture(ctx->rt_node_vis);
+    UnloadRenderTexture(ctx->rt_prim_vis);
+    ctx->ws_cull_ready = false;
   }
 }
 
@@ -989,9 +1030,43 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
       !mod_render_load_rc_pass(&ctx->rc_ws_debug, NG_RES_ROOT "shaders/rc_ws_debug.fs")) {
     return false;
   }
+  // agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
+  /* Prio score/reduce: optional — CPU select from prio_rgba is default (0 download). */
+  if (!ctx->rc_ws_prio.ready) {
+    (void)mod_render_load_rc_pass(&ctx->rc_ws_prio, NG_RES_ROOT "shaders/rc_ws_prio.fs");
+  }
+  if (!ctx->rc_ws_prio_reduce.ready) {
+    (void)mod_render_load_rc_pass(&ctx->rc_ws_prio_reduce, NG_RES_ROOT "shaders/rc_ws_prio_reduce.fs");
+  }
+  if (!ctx->ws_prio_gpu_ready && ctx->rc_ws_prio_reduce.ready) {
+    ctx->rt_ws_op = LoadRenderTexture(1, 1);
+    if (ctx->rt_ws_op.id != 0) {
+      SetTextureFilter(ctx->rt_ws_op.texture, TEXTURE_FILTER_POINT);
+      ctx->ws_prio_gpu_ready = true;
+    }
+  }
+  // agent: composer-2.5 | 2026-08-11 | restore GPU cull fix frustum | 15ce06
+  if (!ctx->rc_ws_cull.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_cull, NG_RES_ROOT "shaders/rc_ws_cull.fs")) {
+    return false;
+  }
+  if (!ctx->ws_cull_ready) {
+    /* Height 2 avoids degenerate 1px FBO coverage; FS indexes by FragCoord.x only. */
+    ctx->rt_node_vis = LoadRenderTexture(NG_RC_WS_BVH_MAX, 2);
+    ctx->rt_prim_vis = LoadRenderTexture(NG_RC_WS_PRIM_MAX, 2);
+    if (ctx->rt_node_vis.id == 0 || ctx->rt_prim_vis.id == 0) {
+      return false;
+    }
+    SetTextureFilter(ctx->rt_node_vis.texture, TEXTURE_FILTER_POINT);
+    SetTextureFilter(ctx->rt_prim_vis.texture, TEXTURE_FILTER_POINT);
+    SetTextureWrap(ctx->rt_node_vis.texture, TEXTURE_WRAP_CLAMP);
+    SetTextureWrap(ctx->rt_prim_vis.texture, TEXTURE_WRAP_CLAMP);
+    ctx->ws_cull_ready = true;
+  }
   if (!ng_rc_ws_ensure(&ctx->ws_cpu, ctx->rc_quality)) {
     return false;
   }
+#if !NG_RC_WS_GI_OFFLINE
   // agent: composer-2.5 | 2026-08-10 | B1 dual clip near far RTs | d8ac7a
   {
     const NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
@@ -1002,6 +1077,7 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->ws_cpu.size[1] = far->size[1];
     ctx->ws_cpu.size[2] = far->size[2];
   }
+#endif
 
   int cascades = 3;
   int shift = 0;
@@ -1092,10 +1168,6 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     }
     UnloadRenderTexture(ctx->rt_ws[0]);
     UnloadRenderTexture(ctx->rt_ws[1]);
-    if (ctx->ws_seed_ready) {
-      UnloadRenderTexture(ctx->rt_ws_seed);
-      ctx->ws_seed_ready = false;
-    }
     ctx->ws_rt_ready = false;
   }
   if (!ctx->ws_rt_ready) {
@@ -1133,9 +1205,7 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->rt_ws[1] = LoadRenderTexture(w, h);
     SetTextureFilter(ctx->rt_ws[0].texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(ctx->rt_ws[1].texture, TEXTURE_FILTER_BILINEAR);
-    ctx->rt_ws_seed = LoadRenderTexture(NG_RC_WS_SEED, NG_RC_WS_SEED);
-    SetTextureFilter(ctx->rt_ws_seed.texture, TEXTURE_FILTER_BILINEAR);
-    ctx->ws_seed_ready = true;
+    // agent: composer-2.5 | 2026-08-11 | B6 kill seed readback tick | 7c8edc
     BeginTextureMode(ctx->rt_ws[0]);
     ClearBackground(BLACK);
     EndTextureMode();
@@ -1339,7 +1409,11 @@ static void mod_render_rc_resolve(ModRenderCtx *ctx) {
 /** Compose Direct + gi*(ws·WS + ss·SS)*albedo + glow. */
 static void mod_render_rc_compose(ModRenderCtx *ctx) {
   NgRcPassShader *pass = &ctx->rc_compose;
+#if NG_RC_WS_GI_OFFLINE
+  const float gi = 0.0f; /* foundation: ambient + direct only */
+#else
   const float gi = ctx->gi_strength;
+#endif
   const float ws_w = ctx->ws_weight;
   const float ss_w = ctx->ss_weight;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
@@ -1643,6 +1717,14 @@ static void mod_render_rc_ws_resolve(ModRenderCtx *ctx, int dest) {
     }
   }
   {
+    // agent: composer-2.5 | 2026-08-10 | LOD bands from camera eye | 4e0c43
+    const float eye[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
+    int loc = GetShaderLocation(pass->sh.handle, "ng_eye");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, eye, SHADER_UNIFORM_VEC3);
+    }
+  }
+  {
     int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
     if (loc >= 0) {
       SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
@@ -1730,12 +1812,11 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
   EndShaderMode();
 }
 
-/** WS debug: 0=probe lattice, 1=UVW, 2=grid occupancy. */
+/** WS debug: 0=leaf lod, 1=world frac, 2=grid, 3=culling vis mask. */
 static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
-  // agent: composer-2.5 | 2026-08-10 | B1 dual clip near far RTs | d8ac7a
+  // agent: composer-2.5 | 2026-08-11 | fix cull debug tex unit bind | a5a0fc
+  // agent: composer-2.5 | 2026-08-11 | wipe look-at cube cull path | bf3c1d
   NgRcPassShader *pass = &ctx->rc_ws_debug;
-  const NgRcWsClip *near = &ctx->ws_clip[NG_RC_WS_CLIP_NEAR];
-  const NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
   const float probe_res = (float)(ctx->ws_probe_n > 0 ? ctx->ws_probe_n : 12);
   const float grid_res = (float)NG_RC_WS_GRID_RES;
   const int ping = ctx->ws_ping & 1;
@@ -1750,21 +1831,16 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
     SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
   }
   if (pass->loc_ws_origin >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_ws_origin, near->origin, SHADER_UNIFORM_VEC3);
+    SetShaderValue(pass->sh.handle, pass->loc_ws_origin, ctx->ws_cpu.origin, SHADER_UNIFORM_VEC3);
   }
   if (pass->loc_ws_size >= 0) {
-    SetShaderValue(pass->sh.handle, pass->loc_ws_size, near->size, SHADER_UNIFORM_VEC3);
+    SetShaderValue(pass->sh.handle, pass->loc_ws_size, ctx->ws_cpu.size, SHADER_UNIFORM_VEC3);
   }
   {
-    int loc = GetShaderLocation(pass->sh.handle, "ng_far_origin");
+    const float eye[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
+    int loc = GetShaderLocation(pass->sh.handle, "ng_eye");
     if (loc >= 0) {
-      SetShaderValue(pass->sh.handle, loc, far->origin, SHADER_UNIFORM_VEC3);
-    }
-  }
-  {
-    int loc = GetShaderLocation(pass->sh.handle, "ng_far_size");
-    if (loc >= 0) {
-      SetShaderValue(pass->sh.handle, loc, far->size, SHADER_UNIFORM_VEC3);
+      SetShaderValue(pass->sh.handle, loc, eye, SHADER_UNIFORM_VEC3);
     }
   }
   if (pass->loc_probe_res >= 0) {
@@ -1782,39 +1858,107 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
       SetShaderValue(pass->sh.handle, loc, &mode, SHADER_UNIFORM_INT);
     }
   }
+  /* Flush slot table; bind EVERY sampler2D (GLES unbound units poison fetches). */
+  // agent: composer-2.5 | 2026-08-11 | culling debug bind all samplers | 6e7512
+  rlDrawRenderBatchActive();
   if (pass->loc_tex_depth >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
   }
-  if (pass->loc_tex_irradiance_ws >= 0) {
-    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_ws[ping].texture);
-  }
-  {
-    int loc = GetShaderLocation(pass->sh.handle, "tex_grid");
-    if (loc >= 0 && ctx->ws_cpu.grid_tex_ready) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_grid);
+  if (mode == 3) {
+    const float bvh_count = (float)(ctx->ws_cpu.bvh_count > 0 ? ctx->ws_cpu.bvh_count : 0);
+    const float bvh_root = (float)ctx->ws_cpu.bvh_root;
+    const float prim_count = (float)(ctx->ws_cpu.prim_count > 0 ? ctx->ws_cpu.prim_count : 0);
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_bvh_count");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &bvh_count, SHADER_UNIFORM_FLOAT);
+      }
     }
-  }
-  {
-    const float world_cell = NG_RC_WS_CELL;
-    int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
-    if (loc >= 0) {
-      SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_bvh_root");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &bvh_root, SHADER_UNIFORM_FLOAT);
+      }
     }
-  }
-  {
-    const float hash_size = (float)(ctx->ws_cpu.hash_size > 0 ? ctx->ws_cpu.hash_size : 64);
-    int loc = GetShaderLocation(pass->sh.handle, "ng_hash_size");
-    if (loc >= 0) {
-      SetShaderValue(pass->sh.handle, loc, &hash_size, SHADER_UNIFORM_FLOAT);
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_prim_count");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
+      }
     }
-  }
-  {
-    int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
-    if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
+    /* Dummy unused samplers → depth (same id reuses one unit). */
+    // agent: composer-2.5 | 2026-08-11 | culling debug bind tex_prim | 43c334
+    if (pass->loc_tex_irradiance_ws >= 0) {
+      SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_depth.texture);
     }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_depth.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_bvh");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_depth.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_grid");
+      if (loc >= 0 && ctx->ws_cpu.grid_tex_ready) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_grid);
+      } else if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_depth.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
+      if (loc >= 0 && ctx->ws_cpu.prim_tex_ready) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_prim);
+      } else if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_depth.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim_vis");
+      if (loc >= 0 && ctx->ws_cull_ready) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_prim_vis.texture);
+      }
+    }
+    /* Same carrier path as compose — FragCoord UV aligns with gbuf RTs. */
+    mod_render_fs_draw(ctx->rt_depth.texture, pw, ph);
+  } else {
+    if (pass->loc_tex_irradiance_ws >= 0) {
+      SetShaderValueTexture(pass->sh.handle, pass->loc_tex_irradiance_ws, ctx->rt_ws[ping].texture);
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_grid");
+      if (loc >= 0 && ctx->ws_cpu.grid_tex_ready) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_grid);
+      }
+    }
+    {
+      const float world_cell = NG_RC_WS_CELL;
+      int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      const float hash_size = (float)(ctx->ws_cpu.hash_size > 0 ? ctx->ws_cpu.hash_size : 64);
+      int loc = GetShaderLocation(pass->sh.handle, "ng_hash_size");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &hash_size, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
+      if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
+      }
+    }
+    DrawRectangle(0, 0, pw, ph, WHITE);
   }
-  DrawRectangle(0, 0, pw, ph, WHITE);
   EndShaderMode();
 }
 
@@ -1869,9 +2013,17 @@ static void mod_render_rc_ws_update_frustum_aabb(ModRenderCtx *ctx) {
   ctx->ws_cpu.size[2] = far->size[2];
 }
 
-/** True if either clip snapped or scene content changed. */
+/** True if clip snapped (GI) or scene content changed. */
 static bool mod_render_rc_ws_vox_dirty(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-11 | vox dirty scene hash only | ec6769
   const uint32_t h = ng_rc_ws_scene_hash();
+#if NG_RC_WS_GI_OFFLINE
+  if (h == ctx->ws_vox_scene_hash) {
+    return false;
+  }
+  ctx->ws_vox_scene_hash = h;
+  return true;
+#else
   const float eps = 1e-3f;
   int moved = 0;
   for (int v = 0; v < NG_RC_WS_CLIP_COUNT; v++) {
@@ -1899,47 +2051,226 @@ static bool mod_render_rc_ws_vox_dirty(ModRenderCtx *ctx) {
   }
   ctx->ws_vox_scene_hash = h;
   return true;
+#endif
 }
 
-/** rc-ws: dirty prims → seed sparse keys → fill → resolve. */
-static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
-  const int force = mod_render_rc_ws_vox_dirty(ctx) ? 1 : 0;
-  if (force) {
-    ng_rc_ws_rebuild_prims(&ctx->ws_cpu);
-    ng_rc_ws_rebuild_grid(&ctx->ws_cpu);
+/** Inward frustum planes from view*proj (raylib BeginMode3D / GetMouseRay). */
+static void mod_render_frustum_planes(const Camera3D *cam, float aspect, Vector4 out[6]) {
+  // agent: composer-2.5 | 2026-08-11 | VP frustum planes target orient | bae74f
+  const float znear = (float)rlGetCullDistanceNear();
+  const float zfar = (float)rlGetCullDistanceFar();
+  Matrix view = MatrixLookAt(cam->position, cam->target, cam->up);
+  Matrix proj = MatrixPerspective((double)cam->fovy * DEG2RAD, (double)aspect, (double)znear,
+                                  (double)zfar);
+  /* Same multiply order as raylib GetMouseRayEx. */
+  Matrix m = MatrixMultiply(view, proj);
+
+  /* Gribb-Hartmann from clip matrix (column-major field names). */
+  out[0] = (Vector4){m.m3 + m.m0, m.m7 + m.m4, m.m11 + m.m8, m.m15 + m.m12};   /* left */
+  out[1] = (Vector4){m.m3 - m.m0, m.m7 - m.m4, m.m11 - m.m8, m.m15 - m.m12};   /* right */
+  out[2] = (Vector4){m.m3 + m.m1, m.m7 + m.m5, m.m11 + m.m9, m.m15 + m.m13};   /* bottom */
+  out[3] = (Vector4){m.m3 - m.m1, m.m7 - m.m5, m.m11 - m.m9, m.m15 - m.m13};   /* top */
+  out[4] = (Vector4){m.m3 + m.m2, m.m7 + m.m6, m.m11 + m.m10, m.m15 + m.m14}; /* near */
+  out[5] = (Vector4){m.m3 - m.m2, m.m7 - m.m6, m.m11 - m.m10, m.m15 - m.m14}; /* far */
+
+  /* Orient each plane so look-at is inside. Do NOT use eye — it sits behind near. */
+  Vector3 probe = cam->target;
+  for (int i = 0; i < 6; i++) {
+    float len = sqrtf(out[i].x * out[i].x + out[i].y * out[i].y + out[i].z * out[i].z);
+    if (len > 1e-8f) {
+      float inv = 1.0f / len;
+      out[i].x *= inv;
+      out[i].y *= inv;
+      out[i].z *= inv;
+      out[i].w *= inv;
+    }
+    if (out[i].x * probe.x + out[i].y * probe.y + out[i].z * probe.z + out[i].w < 0.0f) {
+      out[i].x = -out[i].x;
+      out[i].y = -out[i].y;
+      out[i].z = -out[i].z;
+      out[i].w = -out[i].w;
+    }
+  }
+}
+
+/** GPU BVH frustum cull → rt_node_vis + rt_prim_vis. */
+static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-11 | camera-basis GPU frustum planes | 749a9e
+  if (!ctx->ws_cull_ready || !ctx->rc_ws_cull.ready || !ctx->ws_cpu.bvh_tex_ready) {
+    return;
+  }
+  NgRcPassShader *pass = &ctx->rc_ws_cull;
+  const float bvh_count = (float)(ctx->ws_cpu.bvh_count > 0 ? ctx->ws_cpu.bvh_count : 0);
+  const float prim_count = (float)(ctx->ws_cpu.prim_count > 0 ? ctx->ws_cpu.prim_count : 0);
+  if (bvh_count < 0.5f) {
+    BeginTextureMode(ctx->rt_node_vis);
+    ClearBackground(BLACK);
+    EndTextureMode();
+    BeginTextureMode(ctx->rt_prim_vis);
+    ClearBackground(BLACK);
+    EndTextureMode();
+    return;
   }
 
-  NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
-  if (ctx->ws_seed_ready && ctx->gbuf_ready) {
-    // agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
-    BeginTextureMode(ctx->rt_ws_seed);
-    ClearBackground(BLANK);
-    {
-      const Rectangle src = {0.0f, 0.0f, (float)ctx->rt_depth.texture.width,
-                             (float)ctx->rt_depth.texture.height};
-      const Rectangle dst = {0.0f, 0.0f, (float)NG_RC_WS_SEED, (float)NG_RC_WS_SEED};
-      DrawTexturePro(ctx->rt_depth.texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+  int iw = 0;
+  int ih = 0;
+  mod_render_internal_size(ctx, &iw, &ih);
+  if (iw < 1) {
+    iw = 1;
+  }
+  if (ih < 1) {
+    ih = 1;
+  }
+  const float aspect = (float)iw / (float)ih;
+  Vector4 planes[6];
+  mod_render_frustum_planes(&ctx->camera, aspect, planes);
+  float plane_f[24];
+  for (int i = 0; i < 6; i++) {
+    plane_f[i * 4 + 0] = planes[i].x;
+    plane_f[i * 4 + 1] = planes[i].y;
+    plane_f[i * 4 + 2] = planes[i].z;
+    plane_f[i * 4 + 3] = planes[i].w;
+  }
+
+  rlDrawRenderBatchActive();
+  rlDisableColorBlend();
+
+  int pass0 = 0;
+  BeginTextureMode(ctx->rt_node_vis);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_cull_pass");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &pass0, SHADER_UNIFORM_INT);
     }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_bvh_count");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &bvh_count, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_prim_count");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_frustum[0]");
+    if (loc < 0) {
+      loc = GetShaderLocation(pass->sh.handle, "ng_frustum");
+    }
+    if (loc >= 0) {
+      SetShaderValueV(pass->sh.handle, loc, plane_f, SHADER_UNIFORM_VEC4, 6);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_bvh");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_bvh);
+    }
+  }
+  DrawRectangle(0, 0, ctx->rt_node_vis.texture.width, ctx->rt_node_vis.texture.height, WHITE);
+  EndShaderMode();
+  EndTextureMode();
+
+  int pass1 = 1;
+  BeginTextureMode(ctx->rt_prim_vis);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_cull_pass");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &pass1, SHADER_UNIFORM_INT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_bvh_count");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &bvh_count, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_prim_count");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_bvh");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_bvh);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_node_vis");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_node_vis.texture);
+    }
+  }
+  DrawRectangle(0, 0, ctx->rt_prim_vis.texture.width, ctx->rt_prim_vis.texture.height, WHITE);
+  EndShaderMode();
+  EndTextureMode();
+  rlEnableColorBlend();
+  // agent: composer-2.5 | 2026-08-11 | disable cull GPU TraceLog | 413ecd
+}
+
+/** Foundation tick: dirty prims/BVH + GPU cull. GI/octree offline. */
+static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
+  const int force = mod_render_rc_ws_vox_dirty(ctx) ? 1 : 0;
+  if (force || ctx->ws_cpu.prim_count <= 0) {
+    ng_rc_ws_rebuild_prims(&ctx->ws_cpu);
+#if !NG_RC_WS_GI_OFFLINE
+    ng_rc_ws_rebuild_grid(&ctx->ws_cpu);
+#endif
+  }
+#if NG_RC_WS_GI_OFFLINE
+  // agent: composer-2.5 | 2026-08-11 | wipe look-at cube cull path | bf3c1d
+  // agent: composer-2.5 | 2026-08-11 | skip clip grid when GI off | 8bfa78
+  (void)ctx->ws_prio_gpu_ready;
+  mod_render_rc_ws_cull(ctx);
+  /* Keep WS irr black so compose = ambient + direct only. */
+  if (ctx->ws_rt_ready) {
+    const int ping = ctx->ws_ping & 1;
+    BeginTextureMode(ctx->rt_ws[ping]);
+    ClearBackground(BLACK);
     EndTextureMode();
-    SetTraceLogLevel(LOG_WARNING);
-    Image seed = LoadImageFromTexture(ctx->rt_ws_seed.texture);
-    SetTraceLogLevel(LOG_INFO);
-    if (seed.data && seed.width > 0 && seed.height > 0) {
-      ImageFormat(&seed, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-      ImageFlipVertical(&seed);
-      ng_rc_ws_sparse_seed(&ctx->ws_cpu, (const unsigned char *)seed.data, seed.width, seed.height,
-                           far->origin, far->size);
+  }
+  return;
+#else
+  NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
+  {
+    const float eye[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
+    Vector3 fwd = Vector3Normalize(Vector3Subtract(ctx->camera.target, ctx->camera.position));
+    const float forward[3] = {fwd.x, fwd.y, fwd.z};
+    int sw = GetScreenWidth();
+    int sh = GetScreenHeight();
+    if (sw < 1) {
+      sw = 1;
     }
-    UnloadImage(seed);
+    if (sh < 1) {
+      sh = 1;
+    }
+    const float aspect = (float)sw / (float)sh;
+    const float thv = tanf(ctx->camera.fovy * DEG2RAD * 0.5f);
+    ng_rc_ws_set_view(&ctx->ws_cpu, forward, thv, aspect);
+    ng_rc_ws_sparse_tick(&ctx->ws_cpu, far->origin, far->size, eye);
+    (void)ctx->ws_prio_gpu_ready;
   }
   if (force) {
     ng_rc_ws_sparse_mark_dirty(&ctx->ws_cpu);
   }
 
-  /* Dirty-only when not forced — survivors keep cascade/SH rows. */
-  mod_render_rc_ws_fill_volume(ctx, far, force ? 0 : 1);
-  ng_rc_ws_sparse_clear_dirty(&ctx->ws_cpu);
+  const int dirty_n = ng_rc_ws_dirty_count(&ctx->ws_cpu);
+  if (force || dirty_n > 0) {
+    mod_render_rc_ws_fill_volume(ctx, far, force ? 0 : 1);
+    ng_rc_ws_sparse_clear_dirty(&ctx->ws_cpu);
+  }
   mod_render_rc_ws_resolve(ctx, ctx->ws_ping & 1);
   ctx->ws_frame++;
 
@@ -1970,6 +2301,43 @@ static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
     mod_render_rc_merge(ctx, c, c + 1);
   }
   mod_render_rc_resolve(ctx);
+#endif
+}
+
+/** Load RGBA32F color + depth renderbuffer FBO (world XYZ packing). */
+static RenderTexture2D mod_render_load_rt_rgba32f(int width, int height) {
+  // agent: composer-2.5 | 2026-08-11 | wire depth extent uniforms | 8ff0b2
+  RenderTexture2D target = {0};
+  if (width < 1 || height < 1) {
+    return target;
+  }
+  target.id = rlLoadFramebuffer();
+  if (target.id == 0) {
+    return target;
+  }
+  rlEnableFramebuffer(target.id);
+  target.texture.id =
+      rlLoadTexture(NULL, width, height, PIXELFORMAT_UNCOMPRESSED_R32G32B32A32, 1);
+  target.texture.width = width;
+  target.texture.height = height;
+  target.texture.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+  target.texture.mipmaps = 1;
+  target.depth.id = rlLoadTextureDepth(width, height, true);
+  target.depth.width = width;
+  target.depth.height = height;
+  target.depth.format = 19;
+  target.depth.mipmaps = 1;
+  rlFramebufferAttach(target.id, target.texture.id, RL_ATTACHMENT_COLOR_CHANNEL0,
+                      RL_ATTACHMENT_TEXTURE2D, 0);
+  rlFramebufferAttach(target.id, target.depth.id, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_RENDERBUFFER,
+                      0);
+  if (!rlFramebufferComplete(target.id)) {
+    TraceLog(LOG_ERROR, "rc-ws depth FBO incomplete");
+  }
+  rlDisableFramebuffer();
+  SetTextureFilter(target.texture, TEXTURE_FILTER_POINT);
+  SetTextureWrap(target.texture, TEXTURE_WRAP_CLAMP);
+  return target;
 }
 
 static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
@@ -1999,7 +2367,11 @@ static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
   ctx->rt_albedo = LoadRenderTexture(w, h);
   ctx->rt_normal = LoadRenderTexture(w, h);
   ctx->rt_glow = LoadRenderTexture(w, h);
-  ctx->rt_depth = LoadRenderTexture(w, h);
+  /* Float depth: world XYZ without RGBA8 UVW clamp (culling debug association). */
+  ctx->rt_depth = mod_render_load_rt_rgba32f(w, h);
+  if (ctx->rt_depth.id == 0 || ctx->rt_depth.texture.id == 0) {
+    return false;
+  }
   ctx->gbuf_w = w;
   ctx->gbuf_h = h;
   ctx->gbuf_ready = true;
@@ -2095,7 +2467,8 @@ static void mod_render_fill_gbuf_graph(ModRenderCtx *ctx, RenderTexture2D *rt, i
   // agent: composer-2.5 | 2026-08-10 | gbuf disable blend pack | 8655f8
   /* Alpha blend would multiply world-UVW by dist/FAR → black GI. */
   BeginTextureMode(*rt);
-  ClearBackground(BLACK);
+  /* Depth: A=0 empty (BLANK). Other targets: BLACK. */
+  ClearBackground(mode == 3 ? BLANK : BLACK);
   rlDisableColorBlend();
   BeginMode3D(ctx->camera);
   mod_render_flush_batches_gbuf(ctx, mode);
@@ -2223,9 +2596,14 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       mod_scene_runtime_use_view();
     }
     if (mod_render_ensure_gbuf(ctx)) {
+#if NG_RC_WS_GI_OFFLINE
+      /* Foundation: no look-at clip cube — gbuf world XYZ + camera frustum cull. */
+      // agent: composer-2.5 | 2026-08-11 | wipe look-at cube cull path | bf3c1d
+#else
       /* Frustum volume must match gbuf UVW packing this frame. */
       // agent: composer-2.5 | 2026-08-10 | frustum before gbuf CPU stamp | fff863
       mod_render_rc_ws_update_frustum_aabb(ctx);
+#endif
       mod_render_collect_graph_batches(ctx);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_albedo, 0);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_normal, 1);
@@ -2236,7 +2614,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       if (want_rc && mod_render_ensure_rc(ctx)) {
         mod_render_rc_gpu_tick(ctx);
         rc_ready = ctx->rc_rt_ready && ctx->ws_rt_ready && ctx->rc_compose.ready &&
-                   ctx->ws_cpu.prim_tex_ready;
+                   ctx->ws_cpu.prim_tex_ready && ctx->ws_cpu.bvh_tex_ready && ctx->ws_cull_ready;
       }
 
       if (ctx->debug_pass != NG_RENDER_PASS_FINAL || want_rc) {
@@ -2273,6 +2651,10 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
         } else if (ctx->debug_pass == NG_RENDER_PASS_ATLAS && rc_ready) {
           ClearBackground(BLACK);
           mod_render_blit_rt(&ctx->ws_clip[NG_RC_WS_CLIP_NEAR].casc[0]);
+        } else if (ctx->debug_pass == NG_RENDER_PASS_CULLING && rc_ready) {
+          // agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
+          ClearBackground(BLACK);
+          mod_render_rc_ws_debug(ctx, 3);
         } else if (rc_ready) {
           ClearBackground(mod_render_bg_color());
           mod_render_rc_compose(ctx);
@@ -2412,6 +2794,7 @@ static bool mod_render_init(void *vctx) {
   // agent: composer-2.5 | 2026-08-10 | ss_weight 0 skip SS tick | 55e85e
   ctx->ss_weight = 0.0f;
   ctx->render_scale = 1.0f;
+#if !NG_RC_WS_GI_OFFLINE
   // agent: composer-2.5 | 2026-08-10 | B1 dual clip near far RTs | d8ac7a
   {
     const float near_e = NG_RC_WS_CELL * (float)NG_RC_WS_VOX_RES;
@@ -2431,13 +2814,17 @@ static bool mod_render_init(void *vctx) {
     far->size[1] = far_e;
     far->size[2] = far_e;
   }
+#endif
   ng_rc_ws_init(&ctx->ws_cpu);
+#if !NG_RC_WS_GI_OFFLINE
+  // agent: composer-2.5 | 2026-08-11 | skip clip sync init GI off | db7a00
   ctx->ws_cpu.origin[0] = ctx->ws_clip[NG_RC_WS_CLIP_FAR].origin[0];
   ctx->ws_cpu.origin[1] = ctx->ws_clip[NG_RC_WS_CLIP_FAR].origin[1];
   ctx->ws_cpu.origin[2] = ctx->ws_clip[NG_RC_WS_CLIP_FAR].origin[2];
   ctx->ws_cpu.size[0] = ctx->ws_clip[NG_RC_WS_CLIP_FAR].size[0];
   ctx->ws_cpu.size[1] = ctx->ws_clip[NG_RC_WS_CLIP_FAR].size[1];
   ctx->ws_cpu.size[2] = ctx->ws_clip[NG_RC_WS_CLIP_FAR].size[2];
+#endif
   mod_render_init_camera(ctx);
   return true;
 }
@@ -2649,7 +3036,30 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-10 | CELL meter intervals no far gain | 1f82f9
 // agent: composer-2.5 | 2026-08-10 | lockstep clip scroll soft blend | 23e626
 // agent: composer-2.5 | 2026-08-10 | B3 sparse tick seed fill | 4d7b85
+// agent: composer-2.5 | 2026-08-11 | B6 kill seed readback tick | 7c8edc
+// agent: composer-2.5 | 2026-08-11 | B62 skip fill if no dirty | bcd897
+// agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
 // agent: composer-2.5 | 2026-08-10 | B3 seed blit quiet readback | 034eb0
 // agent: composer-2.5 | 2026-08-10 | B3 fill skip clear dirty only | 93345e
 // agent: composer-2.5 | 2026-08-10 | ws fill disable blend dirty | 466455
 // agent: composer-2.5 | 2026-08-10 | merge pingpong not casc | 27d0fe
+// agent: composer-2.5 | 2026-08-10 | LOD bands from camera eye | 4e0c43
+// agent: composer-2.5 | 2026-08-11 | B65 wire set_view before tick | 9d1e74
+// agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
+// agent: composer-2.5 | 2026-08-11 | fix cull debug tex unit bind | a5a0fc
+// agent: composer-2.5 | 2026-08-11 | flush clear sampler slots cull | 53b39b
+// agent: composer-2.5 | 2026-08-11 | restore GPU cull fix frustum | 15ce06
+// agent: composer-2.5 | 2026-08-11 | camera-basis GPU frustum planes | 749a9e
+// agent: composer-2.5 | 2026-08-11 | culling debug bind flush units | af8b89
+// agent: composer-2.5 | 2026-08-11 | culling debug bind all samplers | 6e7512
+// agent: composer-2.5 | 2026-08-11 | frustum side normals via cross | 5bf367
+// agent: composer-2.5 | 2026-08-11 | cull log visible prim mask | 0bb751
+// agent: composer-2.5 | 2026-08-11 | VP frustum planes target orient | bae74f
+// agent: composer-2.5 | 2026-08-11 | culling debug bind tex_prim | 43c334
+// agent: composer-2.5 | 2026-08-11 | cull log until eight vis | 892ba3
+// agent: composer-2.5 | 2026-08-11 | wire depth extent uniforms | 8ff0b2
+// agent: composer-2.5 | 2026-08-11 | wipe look-at cube cull path | bf3c1d
+// agent: composer-2.5 | 2026-08-11 | skip clip grid when GI off | 8bfa78
+// agent: composer-2.5 | 2026-08-11 | skip clip sync init GI off | db7a00
+// agent: composer-2.5 | 2026-08-11 | vox dirty scene hash only | ec6769
+// agent: composer-2.5 | 2026-08-11 | disable cull GPU TraceLog | 413ecd

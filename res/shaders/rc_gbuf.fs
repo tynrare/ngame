@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-08-10 | gbuf pack rough metal alphas | 6b62e9
 // agent: composer-2.5 | 2026-08-10 | gbuf A geometry not clip | e7e855
+// agent: composer-2.5 | 2026-08-11 | gbuf cam-relative depth pack | 4615c1
 in vec3 fragPosition;
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -23,9 +24,8 @@ void main() {
   } else if (ng_gbuf_mode == 2) {
     finalColor = vec4(ng_glow, 1.0);
   } else if (ng_gbuf_mode == 3) {
-    /* RGB = world UVW vs far clip (unclamped). A = geometry (not clip inside). */
-    vec3 uvw = (fragPosition - ng_ws_origin) / max(ng_ws_size, vec3(0.001));
-    finalColor = vec4(uvw, 1.0);
+    /* RGB = world XYZ (float RT). A = geometry. No clip UVW — avoids RGBA8 clamp. */
+    finalColor = vec4(fragPosition, 1.0);
   } else {
     /* RGB = albedo, A = roughness */
     finalColor = vec4(ng_tint, clamp(ng_roughness, 0.04, 1.0));
@@ -33,3 +33,4 @@ void main() {
 }
 // agent: composer-2.5 | 2026-08-10 | gbuf pack rough metal alphas | 6b62e9
 // agent: composer-2.5 | 2026-08-10 | gbuf A geometry not clip | e7e855
+// agent: composer-2.5 | 2026-08-11 | gbuf cam-relative depth pack | 4615c1

@@ -2,6 +2,7 @@
 // agent: composer-2.5 | 2026-08-10 | B1 fill grid uses far clip | d95529
 // agent: composer-2.5 | 2026-08-10 | B3 sparse fill slot meta | 22f918
 // agent: composer-2.5 | 2026-08-10 | B3 fill discard non-dirty rows | 4bd01c
+// agent: composer-2.5 | 2026-08-10 | B4 fill lod scale intervals | 3daf2f
 /* Sparse slot×dir WS cascade: tex_meta centers + grid SDF. Atlas W=dirs H=slots. */
 in vec2 fragTexCoord;
 
@@ -143,18 +144,21 @@ void main() {
   }
 
   vec4 meta = texelFetch(tex_meta, ivec2(0, int(slot)), 0);
-  if (meta.w < 0.5) {
+  if (meta.w < 5.0) {
     finalColor = vec4(0.0);
     return;
   }
-  /* a>=1.5 → dirty; survivors keep previous cascade texel. */
-  if (ng_fill_dirty_only > 0.5 && meta.w < 1.5) {
+  /* a = (dirty?20:10)+lod; dirty_only keeps clean rows. */
+  if (ng_fill_dirty_only > 0.5 && meta.w < 19.5) {
     discard;
   }
+  int lod = int(meta.w) - (meta.w >= 19.5 ? 20 : 10);
+  lod = clamp(lod, 0, 7);
+  float leaf_scale = exp2(float(lod));
   vec3 origin = meta.xyz;
   vec3 dir = dir_from_index(int(d), nd);
-  float t0 = max(ng_t0, 0.0);
-  float t1 = max(ng_t1, t0 + 0.001);
+  float t0 = max(ng_t0, 0.0) * leaf_scale;
+  float t1 = max(ng_t1, ng_t0 + 0.001) * leaf_scale;
   int steps = max(ng_max_steps, 1);
   int max_s = clamp(steps * 5, 16, 56);
   float t = t0;
@@ -188,3 +192,4 @@ void main() {
 // agent: composer-2.5 | 2026-08-10 | B1 fill grid uses far clip | d95529
 // agent: composer-2.5 | 2026-08-10 | B3 sparse fill slot meta | 22f918
 // agent: composer-2.5 | 2026-08-10 | B3 fill discard non-dirty rows | 4bd01c
+// agent: composer-2.5 | 2026-08-10 | B4 fill lod scale intervals | 3daf2f

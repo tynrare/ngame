@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-08-09 | pass under debug.render | d0d7e2
 // agent: composer-2.5 | 2026-08-10 | cli debug probes grid atlas | bc502d
+// agent: composer-2.5 | 2026-08-11 | CLI culling debug pass | 7e1962
 /* Loaded by bus.js — registers set.debug.render.pass */
 if (typeof ng_cli === "undefined") {
   throw new Error("cli/debug.js requires bus.js ng_cli");
@@ -25,6 +26,7 @@ ng_cli.set.debug.render.pass = {
     "probes",
     "grid",
     "atlas",
+    "culling",
   ],
   _get: function () {
     return typeof ng_render_get === "function" ? ng_render_get("debug.render.pass") : null;
@@ -43,3 +45,4 @@ ng_cli.set.debug.render.pass = {
 };
 // agent: composer-2.5 | 2026-08-09 | pass under debug.render | d0d7e2
 // agent: composer-2.5 | 2026-08-10 | cli debug probes grid atlas | bc502d
+// agent: composer-2.5 | 2026-08-11 | CLI culling debug pass | 7e1962

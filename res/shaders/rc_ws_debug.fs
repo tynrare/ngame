@@ -1,55 +1,176 @@
-// agent: composer-2.5 | 2026-08-10 | B1 debug near far lattice | 75995b
-// agent: composer-2.5 | 2026-08-10 | probes gray checker no stripes | 5d8730
-// agent: composer-2.5 | 2026-08-10 | B3 sparse probes debug | b17473
-// agent: composer-2.5 | 2026-08-10 | probes outside still sample | 8fadf9
-/* WS RC debug: 0=sparse slot hit, 1=far UVW, 2=grid occupancy. */
+// agent: composer-2.5 | 2026-08-10 | B4 debug lod colors | 3cf97d
+// agent: composer-2.5 | 2026-08-10 | rename packed GLSL keyword | dff788
+// agent: composer-2.5 | 2026-08-11 | B5 debug covering leaf no rings | 2a65b1
+// agent: composer-2.5 | 2026-08-11 | culling debug mode vis mask | 2d463e
+// agent: composer-2.5 | 2026-08-11 | culling miss no-prim vs culled | e8734b
+// agent: composer-2.5 | 2026-08-11 | linear leaf AABB prim lookup | cbc718
+// agent: composer-2.5 | 2026-08-11 | fix culling debug sample associate | 282b54
+// agent: composer-2.5 | 2026-08-11 | culling debug UV grid associate | 09ac20
+// agent: composer-2.5 | 2026-08-11 | culling prefer closest visible prim | 7775dd
+// agent: composer-2.5 | 2026-08-11 | culling debug SDF prim associate | 076914
+// agent: composer-2.5 | 2026-08-11 | debug cam-relative world | 455296
+// agent: composer-2.5 | 2026-08-11 | wipe outside_far from debug | ba5896
+/* WS RC debug: 0=leaf lod, 1=world frac, 2=grid, 3=culling vis mask. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_depth;
 uniform sampler2D tex_irradiance_ws;
 uniform sampler2D tex_grid;
 uniform sampler2D tex_hash;
+uniform sampler2D tex_bvh;
+uniform sampler2D tex_prim;
+uniform sampler2D tex_prim_vis;
 uniform vec3 ng_ws_origin;
 uniform vec3 ng_ws_size;
-uniform vec3 ng_far_origin;
-uniform vec3 ng_far_size;
+uniform vec3 ng_eye;
 uniform float ng_probe_res;
 uniform float ng_grid_res;
 uniform float ng_world_cell;
 uniform float ng_hash_size;
+uniform float ng_bvh_count;
+uniform float ng_bvh_root;
+uniform float ng_prim_count;
 uniform int ng_debug_mode;
 uniform vec2 ng_resolution;
 
 out vec4 finalColor;
 
-const vec3 LIVE = vec3(0.25, 0.55, 0.95);
-const vec3 MISS = vec3(0.4);
+const int LOD_STRIDE = 1000;
+const int PRIM_MAX = 64;
+const float HIT_EPS = 0.12;
+const float GRID_EMPTY = 255.0;
+const vec3 LOD_COL[8] = vec3[](vec3(0.2, 0.5, 1.0), vec3(0.2, 0.85, 0.9), vec3(0.3, 0.9, 0.3),
+                               vec3(0.9, 0.9, 0.2), vec3(1.0, 0.55, 0.15), vec3(1.0, 0.25, 0.2),
+                               vec3(0.85, 0.2, 0.7), vec3(0.55, 0.35, 0.9));
 
-uint cell_hash(ivec3 c) {
-  uint h = uint(c.x) * 73856093u;
+uint cell_hash(int lod, ivec3 c) {
+  uint h = uint(lod) * 2654435761u;
+  h ^= uint(c.x) * 73856093u;
   h ^= uint(c.y) * 19349663u;
   h ^= uint(c.z) * 83492791u;
   return h;
 }
 
-float lookup_slot(ivec3 cell) {
+float lookup_slot(int lod, ivec3 c) {
   int hsz = int(max(ng_hash_size, 1.0));
   int mask = hsz - 1;
-  int h = int(cell_hash(cell) & uint(mask));
+  int h = int(cell_hash(lod, c) & uint(mask));
   for (int i = 0; i < 16; i++) {
     vec4 e = texelFetch(tex_hash, ivec2(h, 0), 0);
     if (e.r < 0.5) {
       return -1.0;
     }
-    if (ivec3(e.gba) == cell) {
-      return e.r - 1.0;
+    int enc = int(e.r);
+    int elod = enc / LOD_STRIDE;
+    int slot = (enc % LOD_STRIDE) - 1;
+    if (elod == lod && ivec3(e.gba) == c && slot >= 0) {
+      return float(slot);
     }
     h = (h + 1) & mask;
   }
   return -1.0;
 }
 
+/** Finest covering leaf depth at world (hash walk). */
+int find_covering_lod(vec3 world) {
+  for (int L = 0; L < 8; L++) {
+    float cell = max(ng_world_cell, 0.001) * exp2(float(L));
+    ivec3 ic = ivec3(floor(world / cell));
+    if (lookup_slot(L, ic) >= 0.0) {
+      return L;
+    }
+  }
+  return -1;
+}
+
+vec3 quat_inv_rotate(vec4 q, vec3 v) {
+  vec3 qv = -q.xyz;
+  float qw = q.w;
+  vec3 t = 2.0 * cross(qv, v);
+  return v + qw * t + cross(qv, t);
+}
+
+float sd_box(vec3 p, vec3 b) {
+  vec3 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float sd_sphere(vec3 p, float r) {
+  return length(p) - r;
+}
+
+vec4 fetch_prim_col(int row, int col) {
+  return texelFetch(tex_prim, ivec2(col, row), 0);
+}
+
+/** Oriented SDF for one prim row (unpadded half — matches drawn mesh). */
+float prim_sdf(int row, vec3 p) {
+  vec4 c0 = fetch_prim_col(row, 0);
+  vec4 c1 = fetch_prim_col(row, 1);
+  vec4 c2 = fetch_prim_col(row, 2);
+  vec3 pl = quat_inv_rotate(c2, p - c0.xyz);
+  if (c0.w > 0.5) {
+    return sd_sphere(pl, c1.x);
+  }
+  return sd_box(pl, c1.xyz);
+}
+
+/** Raylib FBO may land on either row — take max. */
+float prim_vis_at(int prim) {
+  float a = texelFetch(tex_prim_vis, ivec2(prim, 0), 0).r;
+  float b = texelFetch(tex_prim_vis, ivec2(prim, 1), 0).r;
+  return max(a, b);
+}
+
+// agent: composer-2.5 | 2026-08-11 | wipe outside_far from debug | ba5896
+/** Closest analytic prim at world (full SDF scan — no clip grid). */
+int find_prim_at(vec3 p) {
+  int nprim = int(clamp(ng_prim_count, 0.0, float(PRIM_MAX)));
+  int best = -1;
+  float best_d = 1e9;
+  for (int row = 0; row < PRIM_MAX; row++) {
+    if (row >= nprim) {
+      break;
+    }
+    float d = prim_sdf(row, p);
+    if (d < best_d) {
+      best_d = d;
+      best = row;
+    }
+  }
+  if (best < 0 || best_d > HIT_EPS) {
+    return -1;
+  }
+  return best;
+}
+
+vec3 prim_hash_color(int prim) {
+  float h = fract(sin(float(prim) * 12.9898 + 78.233) * 43758.5453);
+  float s = 0.55 + 0.35 * fract(sin(float(prim) * 39.346 + 11.17) * 23421.63);
+  float v = 0.65 + 0.3 * fract(sin(float(prim) * 7.91 + 3.1) * 9123.12);
+  float ch = v * s;
+  float x = ch * (1.0 - abs(mod(h * 6.0, 2.0) - 1.0));
+  float m = v - ch;
+  vec3 rgb;
+  if (h < 1.0 / 6.0) {
+    rgb = vec3(ch, x, 0.0);
+  } else if (h < 2.0 / 6.0) {
+    rgb = vec3(x, ch, 0.0);
+  } else if (h < 3.0 / 6.0) {
+    rgb = vec3(0.0, ch, x);
+  } else if (h < 4.0 / 6.0) {
+    rgb = vec3(0.0, x, ch);
+  } else if (h < 5.0 / 6.0) {
+    rgb = vec3(x, 0.0, ch);
+  } else {
+    rgb = vec3(ch, 0.0, x);
+  }
+  return rgb + m;
+}
+
 void main() {
+  /* Match rc_compose.fs — FragCoord UV; depth RGB = world XYZ (float RT). */
+  // agent: composer-2.5 | 2026-08-11 | debug cam-relative world | 455296
   vec2 uv = gl_FragCoord.xy / max(ng_resolution, vec2(1.0));
   vec4 depth_pack = texture(tex_depth, uv);
   if (depth_pack.a < 0.5) {
@@ -57,24 +178,19 @@ void main() {
     return;
   }
 
-  vec3 far_uvw = depth_pack.rgb;
-  bool outside_far =
-      any(lessThan(far_uvw, vec3(0.0))) || any(greaterThan(far_uvw, vec3(1.0)));
+  vec3 world = depth_pack.rgb;
   int mode = ng_debug_mode;
 
   if (mode == 1) {
-    finalColor = outside_far ? vec4(0.35, 0.0, 0.0, 1.0) : vec4(far_uvw, 1.0);
+    /* Cam-relative frac — no look-at clip cube. */
+    finalColor = vec4(fract((world - ng_eye) * 0.05 + 0.5), 1.0);
     return;
   }
 
-  /* mode 0/2: allow outside far cube (sparse keys are world-CELL). */
   if (mode == 2) {
-    if (outside_far) {
-      finalColor = vec4(0.25, 0.02, 0.02, 1.0);
-      return;
-    }
     float gr = max(ng_grid_res, 1.0);
-    ivec3 ic = ivec3(clamp(floor(far_uvw * gr), vec3(0.0), vec3(gr - 1.0)));
+    vec3 uvw = (world - ng_ws_origin) / max(ng_ws_size, vec3(0.001));
+    ivec3 ic = ivec3(clamp(floor(uvw * gr), vec3(0.0), vec3(gr - 1.0)));
     int gx = int(gr);
     vec4 slots = texelFetch(tex_grid, ivec2(ic.x, ic.y + ic.z * gx), 0) * 255.0;
     float filled = 0.0;
@@ -89,19 +205,49 @@ void main() {
     return;
   }
 
-  /* mode 0: blue if sparse slot hit, gray miss. */
-  float cell = max(ng_world_cell, 0.001);
-  vec3 world = ng_far_origin + far_uvw * ng_far_size;
-  ivec3 ic = ivec3(floor(world / cell));
-  float slot = lookup_slot(ic);
-  float parity = mod(float(ic.x + ic.y + ic.z), 2.0);
-  vec3 base = slot >= 0.0 ? mix(LIVE, LIVE * 0.7, parity) : MISS;
-  if (outside_far) {
-    base *= 0.65; /* dim but still show hit/miss outside cube */
+  if (mode == 3) {
+    int prim = find_prim_at(world);
+    if (prim < 0) {
+      /* Magenta: depth ok but not on an analytic prim. */
+      finalColor = vec4(0.85, 0.1, 0.75, 1.0);
+      return;
+    }
+    float vis = prim_vis_at(prim);
+    if (vis < 0.5) {
+      /* Cyan: prim found, GPU flag says culled. */
+      finalColor = vec4(0.1, 0.85, 0.9, 1.0);
+      return;
+    }
+    finalColor = vec4(prim_hash_color(prim), 1.0);
+    return;
+  }
+
+  int lod = find_covering_lod(world);
+  ivec3 ic = ivec3(0);
+  float slot = -1.0;
+  if (lod >= 0) {
+    float cell = max(ng_world_cell, 0.001) * exp2(float(lod));
+    ic = ivec3(floor(world / cell));
+    slot = lookup_slot(lod, ic);
+  }
+  vec3 base = lod < 0 ? vec3(0.35) : LOD_COL[clamp(lod, 0, 7)];
+  if (slot < 0.0) {
+    base = vec3(0.35);
+  } else {
+    float parity = mod(float(ic.x + ic.y + ic.z), 2.0);
+    base = mix(base, base * 0.7, parity);
   }
   finalColor = vec4(base, 1.0);
 }
-// agent: composer-2.5 | 2026-08-10 | B1 debug near far lattice | 75995b
-// agent: composer-2.5 | 2026-08-10 | probes gray checker no stripes | 5d8730
-// agent: composer-2.5 | 2026-08-10 | B3 sparse probes debug | b17473
-// agent: composer-2.5 | 2026-08-10 | probes outside still sample | 8fadf9
+// agent: composer-2.5 | 2026-08-10 | B4 debug lod colors | 3cf97d
+// agent: composer-2.5 | 2026-08-10 | rename packed GLSL keyword | dff788
+// agent: composer-2.5 | 2026-08-11 | B5 debug covering leaf no rings | 2a65b1
+// agent: composer-2.5 | 2026-08-11 | culling debug mode vis mask | 2d463e
+// agent: composer-2.5 | 2026-08-11 | culling miss no-prim vs culled | e8734b
+// agent: composer-2.5 | 2026-08-11 | linear leaf AABB prim lookup | cbc718
+// agent: composer-2.5 | 2026-08-11 | fix culling debug sample associate | 282b54
+// agent: composer-2.5 | 2026-08-11 | culling debug UV grid associate | 09ac20
+// agent: composer-2.5 | 2026-08-11 | culling prefer closest visible prim | 7775dd
+// agent: composer-2.5 | 2026-08-11 | culling debug SDF prim associate | 076914
+// agent: composer-2.5 | 2026-08-11 | debug cam-relative world | 455296
+// agent: composer-2.5 | 2026-08-11 | wipe outside_far from debug | ba5896
