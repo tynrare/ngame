@@ -2097,6 +2097,7 @@ static void mod_render_frustum_planes(const Camera3D *cam, float aspect, Vector4
 static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-11 | camera-basis GPU frustum planes | 749a9e
   if (!ctx->ws_cull_ready || !ctx->rc_ws_cull.ready || !ctx->ws_cpu.bvh_tex_ready) {
+    ng_rc_ws_surface_tick(&ctx->ws_cpu, NULL, 0);
     return;
   }
   NgRcPassShader *pass = &ctx->rc_ws_cull;
@@ -2109,6 +2110,7 @@ static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
     BeginTextureMode(ctx->rt_prim_vis);
     ClearBackground(BLACK);
     EndTextureMode();
+    ng_rc_ws_surface_tick(&ctx->ws_cpu, NULL, 0);
     return;
   }
 
@@ -2217,9 +2219,35 @@ static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
   EndTextureMode();
   rlEnableColorBlend();
   // agent: composer-2.5 | 2026-08-11 | disable cull GPU TraceLog | 413ecd
+  // agent: composer-2.5 | 2026-08-11 | wire surface tick after cull | 3a9cde
+
+  /* CPU vis list (same planes) drives surface-hash — no GPU readback. */
+  int vis_prims[NG_RC_WS_PRIM_MAX];
+  int vis_n = 0;
+  for (int i = 0; i < ctx->ws_cpu.bvh_count && vis_n < NG_RC_WS_PRIM_MAX; i++) {
+    const NgRcWsBvhNode *nd = &ctx->ws_cpu.bvh[i];
+    if (nd->prim < 0) {
+      continue;
+    }
+    int out = 0;
+    for (int p = 0; p < 6 && !out; p++) {
+      const Vector4 *pl = &planes[p];
+      const float nx = pl->x, ny = pl->y, nz = pl->z;
+      const float px = nx > 0.0f ? nd->bmax[0] : nd->bmin[0];
+      const float py = ny > 0.0f ? nd->bmax[1] : nd->bmin[1];
+      const float pz = nz > 0.0f ? nd->bmax[2] : nd->bmin[2];
+      if (nx * px + ny * py + nz * pz + pl->w < 0.0f) {
+        out = 1;
+      }
+    }
+    if (!out) {
+      vis_prims[vis_n++] = nd->prim;
+    }
+  }
+  ng_rc_ws_surface_tick(&ctx->ws_cpu, vis_prims, vis_n);
 }
 
-/** Foundation tick: dirty prims/BVH + GPU cull. GI/octree offline. */
+/** Foundation tick: dirty prims/BVH + GPU cull + surface-hash leaves. */
 static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
   const int force = mod_render_rc_ws_vox_dirty(ctx) ? 1 : 0;
@@ -3063,3 +3091,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-11 | skip clip sync init GI off | db7a00
 // agent: composer-2.5 | 2026-08-11 | vox dirty scene hash only | ec6769
 // agent: composer-2.5 | 2026-08-11 | disable cull GPU TraceLog | 413ecd
+// agent: composer-2.5 | 2026-08-11 | wire surface tick after cull | 3a9cde

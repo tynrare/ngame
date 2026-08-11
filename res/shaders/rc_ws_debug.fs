@@ -10,7 +10,11 @@
 // agent: composer-2.5 | 2026-08-11 | culling debug SDF prim associate | 076914
 // agent: composer-2.5 | 2026-08-11 | debug cam-relative world | 455296
 // agent: composer-2.5 | 2026-08-11 | wipe outside_far from debug | ba5896
-/* WS RC debug: 0=leaf lod, 1=world frac, 2=grid, 3=culling vis mask. */
+// agent: composer-2.5 | 2026-08-11 | probes debug leaf tiles stronger | c6de06
+// agent: composer-2.5 | 2026-08-11 | crisp probe tile checker debug | 592ced
+// agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
+// agent: composer-2.5 | 2026-08-11 | unlimit lod walk debug shader | 582e49
+/* WS RC debug: 0=leaf tiles, 1=world frac, 2=grid, 3=culling vis mask. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_depth;
@@ -36,6 +40,7 @@ uniform vec2 ng_resolution;
 out vec4 finalColor;
 
 const int LOD_STRIDE = 1000;
+const int LOD_WALK = 25; /* matches NG_RC_WS_LOD_SOFT_MAX+1 */
 const int PRIM_MAX = 64;
 const float HIT_EPS = 0.12;
 const float GRID_EMPTY = 255.0;
@@ -73,7 +78,7 @@ float lookup_slot(int lod, ivec3 c) {
 
 /** Finest covering leaf depth at world (hash walk). */
 int find_covering_lod(vec3 world) {
-  for (int L = 0; L < 8; L++) {
+  for (int L = 0; L < LOD_WALK; L++) {
     float cell = max(ng_world_cell, 0.001) * exp2(float(L));
     ivec3 ic = ivec3(floor(world / cell));
     if (lookup_slot(L, ic) >= 0.0) {
@@ -230,6 +235,7 @@ void main() {
     ic = ivec3(floor(world / cell));
     slot = lookup_slot(lod, ic);
   }
+  // agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
   vec3 base = lod < 0 ? vec3(0.35) : LOD_COL[clamp(lod, 0, 7)];
   if (slot < 0.0) {
     base = vec3(0.35);
@@ -251,3 +257,7 @@ void main() {
 // agent: composer-2.5 | 2026-08-11 | culling debug SDF prim associate | 076914
 // agent: composer-2.5 | 2026-08-11 | debug cam-relative world | 455296
 // agent: composer-2.5 | 2026-08-11 | wipe outside_far from debug | ba5896
+// agent: composer-2.5 | 2026-08-11 | probes debug leaf tiles stronger | c6de06
+// agent: composer-2.5 | 2026-08-11 | crisp probe tile checker debug | 592ced
+// agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
+// agent: composer-2.5 | 2026-08-11 | unlimit lod walk debug shader | 582e49

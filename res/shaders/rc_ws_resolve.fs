@@ -3,6 +3,7 @@
 // agent: composer-2.5 | 2026-08-10 | B4 resolve cheaper parent | 59febf
 // agent: composer-2.5 | 2026-08-11 | B5 resolve covering leaf blend | b45545
 // agent: composer-2.5 | 2026-08-11 | B5 resolve cheaper parent earlyout | 52e559
+// agent: composer-2.5 | 2026-08-11 | unlimit resolve lod walk | 4609f2
 /* Sparse L1 SH: covering-leaf trilinear + soft parent blend (no distance rings). */
 in vec2 fragTexCoord;
 
@@ -24,7 +25,7 @@ out vec4 finalColor;
 
 const float SELF_BIAS = 0.09;
 const int PROBE_MAX = 16;
-const int LOD_MAX = 8;
+const int LOD_MAX = 25; /* NG_RC_WS_LOD_SOFT_MAX+1 */
 const int LOD_STRIDE = 1000;
 
 vec3 fetch_band(float slot, float band) {
@@ -157,3 +158,4 @@ void main() {
 // agent: composer-2.5 | 2026-08-10 | B4 resolve cheaper parent | 59febf
 // agent: composer-2.5 | 2026-08-11 | B5 resolve covering leaf blend | b45545
 // agent: composer-2.5 | 2026-08-11 | B5 resolve cheaper parent earlyout | 52e559
+// agent: composer-2.5 | 2026-08-11 | unlimit resolve lod walk | 4609f2

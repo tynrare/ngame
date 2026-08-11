@@ -6,19 +6,33 @@
  * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_debug.fs
  * Debug: set debug.render.pass culling|uvw|…
  *
- * rc-ws flow (foundation — GI/octree offline):
- * 1) ensure → tex_prim + tex_bvh (no look-at clip cube)
+ * rc-ws flow (foundation — surface-hash probes):
+ * 1) ensure → tex_prim + tex_bvh + sparse hash pool
  * 2) render.c → gbuf world XYZ (float depth)
  * 3) scene dirty → all graph prims + CPU BVH → upload tex_bvh
- * 4) each frame → GPU camera-frustum cull → tex_vis; compose ambient+direct
+ * 4) each frame → GPU frustum cull → vis list
+ * 5) surface_tick → coarse cover prims → gen-complete waves (drop empty)
+ * 6) debug probes → covering leaf tiles; compose ambient+direct
  *
  * Branches / invariants:
- * - No look-at / clip-volume gate (visibility = camera frustum / FAR only).
- * - BVH rebuild only on scene dirty; cull every frame.
- * - Leaf AABB ∩ frustum = positive vertex (conservative).
- * - Debug culling: world from depth × SDF × vis flags.
+ * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
+ * - Probes = SDF shell octants only (no air / interior volume cells).
+ * - Gen0 stamps coarse surface cells over each culled prim.
+ * - Budget 50% slot_cap; full gen waves (lod-locked; overshoot OK).
+ * - No distance-want / collapse / curvature this milestone.
  */
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
+// agent: composer-2.5 | 2026-08-11 | octree cover split surface tick | 6ba63e
+// agent: composer-2.5 | 2026-08-11 | fair 75pct poorest-mesh split | 844498
+// agent: composer-2.5 | 2026-08-11 | surface-area 50pct fair split | b7ee3b
+// agent: composer-2.5 | 2026-08-11 | stochastic fair branch split | 9c7027
+// agent: composer-2.5 | 2026-08-11 | gen-sync octree waves plus log | 10b75c
+// agent: composer-2.5 | 2026-08-11 | unlimit root lod contain AABB | 594f2e
+// agent: composer-2.5 | 2026-08-11 | gen-complete lod-locked waves | f34ba6
+// agent: composer-2.5 | 2026-08-11 | restore cover then gen wave | 8e1bf4
+// agent: composer-2.5 | 2026-08-11 | SDF shell keep surface cells only | a394a2
+// agent: composer-2.5 | 2026-08-11 | 50pct budget slots 512 quality | 3cc717
+// agent: composer-2.5 | 2026-08-11 | enforce surface budget half pool | de62a7
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -274,7 +288,9 @@ static bool ng_rc_ws_sparse_alloc(NgRcWsCtx *ws) {
 }
 
 bool ng_rc_ws_ensure(NgRcWsCtx *ws, int quality) {
-  static const int k_slots[5] = {128, 192, 256, 384, 512};
+  /* ×2 pool vs prior; q2 (default) = 512. Budget remains 50% in surface_tick. */
+  // agent: composer-2.5 | 2026-08-11 | 50pct budget slots 512 quality | 3cc717
+  static const int k_slots[5] = {256, 384, 512, 512, 512};
   static const int k_dirs[5] = {12, 16, 24, 32, 48};
   static const int k_cascades[5] = {1, 2, 3, 3, 3};
   static const int k_steps[5] = {3, 4, 5, 6, 8};
@@ -714,13 +730,14 @@ static const float k_lod_enter[NG_RC_WS_LOD_MAX] = {3.0f,  6.0f,   12.0f,  24.0f
                                                      48.0f, 96.0f, 192.0f, 1.0e6f};
 
 float ng_rc_ws_cell_size(int lod) {
+  // agent: composer-2.5 | 2026-08-11 | unlimit root lod contain AABB | 594f2e
   int L = lod;
   if (L < 0) {
     L = 0;
-  } else if (L >= NG_RC_WS_LOD_MAX) {
-    L = NG_RC_WS_LOD_MAX - 1;
+  } else if (L > NG_RC_WS_LOD_SOFT_MAX) {
+    L = NG_RC_WS_LOD_SOFT_MAX;
   }
-  return NG_RC_WS_CELL * (float)(1 << L);
+  return NG_RC_WS_CELL * ldexpf(1.0f, L);
 }
 
 float ng_rc_ws_lod_enter(int lod) {
@@ -1604,7 +1621,428 @@ void ng_rc_ws_sparse_tick(NgRcWsCtx *ws, const float origin[3], const float size
              ng_rc_ws_cover_lod(ws), np_dbg, nc_dbg);
   }
 }
+
+/**
+ * Foundation: world-aligned octree cover of culled surfaces → fair split;
+ * keep only octants on SDF shells; upload hash/meta.
+ */
+
+/** Inverse-rotate v by unit quat (xyz + w) — matches rc_ws_debug.fs. */
+static void ng_rc_ws_quat_inv_rotate(const float q[4], const float v[3], float o[3]) {
+  const float qv[3] = {-q[0], -q[1], -q[2]};
+  const float qw = q[3];
+  const float t[3] = {2.0f * (qv[1] * v[2] - qv[2] * v[1]),
+                      2.0f * (qv[2] * v[0] - qv[0] * v[2]),
+                      2.0f * (qv[0] * v[1] - qv[1] * v[0])};
+  const float c[3] = {qv[1] * t[2] - qv[2] * t[1], qv[2] * t[0] - qv[0] * t[2],
+                      qv[0] * t[1] - qv[1] * t[0]};
+  o[0] = v[0] + qw * t[0] + c[0];
+  o[1] = v[1] + qw * t[1] + c[1];
+  o[2] = v[2] + qw * t[2] + c[2];
+}
+
+/** Analytic SDF at world p (box/sphere). */
+static float ng_rc_ws_prim_sdf(const NgRcWsPrim *p, const float w[3]) {
+  const float d[3] = {w[0] - p->center[0], w[1] - p->center[1], w[2] - p->center[2]};
+  float pl[3];
+  ng_rc_ws_quat_inv_rotate(p->quat, d, pl);
+  if (p->type == 1) {
+    return sqrtf(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]) - p->half[0];
+  }
+  const float qx = fabsf(pl[0]) - p->half[0];
+  const float qy = fabsf(pl[1]) - p->half[1];
+  const float qz = fabsf(pl[2]) - p->half[2];
+  const float ox = fmaxf(qx, 0.0f);
+  const float oy = fmaxf(qy, 0.0f);
+  const float oz = fmaxf(qz, 0.0f);
+  const float outside = sqrtf(ox * ox + oy * oy + oz * oz);
+  const float inside = fminf(fmaxf(qx, fmaxf(qy, qz)), 0.0f);
+  return outside + inside;
+}
+
+/**
+ * True if cell crosses a prim shell (not pure air / pure interior).
+ * Samples corners + center + face centers; keep on sign-change or |sdf| band.
+ */
+static int ng_rc_ws_cell_hits_prim_shell(const NgRcWsPrim *p, int lod, int32_t ix, int32_t iy,
+                                        int32_t iz) {
+  // agent: composer-2.5 | 2026-08-11 | SDF shell keep surface cells only | a394a2
+  const float cell = ng_rc_ws_cell_size(lod);
+  const float x0 = (float)ix * cell;
+  const float y0 = (float)iy * cell;
+  const float z0 = (float)iz * cell;
+  const float h = 0.5f * cell;
+  const float band = h * 1.7320508f; /* half space-diagonal */
+  float mind = 1e30f;
+  float maxd = -1e30f;
+  float minabs = 1e30f;
+  /* 8 corners, center, 6 face centers */
+  const float samples[15][3] = {
+      {x0, y0, z0},
+      {x0 + cell, y0, z0},
+      {x0, y0 + cell, z0},
+      {x0 + cell, y0 + cell, z0},
+      {x0, y0, z0 + cell},
+      {x0 + cell, y0, z0 + cell},
+      {x0, y0 + cell, z0 + cell},
+      {x0 + cell, y0 + cell, z0 + cell},
+      {x0 + h, y0 + h, z0 + h},
+      {x0 + h, y0 + h, z0},
+      {x0 + h, y0 + h, z0 + cell},
+      {x0 + h, y0, z0 + h},
+      {x0 + h, y0 + cell, z0 + h},
+      {x0, y0 + h, z0 + h},
+      {x0 + cell, y0 + h, z0 + h},
+  };
+  for (int s = 0; s < 15; s++) {
+    const float d = ng_rc_ws_prim_sdf(p, samples[s]);
+    if (d < mind) {
+      mind = d;
+    }
+    if (d > maxd) {
+      maxd = d;
+    }
+    const float a = fabsf(d);
+    if (a < minabs) {
+      minabs = a;
+    }
+  }
+  if (mind < 0.0f && maxd > 0.0f) {
+    return 1;
+  }
+  if (minabs <= band) {
+    return 1;
+  }
+  return 0;
+}
+
+/** Cell hits any visible prim SDF shell (AABB broadphase then shell). */
+static int ng_rc_ws_cell_overlaps_vis(const NgRcWsCtx *ws, int lod, int32_t ix, int32_t iy,
+                                     int32_t iz, const int *vis_prims, int vis_n) {
+  // agent: composer-2.5 | 2026-08-11 | SDF shell keep surface cells only | a394a2
+  const float cell = ng_rc_ws_cell_size(lod);
+  const float cmin[3] = {(float)ix * cell, (float)iy * cell, (float)iz * cell};
+  const float cmax[3] = {cmin[0] + cell, cmin[1] + cell, cmin[2] + cell};
+  for (int i = 0; i < vis_n; i++) {
+    const int pi = vis_prims[i];
+    if (pi < 0 || pi >= ws->prim_count) {
+      continue;
+    }
+    float pmin[3], pmax[3];
+    ng_rc_ws_prim_aabb(&ws->prims[pi], pmin, pmax);
+    if (pmin[0] > cmax[0] || pmax[0] < cmin[0] || pmin[1] > cmax[1] || pmax[1] < cmin[1] ||
+        pmin[2] > cmax[2] || pmax[2] < cmin[2]) {
+      continue;
+    }
+    if (ng_rc_ws_cell_hits_prim_shell(&ws->prims[pi], lod, ix, iy, iz)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/** Count used slots. */
+static int ng_rc_ws_slot_used_count(const NgRcWsCtx *ws) {
+  int n = 0;
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (ws->slots[i].used) {
+      n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Owner of a leaf: overlapping vis prim whose center is closest to cell center.
+ * @return prim index or -1.
+ */
+static int ng_rc_ws_leaf_owner(const NgRcWsCtx *ws, int si, const int *vis_prims, int vis_n) {
+  if (si < 0 || !ws->slots[si].used || !vis_prims || vis_n <= 0) {
+    return -1;
+  }
+  const int lod = (int)ws->slots[si].lod;
+  const float cell = ng_rc_ws_cell_size(lod);
+  const float cx = ((float)ws->slots[si].ix + 0.5f) * cell;
+  const float cy = ((float)ws->slots[si].iy + 0.5f) * cell;
+  const float cz = ((float)ws->slots[si].iz + 0.5f) * cell;
+  const float cmin[3] = {(float)ws->slots[si].ix * cell, (float)ws->slots[si].iy * cell,
+                         (float)ws->slots[si].iz * cell};
+  const float cmax[3] = {cmin[0] + cell, cmin[1] + cell, cmin[2] + cell};
+  int best = -1;
+  float best_d2 = 1e30f;
+  for (int i = 0; i < vis_n; i++) {
+    const int pi = vis_prims[i];
+    if (pi < 0 || pi >= ws->prim_count) {
+      continue;
+    }
+    float pmin[3], pmax[3];
+    ng_rc_ws_prim_aabb(&ws->prims[pi], pmin, pmax);
+    if (pmin[0] > cmax[0] || pmax[0] < cmin[0] || pmin[1] > cmax[1] || pmax[1] < cmin[1] ||
+        pmin[2] > cmax[2] || pmax[2] < cmin[2]) {
+      continue;
+    }
+    const float dx = ws->prims[pi].center[0] - cx;
+    const float dy = ws->prims[pi].center[1] - cy;
+    const float dz = ws->prims[pi].center[2] - cz;
+    const float d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best = pi;
+    }
+  }
+  return best;
+}
+
+/** Fill count[prim] = number of used leaves owned by that prim. */
+static void ng_rc_ws_count_tiles_per_mesh(const NgRcWsCtx *ws, const int *vis_prims, int vis_n,
+                                         int *count) {
+  memset(count, 0, (size_t)NG_RC_WS_PRIM_MAX * sizeof(int));
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    const int own = ng_rc_ws_leaf_owner(ws, i, vis_prims, vis_n);
+    if (own >= 0 && own < NG_RC_WS_PRIM_MAX) {
+      count[own]++;
+    }
+  }
+}
+
+/**
+ * Octree split: replace leaf with only children that overlap culled AABBs.
+ * @return 1 if structure changed.
+ */
+static int ng_rc_ws_apply_split_surface(NgRcWsCtx *ws, int i, const int *vis_prims, int vis_n) {
+  // agent: composer-2.5 | 2026-08-11 | octree cover split surface tick | 6ba63e
+  if (i < 0 || !ws->slots[i].used || ws->slots[i].lod == 0) {
+    return 0;
+  }
+  const int child_lod = (int)ws->slots[i].lod - 1;
+  const int32_t bx = ws->slots[i].ix * 2;
+  const int32_t by = ws->slots[i].iy * 2;
+  const int32_t bz = ws->slots[i].iz * 2;
+  int keep[8];
+  int nk = 0;
+  for (int c = 0; c < 8; c++) {
+    const int32_t cx = bx + (c & 1);
+    const int32_t cy = by + ((c >> 1) & 1);
+    const int32_t cz = bz + ((c >> 2) & 1);
+    if (ng_rc_ws_cell_overlaps_vis(ws, child_lod, cx, cy, cz, vis_prims, vis_n)) {
+      keep[nk++] = c;
+    }
+  }
+  if (nk == 0) {
+    ws->slots[i].used = 0;
+    ws->slots[i].dirty = 0;
+    return 1;
+  }
+  /* Parent will free; need nk free after that. */
+  if (ng_rc_ws_slot_count_free(ws) + 1 < nk) {
+    return 0;
+  }
+  const NgRcWsSlot saved = ws->slots[i];
+  ws->slots[i].used = 0;
+  ws->slots[i].dirty = 0;
+  int kids[8];
+  for (int k = 0; k < nk; k++) {
+    kids[k] = ng_rc_ws_slot_alloc(ws);
+    if (kids[k] < 0) {
+      for (int j = 0; j < k; j++) {
+        ws->slots[kids[j]].used = 0;
+        ws->slots[kids[j]].dirty = 0;
+      }
+      ws->slots[i] = saved;
+      return 0;
+    }
+    ws->slots[kids[k]].used = 1;
+  }
+  for (int k = 0; k < nk; k++) {
+    const int c = keep[k];
+    const int si = kids[k];
+    ws->slots[si].lod = (uint8_t)child_lod;
+    ws->slots[si].ix = bx + (c & 1);
+    ws->slots[si].iy = by + ((c >> 1) & 1);
+    ws->slots[si].iz = bz + ((c >> 2) & 1);
+    ws->slots[si].dirty = 0;
+    ws->slots[si].pad = 0;
+  }
+  return 1;
+}
+
+/** Stamp world-aligned surface cells over one prim AABB at lod; stop at budget. */
+static void ng_rc_ws_surface_cover_prim(NgRcWsCtx *ws, int pi, int lod, int budget) {
+  // agent: composer-2.5 | 2026-08-11 | SDF shell keep surface cells only | a394a2
+  if (pi < 0 || pi >= ws->prim_count) {
+    return;
+  }
+  float pmin[3], pmax[3];
+  ng_rc_ws_prim_aabb(&ws->prims[pi], pmin, pmax);
+  const float cell = ng_rc_ws_cell_size(lod);
+  if (cell < 1e-5f) {
+    return;
+  }
+  const int32_t ix0 = (int32_t)floorf(pmin[0] / cell);
+  const int32_t iy0 = (int32_t)floorf(pmin[1] / cell);
+  const int32_t iz0 = (int32_t)floorf(pmin[2] / cell);
+  const int32_t ix1 = (int32_t)floorf(pmax[0] / cell);
+  const int32_t iy1 = (int32_t)floorf(pmax[1] / cell);
+  const int32_t iz1 = (int32_t)floorf(pmax[2] / cell);
+  for (int32_t iz = iz0; iz <= iz1; iz++) {
+    for (int32_t iy = iy0; iy <= iy1; iy++) {
+      for (int32_t ix = ix0; ix <= ix1; ix++) {
+        if (ng_rc_ws_slot_used_count(ws) >= budget || ng_rc_ws_slot_count_free(ws) < 1) {
+          return;
+        }
+        if (!ng_rc_ws_cell_hits_prim_shell(&ws->prims[pi], lod, ix, iy, iz)) {
+          continue;
+        }
+        (void)ng_rc_ws_apply_insert_cell(ws, (uint8_t)lod, ix, iy, iz);
+      }
+    }
+  }
+}
+
+/** Approximate surface area of analytic prim (AABB shell). */
+static float ng_rc_ws_prim_surf_area(const NgRcWsPrim *p) {
+  float pmin[3], pmax[3];
+  ng_rc_ws_prim_aabb(p, pmin, pmax);
+  const float lx = fmaxf(pmax[0] - pmin[0], 1e-4f);
+  const float ly = fmaxf(pmax[1] - pmin[1], 1e-4f);
+  const float lz = fmaxf(pmax[2] - pmin[2], 1e-4f);
+  return 2.0f * (lx * ly + ly * lz + lz * lx);
+}
+
+/**
+ * World-aligned octree: coarse cover every culled prim → gen-complete waves;
+ * empty octants discarded; fill toward 50% pool.
+ */
+void ng_rc_ws_surface_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n) {
+  // agent: composer-2.5 | 2026-08-11 | restore cover then gen wave | 8e1bf4
+  if (!ws || !ws->ready) {
+    return;
+  }
+  if (!ng_rc_ws_sparse_alloc(ws)) {
+    return;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    ws->slots[i].used = 0;
+    ws->slots[i].dirty = 0;
+    ws->slots[i].pad = 0;
+  }
+  ws->slot_count = 0;
+  if (!vis_prims || vis_n <= 0) {
+    ng_rc_ws_meta_upload_all(ws);
+    TraceLog(LOG_INFO, "rc-ws surface cells=0 budget=0/%d vis=0", ws->slot_cap);
+    return;
+  }
+
+  const int budget = ws->slot_cap / 2; /* hard 50% — e.g. 256/512 at default quality */
+  // agent: composer-2.5 | 2026-08-11 | enforce surface budget half pool | de62a7
+  /* Gen 0: stamp coarse world cells over each culled prim AABB (full surface cover). */
+  const int cover_lod = NG_RC_WS_LOD_MAX - 2; /* cell = 25.6m — same as pre-wave path */
+  for (int i = 0; i < vis_n; i++) {
+    if (ng_rc_ws_slot_used_count(ws) >= budget) {
+      break;
+    }
+    ng_rc_ws_surface_cover_prim(ws, vis_prims[i], cover_lod, budget);
+  }
+
+  /* Generation waves: finish every snapped leaf; lod-locked (no mid-wave drill). */
+  int gens = 0;
+  for (;;) {
+    const int used0 = ng_rc_ws_slot_used_count(ws);
+    if (used0 >= budget) {
+      break;
+    }
+    int snap_i[NG_RC_WS_SLOT_MAX];
+    uint8_t snap_lod[NG_RC_WS_SLOT_MAX];
+    int ns = 0;
+    for (int i = 0; i < ws->slot_cap && ns < NG_RC_WS_SLOT_MAX; i++) {
+      if (!ws->slots[i].used || ws->slots[i].lod == 0) {
+        continue;
+      }
+      snap_i[ns] = i;
+      snap_lod[ns] = ws->slots[i].lod;
+      ns++;
+    }
+    if (ns <= 0) {
+      break;
+    }
+
+    int split_ok = 0;
+    for (int s = 0; s < ns; s++) {
+      const int si = snap_i[s];
+      if (!ws->slots[si].used || ws->slots[si].lod != snap_lod[s]) {
+        continue;
+      }
+      if (!ng_rc_ws_apply_split_surface(ws, si, vis_prims, vis_n)) {
+        continue;
+      }
+      split_ok = 1;
+    }
+    if (!split_ok) {
+      break;
+    }
+    gens++;
+  }
+
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    if (!ng_rc_ws_cell_overlaps_vis(ws, (int)ws->slots[i].lod, ws->slots[i].ix, ws->slots[i].iy,
+                                   ws->slots[i].iz, vis_prims, vis_n)) {
+      ws->slots[i].used = 0;
+      ws->slots[i].dirty = 0;
+    }
+  }
+
+  ng_rc_ws_meta_upload_all(ws);
+  {
+    const int used = ng_rc_ws_slot_used_count(ws);
+    int lodmin = 99;
+    int lodmax = -1;
+    for (int i = 0; i < ws->slot_cap; i++) {
+      if (!ws->slots[i].used) {
+        continue;
+      }
+      const int L = (int)ws->slots[i].lod;
+      if (L < lodmin) {
+        lodmin = L;
+      }
+      if (L > lodmax) {
+        lodmax = L;
+      }
+    }
+    if (lodmax < 0) {
+      lodmin = 0;
+      lodmax = 0;
+    }
+    static int s_log_used = -1;
+    static int s_log_gens = -1;
+    static int s_log_vis = -1;
+    static int s_log_budget = -1;
+    if (used != s_log_used || gens != s_log_gens || vis_n != s_log_vis || budget != s_log_budget) {
+      s_log_used = used;
+      s_log_gens = gens;
+      s_log_vis = vis_n;
+      s_log_budget = budget;
+      TraceLog(LOG_INFO,
+               "rc-ws surface cells=%d budget=%d/%d gens=%d lod=%d..%d vis=%d cover_lod=%d", used,
+               budget, ws->slot_cap, gens, lodmin, lodmax, vis_n, cover_lod);
+    }
+  }
+}
 // agent: composer-2.5 | 2026-08-11 | B66 always-cover collapse tick | c46cdb
 // agent: composer-2.5 | 2026-08-11 | B66 want-have balanced depth score | 4f6d2d
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
 // agent: composer-2.5 | 2026-08-11 | cull prims ignore clip volume | 22f8df
+// agent: composer-2.5 | 2026-08-11 | octree cover split surface tick | 6ba63e
+// agent: composer-2.5 | 2026-08-11 | fair 75pct poorest-mesh split | 844498
+// agent: composer-2.5 | 2026-08-11 | surface-area 50pct fair split | b7ee3b
+// agent: composer-2.5 | 2026-08-11 | stochastic fair branch split | 9c7027
+// agent: composer-2.5 | 2026-08-11 | gen-sync octree waves plus log | 10b75c
+// agent: composer-2.5 | 2026-08-11 | unlimit root lod contain AABB | 594f2e
+// agent: composer-2.5 | 2026-08-11 | restore cover then gen wave | 8e1bf4
+// agent: composer-2.5 | 2026-08-11 | SDF shell keep surface cells only | a394a2
+// agent: composer-2.5 | 2026-08-11 | enforce surface budget half pool | de62a7

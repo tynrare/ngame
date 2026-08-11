@@ -4,6 +4,8 @@
 // agent: composer-2.5 | 2026-08-11 | B65 frustum view API header | 7b5d3a
 // agent: composer-2.5 | 2026-08-11 | B66 always-cover API header | f86d08
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 5c2aa5
+// agent: composer-2.5 | 2026-08-11 | surface tick API header | d996d7
+// agent: composer-2.5 | 2026-08-11 | LOD_SOFT_MAX for root cover | 92f417
 #ifndef NG_RENDER_RC_WS_H
 #define NG_RENDER_RC_WS_H
 
@@ -16,8 +18,10 @@
 #define NG_RC_WS_GI_FAR 28.0f
 /** Finest world meters (LOD 0). cell(L) = CELL * 2^L. */
 #define NG_RC_WS_CELL 0.4f
-/** Spatial LOD count (0 = finest … LOD_MAX-1 = coarsest). */
+/** Legacy enter-table / offline GI LOD count (0 = finest … LOD_MAX-1). */
 #define NG_RC_WS_LOD_MAX 8
+/** Soft ceiling for cell_size / surface root (uint8 slot lod; 0.4*2^24 ≈ huge). */
+#define NG_RC_WS_LOD_SOFT_MAX 24
 /** Clip cube extent = CELL × this (fixed; never cam/frustum stretch). */
 #define NG_RC_WS_VOX_RES 32
 /** Max analytic SDF prims (cube/sphere from describe). */
@@ -142,8 +146,12 @@ void ng_rc_ws_upload_bvh(NgRcWsCtx *ws);
 /** Stamp prim AABB into clip grid; upload tex_grid (after rebuild_prims). */
 void ng_rc_ws_rebuild_grid(NgRcWsCtx *ws);
 /**
- * B.6.6: full-clip cover + collapse/split depth K; dirty new leaves only.
- * Idle fp → zero work. Clip never miss; frustum biases depth only.
+ * Foundation: world-aligned octree cover of culled AABBs → split to lod0;
+ * surface octants only; upload tex_meta/tex_hash.
+ */
+void ng_rc_ws_surface_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n);
+/**
+ * Deprecated (refactor): B.6.6 full-clip cover + collapse/split.
  */
 void ng_rc_ws_sparse_tick(NgRcWsCtx *ws, const float origin[3], const float size[3],
                           const float eye[3]);
@@ -166,3 +174,5 @@ void ng_rc_ws_sparse_clear_dirty(NgRcWsCtx *ws);
 // agent: composer-2.5 | 2026-08-11 | B65 frustum view API header | 7b5d3a
 // agent: composer-2.5 | 2026-08-11 | B66 always-cover API header | f86d08
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 5c2aa5
+// agent: composer-2.5 | 2026-08-11 | surface tick API header | d996d7
+// agent: composer-2.5 | 2026-08-11 | LOD_SOFT_MAX for root cover | 92f417
