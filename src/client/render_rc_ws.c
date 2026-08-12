@@ -10,8 +10,10 @@
  * 1) ensure → tex_prim + tex_bvh + probe RTs (slots/meta/hash/union)
  * 2) scene dirty → prims + inst_i + CPU BVH → upload; GPU clear probe RTs (cold)
  * 3) GPU frustum cull → tex_vis_curr; expand → tex_inst_vis
- * 4) probes (GPU only): vis-union → release → compact → cover gaps →
- *    lazy stochastic split/steal (K=16) → stats → meta + open-address hash
+ * 4) probes (GPU only): vis-union → release → cover → unmet → relax → cover → split → steal
+ *    (collapse only if unmet at budget) → steal excess → stats → meta/hash
+ * CPU oracle: ng_rc_ws_probe_lazy_tick + tools/rc_ws_probe_smoke (tests/rc_ws)
+ * Persist keys; cover-first; no view-move shuffle.
  * 5) gbuf draw: VS samples tex_inst_vis (material-map bind; no CPU filter)
  * 6) swap vis prev←curr; compose/debug sample hash + depth
  *
@@ -21,6 +23,11 @@
  * - No hot-path CPU / LoadImageFromTexture / residency UpdateTexture.
  */
 // agent: composer-2.5 | 2026-08-12 | playbook incremental residency | 0f5a93
+// agent: grok-4.6 | 2026-08-12 | playbook even split steal | 175820
+// agent: grok-4.6 | 2026-08-12 | playbook lazy persistent cover | b407ea
+// agent: grok-4.6 | 2026-08-12 | docs CPU oracle smoke | 91ac84
+// agent: grok-4.6 | 2026-08-12 | cover-pressure steal oracle | f7fae3
+// agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
 // agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | d0ac59
 // agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d
 // agent: composer-2.5 | 2026-08-12 | rc-ws playbook GPU probes | 8defb7
@@ -44,6 +51,7 @@
 #include <raymath.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -245,6 +253,10 @@ static bool ng_rc_ws_sparse_alloc(NgRcWsCtx *ws) {
     ws->probe_n = cap;
   }
   if (!ws->sparse_tex_ready) {
+#if defined(NG_RC_WS_CPU_ONLY)
+    /* Headless smoke: CPU buffers only. */
+    (void)0;
+#else
     Image mimg = {0};
     mimg.data = ws->meta_rgba;
     mimg.width = 1;
@@ -271,8 +283,12 @@ static bool ng_rc_ws_sparse_alloc(NgRcWsCtx *ws) {
     SetTextureWrap(ws->tex_meta, TEXTURE_WRAP_CLAMP);
     SetTextureWrap(ws->tex_hash, TEXTURE_WRAP_CLAMP);
     ws->sparse_tex_ready = true;
+#endif
   }
   if (!ws->prio_tex_ready) {
+#if defined(NG_RC_WS_CPU_ONLY)
+    (void)0;
+#else
     Image pimg = {0};
     pimg.data = ws->prio_rgba;
     pimg.width = cap;
@@ -288,6 +304,7 @@ static bool ng_rc_ws_sparse_alloc(NgRcWsCtx *ws) {
     SetTextureFilter(ws->tex_prio, TEXTURE_FILTER_POINT);
     SetTextureWrap(ws->tex_prio, TEXTURE_WRAP_CLAMP);
     ws->prio_tex_ready = true;
+#endif
   }
   return true;
 }
@@ -892,7 +909,9 @@ static void ng_rc_ws_rebuild_hash(NgRcWsCtx *ws) {
       h = (h + 1u) & mask;
     }
   }
-  UpdateTexture(ws->tex_hash, ws->hash_rgba);
+  if (ws->sparse_tex_ready) {
+    UpdateTexture(ws->tex_hash, ws->hash_rgba);
+  }
 }
 
 static void ng_rc_ws_meta_upload_all(NgRcWsCtx *ws) {
@@ -905,7 +924,9 @@ static void ng_rc_ws_meta_upload_all(NgRcWsCtx *ws) {
     }
   }
   ws->slot_count = count;
-  UpdateTexture(ws->tex_meta, ws->meta_rgba);
+  if (ws->sparse_tex_ready) {
+    UpdateTexture(ws->tex_meta, ws->meta_rgba);
+  }
   ng_rc_ws_rebuild_hash(ws);
 }
 
@@ -2227,6 +2248,464 @@ void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n) 
     }
   }
 }
+
+// agent: grok-4.6 | 2026-08-12 | lazy probe CPU oracle tick | 2dd6ca
+static uint32_t ng_rc_ws_stoch_stable(int si) {
+  // agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
+  uint32_t h = (uint32_t)si * 2654435761u;
+  h ^= h >> 16;
+  return h;
+}
+
+int ng_rc_ws_probe_octant_occupied(const NgRcWsCtx *ws, int lod, int32_t ix, int32_t iy,
+                                   int32_t iz) {
+  if (!ws || lod < 0) {
+    return 0;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    const int sl = (int)ws->slots[i].lod;
+    const int32_t scx = ws->slots[i].ix;
+    const int32_t scy = ws->slots[i].iy;
+    const int32_t scz = ws->slots[i].iz;
+    if (sl == lod) {
+      if (scx == ix && scy == iy && scz == iz) {
+        return 1;
+      }
+    } else if (sl < lod) {
+      const int d = lod - sl;
+      const int32_t den = 1 << d;
+      if (scx / den == ix && scy / den == iy && scz / den == iz) {
+        return 1;
+      }
+    } else {
+      const int d = sl - lod;
+      const int32_t den = 1 << d;
+      if (ix / den == scx && iy / den == scy && iz / den == scz) {
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+int ng_rc_ws_probe_cpu_begin(NgRcWsCtx *ws, int slot_cap) {
+  // agent: grok-4.6 | 2026-08-12 | lazy probe CPU oracle tick | 2dd6ca
+  if (!ws) {
+    return 0;
+  }
+  ng_rc_ws_init(ws);
+  if (slot_cap < 8) {
+    slot_cap = 8;
+  }
+  if (slot_cap > NG_RC_WS_SLOT_MAX) {
+    slot_cap = NG_RC_WS_SLOT_MAX;
+  }
+  ws->slot_cap = slot_cap;
+  ws->probe_n = slot_cap;
+  ws->ready = true;
+  if (!ng_rc_ws_sparse_alloc(ws)) {
+    ws->ready = false;
+    return 0;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    ws->slots[i].used = 0;
+    ws->slots[i].dirty = 0;
+    ws->slots[i].pad = 0;
+  }
+  ws->slot_count = 0;
+  return 1;
+}
+
+int ng_rc_ws_probe_lod_min(const NgRcWsCtx *ws) {
+  int m = 99;
+  if (!ws) {
+    return m;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (ws->slots[i].used && (int)ws->slots[i].lod < m) {
+      m = (int)ws->slots[i].lod;
+    }
+  }
+  return m;
+}
+
+int ng_rc_ws_probe_lod_max(const NgRcWsCtx *ws) {
+  int m = -1;
+  if (!ws) {
+    return m;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (ws->slots[i].used && (int)ws->slots[i].lod > m) {
+      m = (int)ws->slots[i].lod;
+    }
+  }
+  return m;
+}
+
+void ng_rc_ws_probe_hist_text(const NgRcWsCtx *ws, char *out, size_t cap) {
+  if (!out || cap == 0) {
+    return;
+  }
+  out[0] = '\0';
+  if (!ws) {
+    return;
+  }
+  int hist[NG_RC_WS_LOD_SOFT_MAX + 1];
+  memset(hist, 0, sizeof(hist));
+  const int used = ng_rc_ws_slot_used_count(ws);
+  const int budget = ws->slot_cap / 2;
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    int L = (int)ws->slots[i].lod;
+    if (L < 0) {
+      L = 0;
+    } else if (L > NG_RC_WS_LOD_SOFT_MAX) {
+      L = NG_RC_WS_LOD_SOFT_MAX;
+    }
+    hist[L]++;
+  }
+  size_t n = (size_t)snprintf(out, cap, "used=%d free=%d headroom=%d budget=%d/%d min=%d max=%d",
+                              used, ws->slot_cap - used, budget - used > 0 ? budget - used : 0,
+                              budget, ws->slot_cap, ng_rc_ws_probe_lod_min(ws),
+                              ng_rc_ws_probe_lod_max(ws));
+  for (int L = NG_RC_WS_LOD_SOFT_MAX; L >= 0 && n + 16 < cap; L--) {
+    if (hist[L] <= 0) {
+      continue;
+    }
+    n += (size_t)snprintf(out + n, cap - n, " L%d=%d", L, hist[L]);
+  }
+}
+
+int ng_rc_ws_probe_slots_on_prim(const NgRcWsCtx *ws, int pi) {
+  // agent: grok-4.6 | 2026-08-12 | cover unmet helper API | 5f4345
+  if (!ws || pi < 0 || pi >= ws->prim_count) {
+    return 0;
+  }
+  int n = 0;
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    if (ng_rc_ws_cell_hits_prim_shell(&ws->prims[pi], (int)ws->slots[i].lod, ws->slots[i].ix,
+                                      ws->slots[i].iy, ws->slots[i].iz)) {
+      n++;
+    }
+  }
+  return n;
+}
+
+int ng_rc_ws_probe_prim_cover_ok(const NgRcWsCtx *ws, int pi) {
+  return ng_rc_ws_probe_slots_on_prim(ws, pi) > 0;
+}
+
+int ng_rc_ws_probe_cover_unmet(const NgRcWsCtx *ws, const int *vis_prims, int vis_n) {
+  // agent: grok-4.6 | 2026-08-12 | cover unmet helper API | 5f4345
+  if (!ws || !vis_prims || vis_n <= 0) {
+    return 0;
+  }
+  const int cover_lod = NG_RC_WS_LOD_MAX - 2;
+  const float cell = ng_rc_ws_cell_size(cover_lod);
+  if (cell < 1e-5f) {
+    return 0;
+  }
+  for (int vi = 0; vi < vis_n; vi++) {
+    const int pi = vis_prims[vi];
+    if (pi < 0 || pi >= ws->prim_count) {
+      continue;
+    }
+    float pmin[3], pmax[3];
+    ng_rc_ws_prim_aabb(&ws->prims[pi], pmin, pmax);
+    const int32_t ix0 = (int32_t)floorf(pmin[0] / cell);
+    const int32_t iy0 = (int32_t)floorf(pmin[1] / cell);
+    const int32_t iz0 = (int32_t)floorf(pmin[2] / cell);
+    const int32_t ix1 = (int32_t)floorf(pmax[0] / cell);
+    const int32_t iy1 = (int32_t)floorf(pmax[1] / cell);
+    const int32_t iz1 = (int32_t)floorf(pmax[2] / cell);
+    for (int32_t iz = iz0; iz <= iz1; iz++) {
+      for (int32_t iy = iy0; iy <= iy1; iy++) {
+        for (int32_t ix = ix0; ix <= ix1; ix++) {
+          if (!ng_rc_ws_cell_hits_prim_shell(&ws->prims[pi], cover_lod, ix, iy, iz)) {
+            continue;
+          }
+          if (!ng_rc_ws_probe_octant_occupied(ws, cover_lod, ix, iy, iz)) {
+            return 1;
+          }
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+uint64_t ng_rc_ws_probe_key_fp(const NgRcWsCtx *ws) {
+  // agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
+  uint64_t h = 1469598103934665603ull;
+  if (!ws) {
+    return h;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    uint64_t k = ((uint64_t)ws->slots[i].lod << 48) ^ ((uint64_t)(uint32_t)ws->slots[i].ix << 32) ^
+                 ((uint64_t)(uint32_t)ws->slots[i].iy << 16) ^ (uint64_t)(uint32_t)ws->slots[i].iz;
+    h ^= k;
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+/** Insert cover cell if octant free and under budget. */
+static int ng_rc_ws_lazy_insert(NgRcWsCtx *ws, uint8_t lod, int32_t ix, int32_t iy, int32_t iz,
+                                int budget) {
+  if (ng_rc_ws_slot_used_count(ws) >= budget) {
+    return 0;
+  }
+  if (ng_rc_ws_probe_octant_occupied(ws, (int)lod, ix, iy, iz)) {
+    return 0;
+  }
+  if (ng_rc_ws_slot_count_free(ws) < 1) {
+    return 0;
+  }
+  const int si = ng_rc_ws_slot_alloc(ws);
+  if (si < 0) {
+    return 0;
+  }
+  ws->slots[si].lod = lod;
+  ws->slots[si].ix = ix;
+  ws->slots[si].iy = iy;
+  ws->slots[si].iz = iz;
+  ws->slots[si].used = 1;
+  ws->slots[si].dirty = 0;
+  ws->slots[si].pad = 0;
+  return 1;
+}
+
+/** Free up to quota finest (lod<=2) slots by stable steal score. */
+static int ng_rc_ws_steal_finest(NgRcWsCtx *ws, int quota) {
+  // agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
+  if (!ws || quota <= 0) {
+    return 0;
+  }
+  int freed = 0;
+  for (int pass = 0; pass < quota; pass++) {
+    int best = -1;
+    uint32_t best_sc = 0;
+    for (int i = 0; i < ws->slot_cap; i++) {
+      if (!ws->slots[i].used || (int)ws->slots[i].lod > 2) {
+        continue;
+      }
+      const int lod = (int)ws->slots[i].lod;
+      const int fine = 3 - lod;
+      uint32_t sc = (uint32_t)fine * 100000u + (ng_rc_ws_stoch_stable(i) % 100000u);
+      if (best < 0 || sc > best_sc || (sc == best_sc && i < best)) {
+        best = i;
+        best_sc = sc;
+      }
+    }
+    if (best < 0) {
+      break;
+    }
+    ws->slots[best].used = 0;
+    ws->slots[best].dirty = 0;
+    freed++;
+  }
+  return freed;
+}
+
+/** Collapse up to quota fine leaves into parents (relax when stuck). */
+static int ng_rc_ws_relax_collapse(NgRcWsCtx *ws, int quota) {
+  // agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
+  if (!ws || quota <= 0) {
+    return 0;
+  }
+  int n = 0;
+  uint8_t tried[NG_RC_WS_SLOT_MAX];
+  memset(tried, 0, (size_t)ws->slot_cap);
+  while (n < quota) {
+    int best = -1;
+    int best_lod = 99;
+    for (int i = 0; i < ws->slot_cap; i++) {
+      if (!ws->slots[i].used || tried[i]) {
+        continue;
+      }
+      const int lod = (int)ws->slots[i].lod;
+      if (lod >= NG_RC_WS_LOD_MAX - 1) {
+        continue;
+      }
+      if (best < 0 || lod < best_lod || (lod == best_lod && i < best)) {
+        best = i;
+        best_lod = lod;
+      }
+    }
+    if (best < 0) {
+      break;
+    }
+    tried[best] = 1;
+    if (ng_rc_ws_apply_collapse(ws, best)) {
+      n++;
+      memset(tried, 0, (size_t)ws->slot_cap);
+    }
+  }
+  return n;
+}
+
+/** One cover batch: insert up to cover_k unmet cells. */
+static int ng_rc_ws_lazy_cover_batch(NgRcWsCtx *ws, const int *vis_prims, int vis_n, int cover_k,
+                                    int budget, int cover_lod) {
+  int inserted = 0;
+  for (int vi = 0; vi < vis_n && inserted < cover_k; vi++) {
+    const int pi = vis_prims[vi];
+    if (pi < 0 || pi >= ws->prim_count) {
+      continue;
+    }
+    float pmin[3], pmax[3];
+    ng_rc_ws_prim_aabb(&ws->prims[pi], pmin, pmax);
+    const float cell = ng_rc_ws_cell_size(cover_lod);
+    if (cell < 1e-5f) {
+      continue;
+    }
+    const int32_t ix0 = (int32_t)floorf(pmin[0] / cell);
+    const int32_t iy0 = (int32_t)floorf(pmin[1] / cell);
+    const int32_t iz0 = (int32_t)floorf(pmin[2] / cell);
+    const int32_t ix1 = (int32_t)floorf(pmax[0] / cell);
+    const int32_t iy1 = (int32_t)floorf(pmax[1] / cell);
+    const int32_t iz1 = (int32_t)floorf(pmax[2] / cell);
+    for (int32_t iz = iz0; iz <= iz1 && inserted < cover_k; iz++) {
+      for (int32_t iy = iy0; iy <= iy1 && inserted < cover_k; iy++) {
+        for (int32_t ix = ix0; ix <= ix1 && inserted < cover_k; ix++) {
+          if (ng_rc_ws_slot_used_count(ws) >= budget) {
+            return inserted;
+          }
+          if (!ng_rc_ws_cell_hits_prim_shell(&ws->prims[pi], cover_lod, ix, iy, iz)) {
+            continue;
+          }
+          if (ng_rc_ws_lazy_insert(ws, (uint8_t)cover_lod, ix, iy, iz, budget)) {
+            inserted++;
+          }
+        }
+      }
+    }
+  }
+  return inserted;
+}
+
+void ng_rc_ws_probe_lazy_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n, uint32_t frame,
+                              int cover_k, int split_k) {
+  // agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
+  (void)frame;
+  if (!ws || !ws->ready) {
+    return;
+  }
+  if (!ng_rc_ws_sparse_alloc(ws)) {
+    return;
+  }
+  if (cover_k < 0) {
+    cover_k = 0;
+  }
+  if (split_k < 0) {
+    split_k = 0;
+  }
+  if (cover_k > 64) {
+    cover_k = 64;
+  }
+  if (split_k > 64) {
+    split_k = 64;
+  }
+  const int budget = ws->slot_cap / 2;
+  const int cover_lod = NG_RC_WS_LOD_MAX - 2;
+  const int relax_k = split_k > cover_k ? split_k : cover_k;
+
+  /* 1) Release empty / unvis */
+  if (vis_prims && vis_n > 0) {
+    ng_rc_ws_probe_evict_unvis(ws, vis_prims, vis_n);
+  } else {
+    for (int i = 0; i < ws->slot_cap; i++) {
+      ws->slots[i].used = 0;
+      ws->slots[i].dirty = 0;
+    }
+    ws->slot_count = 0;
+    return;
+  }
+
+  /* 2) Cover while headroom */
+  if (cover_k > 0) {
+    (void)ng_rc_ws_lazy_cover_batch(ws, vis_prims, vis_n, cover_k, budget, cover_lod);
+  }
+
+  /* 3) Relax if stuck at budget with unmet cover; cover again */
+  if (relax_k > 0 && ng_rc_ws_slot_used_count(ws) >= budget &&
+      ng_rc_ws_probe_cover_unmet(ws, vis_prims, vis_n)) {
+    if (ng_rc_ws_relax_collapse(ws, relax_k) > 0 && cover_k > 0) {
+      (void)ng_rc_ws_lazy_cover_batch(ws, vis_prims, vis_n, cover_k, budget, cover_lod);
+    }
+  }
+
+  /* 4) Split when cover satisfied OR coarse band exists to refine */
+  {
+    const int unmet = ng_rc_ws_probe_cover_unmet(ws, vis_prims, vis_n);
+    int lod_hi = ng_rc_ws_probe_lod_max(ws);
+    const int allow_split = !unmet || (lod_hi >= cover_lod && lod_hi > 0);
+    int headroom = budget - ng_rc_ws_slot_used_count(ws);
+    int splits = 0;
+    if (allow_split && lod_hi > 0 && headroom > 0 && split_k > 0) {
+      for (int si = 0; si < ws->slot_cap && splits < split_k; si++) {
+        if (!ws->slots[si].used || (int)ws->slots[si].lod != lod_hi) {
+          continue;
+        }
+        if ((int)ws->slots[si].lod <= 0) {
+          continue;
+        }
+        const int child_lod = (int)ws->slots[si].lod - 1;
+        const int32_t bx = ws->slots[si].ix * 2;
+        const int32_t by = ws->slots[si].iy * 2;
+        const int32_t bz = ws->slots[si].iz * 2;
+        int nk = 0;
+        for (int c = 0; c < 8; c++) {
+          if (ng_rc_ws_cell_overlaps_vis(ws, child_lod, bx + (c & 1), by + ((c >> 1) & 1),
+                                         bz + ((c >> 2) & 1), vis_prims, vis_n)) {
+            nk++;
+          }
+        }
+        if (nk == 0) {
+          if (ng_rc_ws_apply_split_surface(ws, si, vis_prims, vis_n)) {
+            splits++;
+            headroom = budget - ng_rc_ws_slot_used_count(ws);
+          }
+          continue;
+        }
+        const int cost = nk - 1;
+        if (cost > headroom) {
+          continue;
+        }
+        if (ng_rc_ws_apply_split_surface(ws, si, vis_prims, vis_n)) {
+          splits++;
+          headroom = budget - ng_rc_ws_slot_used_count(ws);
+        }
+      }
+    }
+  }
+
+  /* 5) Steal finest only if over budget */
+  {
+    int used = ng_rc_ws_slot_used_count(ws);
+    int excess = used - budget;
+    if (excess > 0) {
+      int quota = excess < relax_k ? excess : relax_k;
+      if (quota < 1) {
+        quota = 1;
+      }
+      ng_rc_ws_steal_finest(ws, quota);
+    }
+  }
+
+  ws->slot_count = ng_rc_ws_slot_used_count(ws);
+}
 // agent: composer-2.5 | 2026-08-11 | B66 always-cover collapse tick | c46cdb
 // agent: composer-2.5 | 2026-08-11 | B66 want-have balanced depth score | 4f6d2d
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
@@ -2247,3 +2726,10 @@ void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n) 
 // agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d
 // agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | d0ac59
 // agent: composer-2.5 | 2026-08-12 | playbook incremental residency | 0f5a93
+// agent: grok-4.6 | 2026-08-12 | playbook even split steal | 175820
+// agent: grok-4.6 | 2026-08-12 | playbook lazy persistent cover | b407ea
+// agent: grok-4.6 | 2026-08-12 | docs CPU oracle smoke | 91ac84
+// agent: grok-4.6 | 2026-08-12 | lazy probe CPU oracle tick | 2dd6ca
+// agent: grok-4.6 | 2026-08-12 | cover-pressure steal oracle | f7fae3
+// agent: grok-4.6 | 2026-08-12 | cover unmet helper API | 5f4345
+// agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50

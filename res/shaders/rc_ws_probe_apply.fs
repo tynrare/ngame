@@ -2,11 +2,15 @@
 // agent: composer-2.5 | 2026-08-12 | split-merge no budget truncate | 816796
 // agent: composer-2.5 | 2026-08-12 | probe apply incremental hash | 90579d
 // agent: composer-2.5 | 2026-08-12 | stochastic split K lottery | b93c9c
+// agent: grok-4.6 | 2026-08-12 | top-K coarse split budget | 5a3a45
+// agent: grok-4.6 | 2026-08-12 | cheap max-lod split lottery | 01d3f7
+// agent: grok-4.6 | 2026-08-12 | apply allow nk>=1 split | aa7c99
+// agent: grok-4.6 | 2026-08-12 | stable split lottery | ae37dc
 /* Probe residency apply.
  * ng_apply_pass:
  *  1 = meta from slots (xyz center, a=10+lod)
  *  2 = open-address hash from slots (GPU rebuild; no CPU pack)
- *  3 = split-merge: budget gates split; stochastic lottery up to ng_split_k
+ *  3 = split-merge: max-lod lottery up to K; nk>=1; stay <= budget
  */
 in vec2 fragTexCoord;
 
@@ -37,10 +41,11 @@ uint cell_hash(int lod, ivec3 c) {
   return h;
 }
 
+// agent: grok-4.6 | 2026-08-12 | stable split lottery | ae37dc
 uint stoch(int si, int frame) {
   uint h = uint(si) * 2654435761u;
-  h ^= uint(frame) * 2246822519u;
   h ^= h >> 16;
+  h += uint(frame) * 0u;
   return h;
 }
 
@@ -102,6 +107,22 @@ int count_used_slots(int scap) {
   return used;
 }
 
+/** Highest lod among used slots (even refine: only split coarsest band). */
+int max_used_lod(int scap) {
+  int m = 0;
+  for (int si = 0; si < SLOT_MAX; si++) {
+    if (si >= scap) {
+      break;
+    }
+    vec4 s = texelFetch(tex_slots, ivec2(si, 0), 0);
+    if (s.a < 0.5) {
+      continue;
+    }
+    m = max(m, int(round(s.a)) - 1);
+  }
+  return m;
+}
+
 void main() {
   if (ng_apply_pass == 1) {
     int si = int(floor(gl_FragCoord.y));
@@ -134,7 +155,8 @@ void main() {
     }
     int used = count_used_slots(scap);
     int free_n = scap - used;
-    bool wave_ok = used < budget;
+    int headroom = max(budget - used, 0);
+    int lod_hi = max_used_lod(scap);
     int emit_count = 0;
     int splits_done = 0;
     for (int si = 0; si < SLOT_MAX; si++) {
@@ -151,9 +173,9 @@ void main() {
       int lod = int(round(s.a)) - 1;
       bool do_split = false;
       int emit_n = 1;
-      if (lod <= 0) {
+      if (lod <= 0 || headroom <= 0 || splits_done >= split_k) {
         emit_n = 1;
-      } else if (!wave_ok) {
+      } else if (lod < lod_hi) {
         emit_n = 1;
       } else {
         int nk = child_keep_count(si);
@@ -161,17 +183,14 @@ void main() {
           emit_n = 0;
           free_n += 1;
           used -= 1;
-        } else if (free_n + 1 >= nk && emit_count + nk <= scap) {
-          bool lottery = int(stoch(si, frame) % 64u) < split_k;
-          if (lottery && splits_done < split_k) {
-            do_split = true;
-            emit_n = nk;
-            free_n -= (nk - 1);
-            used += (nk - 1);
-            splits_done++;
-          } else {
-            emit_n = 1;
-          }
+        } else if (nk >= 1 && free_n + 1 >= nk && emit_count + nk <= scap &&
+                   (nk - 1) <= headroom) {
+          do_split = true;
+          emit_n = nk;
+          free_n -= (nk - 1);
+          used += (nk - 1);
+          headroom -= (nk - 1);
+          splits_done++;
         } else {
           emit_n = 1;
         }
@@ -252,3 +271,7 @@ void main() {
 // agent: composer-2.5 | 2026-08-12 | split-merge no budget truncate | 816796
 // agent: composer-2.5 | 2026-08-12 | probe apply incremental hash | 90579d
 // agent: composer-2.5 | 2026-08-12 | stochastic split K lottery | b93c9c
+// agent: grok-4.6 | 2026-08-12 | top-K coarse split budget | 5a3a45
+// agent: grok-4.6 | 2026-08-12 | cheap max-lod split lottery | 01d3f7
+// agent: grok-4.6 | 2026-08-12 | apply allow nk>=1 split | aa7c99
+// agent: grok-4.6 | 2026-08-12 | stable split lottery | ae37dc

@@ -1,12 +1,16 @@
 <!-- agent: composer-2.5 | 2026-08-12 | article incremental GPU residency | 3d4f8c -->
 <!-- agent: composer-2.5 | 2026-08-12 | article lazy stochastic rebalance | 6ca44f -->
+<!-- agent: grok-4.6 | 2026-08-12 | even split steal occupancy log | ecfe9c -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs lazy persistent cover | 3e3716 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs CPU oracle smoke | dd1744 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs persist cover relax | a4f0c2 -->
 # Sparse probes & GPU feedback (ngame notes)
 
 Pair with [`docs/radiance-cascades-3d.md`](radiance-cascades-3d.md), `src/client/render_rc_ws.c`.
 
 Performance north star: **probe work ∝ resident slots**, not screen pixels. Seed from **GPU-culled** geometry via `tex_prim_vis`.
 
-**Hot path (shipping):** GPU cull → expand `tex_inst_vis` → VS draw cull → **persistent probes** (vis-union → release → compact → cover → lazy K=16 stochastic split/steal → GPU meta/hash) → gbuf. Log: `used`/`freeable` on view change.
+**Hot path (shipping):** GPU cull → expand `tex_inst_vis` → VS draw cull → **persistent probes** (union → release → cover → unmet → relax → cover → split → steal excess → meta/hash) → gbuf. Persist keys; cover-first. CPU oracle: `ng_rc_ws_probe_smoke`. MCP: `probe_snapshot`.
 
 **Hard rules:** no CPU on probe hot path; no `LoadImageFromTexture` / per-frame `UpdateTexture` of residency RTs. Cold CPU only on scene dirty (`tex_prim` / BVH).
 
@@ -56,3 +60,7 @@ Performance north star: **probe work ∝ resident slots**, not screen pixels. Se
 
 <!-- agent: composer-2.5 | 2026-08-12 | article incremental GPU residency | 3d4f8c -->
 <!-- agent: composer-2.5 | 2026-08-12 | article lazy stochastic rebalance | 6ca44f -->
+<!-- agent: grok-4.6 | 2026-08-12 | even split steal occupancy log | ecfe9c -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs lazy persistent cover | 3e3716 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs CPU oracle smoke | dd1744 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs persist cover relax | a4f0c2 -->

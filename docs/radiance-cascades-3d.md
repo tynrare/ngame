@@ -1,5 +1,9 @@
 <!-- agent: composer-2.5 | 2026-08-12 | docs incremental GPU residency | d72aa7 -->
 <!-- agent: composer-2.5 | 2026-08-12 | docs lazy stochastic rebalance | 243b1b -->
+<!-- agent: grok-4.6 | 2026-08-12 | even split steal occupancy log | 7823e1 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs lazy persistent cover | 9f683e -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs CPU oracle smoke | 91be48 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs persist cover relax | 3c9613 -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -18,7 +22,7 @@ Digests: [`docs/article_rc_gpu_probes.md`](article_rc_gpu_probes.md).
 | Geometry | SDF prims + `inst_i`; BVH on scene dirty | Cold CPU rebuild OK |
 | Cull | GPU frustum → `tex_vis` + expand `tex_inst_vis` | No hot-path readback / no CPU vis upload |
 | Draw | VS samples `tex_inst_vis` (kill culled) | CPU builds all matrices; material-map bind |
-| Probes | **Persistent GPU residency**: union → release → compact → cover → lazy K stochastic split/steal → meta/hash | Occupancy log: used/freeable; refine over frames |
+| Probes | **Persistent GPU residency**: union → release → cover → unmet → relax → cover → split → steal excess | Persist keys; cover-first; CPU oracle `ng_rc_ws_probe_smoke`; MCP `probe_snapshot` |
 | Gbuf | After cull + probes | Depth for compose/debug, not placement |
 | Debug | `culling` / `probes` / `probes-lod` | `rt_probe_id` viz aid |
 | Compose | Ambient + direct | GI fill offline |
@@ -30,9 +34,12 @@ Digests: [`docs/article_rc_gpu_probes.md`](article_rc_gpu_probes.md).
 ```
 cold: scene dirty? → prims + BVH + inst_i; GPU clear probe RTs
 → 1) GPU frustum cull → tex_vis_curr → expand tex_inst_vis
-→ 2) probes (GPU only): vis-union AABB → release (outside/empty) → compact →
-     cover free slots → lazy stochastic split (K=16/frame) → steal densest (K=16) →
-     stats → meta + open-address hash
+→ 2) probes (GPU only): vis-union AABB → release (outside/empty) →
+     cover ≤K (shell; descendants occupy) → split ≤K if headroom (nk≥1) →
+     collapse-relax only if unmet at budget → steal excess → stats → meta + hash
+CPU oracle: ng_rc_ws_probe_lazy_tick + ./build/ng_rc_ws_probe_smoke (tests/rc_ws)
+Persist keys; no view-move cell shuffle.
+MCP: probe_snapshot → used/free/lod hist (gateway 27101+)
 → 3) gbuf: VS cull via tex_inst_vis (no CPU filter)
 → 4) swap vis prev←curr
 → compose / debug (sample hash + depth)
@@ -40,7 +47,7 @@ cold: scene dirty? → prims + BVH + inst_i; GPU clear probe RTs
 
 ## Probe residency
 
-Persistent slot pool. No mesh-owner. Release via **vis-union AABB** + SDF shell empty. Cover gaps into **free** slots. **Lazy stochastic** split/steal (K=16 per frame) rebalances coarse vs dense over time — no exact balance. Log on view change: `used` / `freeable` / `budget`. Hash/meta on GPU from slots.
+Persistent slot pool. No mesh-owner. Release via **vis-union AABB** + SDF shell empty. Lazy cover (K/frame) of missing **surface** cells; finer slots occupy their coarse octant (no parent refill). Split ≤K when under 50% budget — **including nk=1** (single kept child). Steal finest only if over budget. Log / MCP: `used` / `free` / `headroom` / lod hist. CPU gate: [`tests/rc_ws/README.md`](../tests/rc_ws/README.md).
 
 ## Deprecated / refactoring archive
 
@@ -74,3 +81,7 @@ Persistent slot pool. No mesh-owner. Release via **vis-union AABB** + SDF shell 
 
 <!-- agent: composer-2.5 | 2026-08-12 | docs incremental GPU residency | d72aa7 -->
 <!-- agent: composer-2.5 | 2026-08-12 | docs lazy stochastic rebalance | 243b1b -->
+<!-- agent: grok-4.6 | 2026-08-12 | even split steal occupancy log | 7823e1 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs lazy persistent cover | 9f683e -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs CPU oracle smoke | 91be48 -->
+<!-- agent: grok-4.6 | 2026-08-12 | docs persist cover relax | 3c9613 -->

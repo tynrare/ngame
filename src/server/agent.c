@@ -178,6 +178,20 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
     return;
   }
 
+  // agent: grok-4.6 | 2026-08-12 | probe_snapshot agent cmd | 73df93
+  if (strcmp(cmdline, "probe_snapshot") == 0) {
+    char probe_line[512];
+#if !defined(NG_SERVER)
+    mod_render_probe_snapshot_text(probe_line, sizeof(probe_line));
+#else
+    snprintf(probe_line, sizeof(probe_line), "probe n/a");
+#endif
+    char out[1200];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"%s\"}", probe_line);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
   // agent: composer-2.5 | 2026-07-29 | mcp wire input transform observe | e7b3c1
   // agent: composer-2.5 | 2026-07-29 | mcp entity transforms server | 649b35
   if (strcmp(cmdline, "entity_transforms") == 0) {
@@ -594,3 +608,4 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-08-01 | lockstep hash predict field | a8ca41
 // agent: composer-2.5 | 2026-08-01 | wire_input KEY_F bit | 28e90f
 // agent: composer-2.5 | 2026-08-09 | dedicated host agent root | 4dfc0d
+// agent: grok-4.6 | 2026-08-12 | probe_snapshot agent cmd | 73df93

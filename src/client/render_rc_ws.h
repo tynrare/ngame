@@ -9,11 +9,13 @@
 // agent: composer-2.5 | 2026-08-12 | inst_i on NgRcWsPrim | 8dfbc3
 // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
 // agent: composer-2.5 | 2026-08-12 | probe API incremental | 134400
+// agent: grok-4.6 | 2026-08-12 | lazy probe CPU oracle API | 3cc2dd
 #ifndef NG_RENDER_RC_WS_H
 #define NG_RENDER_RC_WS_H
 
 #include <raylib.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define NG_RC_WS_PROBE_MAX 16
@@ -180,6 +182,37 @@ uint32_t ng_rc_ws_probe_view_fp(const NgRcWsCtx *ws, const float eye[3], const f
 void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n);
 
 /**
+ * CPU-only probe pool (no GL textures). For smoke / oracle.
+ * @return 1 on success.
+ */
+int ng_rc_ws_probe_cpu_begin(NgRcWsCtx *ws, int slot_cap);
+/**
+ * Lazy persistent tick (GPU oracle): release → cover≤K → split≤K (nk≥1) →
+ * steal finest if over budget.
+ */
+void ng_rc_ws_probe_lazy_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n, uint32_t frame,
+                              int cover_k, int split_k);
+/** Min used lod, or 99 if empty. */
+int ng_rc_ws_probe_lod_min(const NgRcWsCtx *ws);
+/** Max used lod, or -1 if empty. */
+int ng_rc_ws_probe_lod_max(const NgRcWsCtx *ws);
+/** Write used/budget/lod hist into out. */
+void ng_rc_ws_probe_hist_text(const NgRcWsCtx *ws, char *out, size_t cap);
+/** True if any slot covers octant (lod,ix,iy,iz) as self/ancestor/descendant. */
+int ng_rc_ws_probe_octant_occupied(const NgRcWsCtx *ws, int lod, int32_t ix, int32_t iy,
+                                   int32_t iz);
+/** Count used slots whose cell shell-hits prim pi. */
+int ng_rc_ws_probe_slots_on_prim(const NgRcWsCtx *ws, int pi);
+/** True if at least one used slot shell-covers prim pi. */
+int ng_rc_ws_probe_prim_cover_ok(const NgRcWsCtx *ws, int pi);
+/** True if vis set has unmet cover_lod shell cell (not octant-occupied). */
+int ng_rc_ws_probe_cover_unmet(const NgRcWsCtx *ws, const int *vis_prims, int vis_n);
+/** Stable fingerprint of used keys (persist smoke). */
+uint64_t ng_rc_ws_probe_key_fp(const NgRcWsCtx *ws);
+// agent: grok-4.6 | 2026-08-12 | cover unmet helper API | 5f4345
+// agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
+
+/**
  * @deprecated transitional — use GPU probe tick in render.c.
  */
 void ng_rc_ws_surface_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n);
@@ -200,6 +233,7 @@ void ng_rc_ws_sparse_mark_dirty(NgRcWsCtx *ws);
 /** Clear dirty flags and refresh tex_meta.a after fill. */
 void ng_rc_ws_sparse_clear_dirty(NgRcWsCtx *ws);
 
+// agent: grok-4.6 | 2026-08-12 | cover unmet helper API | 5f4345
 #endif
 // agent: composer-2.5 | 2026-08-11 | B62 GPU prio API header | 379f19
 // agent: composer-2.5 | 2026-08-11 | B63 cover split API header | 5da9fc
@@ -212,3 +246,6 @@ void ng_rc_ws_sparse_clear_dirty(NgRcWsCtx *ws);
 // agent: composer-2.5 | 2026-08-12 | inst_i on NgRcWsPrim | 8dfbc3
 // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
 // agent: composer-2.5 | 2026-08-12 | probe API incremental | 134400
+// agent: grok-4.6 | 2026-08-12 | lazy probe CPU oracle API | 3cc2dd
+// agent: grok-4.6 | 2026-08-12 | cover unmet helper API | 5f4345
+// agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50

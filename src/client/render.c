@@ -288,6 +288,8 @@ typedef struct ModRenderCtx {
   NgRcPassShader rc_ws_probe_merge;
   NgRcPassShader rc_ws_probe_steal;
   NgRcPassShader rc_ws_probe_stats;
+  NgRcPassShader rc_ws_probe_unmet;
+  NgRcPassShader rc_ws_probe_relax;
   RenderTexture2D rt_probe_work; /* WORK_MAX × 1 float work cells */
   RenderTexture2D rt_probe_keep; /* WORK_MAX × 2 keep flags */
   RenderTexture2D rt_probe_slots; /* slot_cap × 1 ix,iy,iz,lod+1 */
@@ -297,6 +299,7 @@ typedef struct ModRenderCtx {
   RenderTexture2D rt_probe_hash; /* hash_size × 1 */
   RenderTexture2D rt_probe_union; /* 2×1 vis-union umin/umax */
   RenderTexture2D rt_probe_stats; /* 1×1 used/freeable/budget */
+  RenderTexture2D rt_probe_unmet; /* 1×1 cover unmet flag */
   bool ws_probe_ready;
   uint32_t probe_frame; /* stochastic lottery seed */
 } ModRenderCtx;
@@ -942,6 +945,15 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     ng_shader_unload(&ctx->rc_ws_probe_stats.sh);
     ctx->rc_ws_probe_stats.ready = false;
   }
+  // agent: grok-4.6 | 2026-08-12 | persist probe tick GPU | cabbaa
+  if (ctx->rc_ws_probe_unmet.ready) {
+    ng_shader_unload(&ctx->rc_ws_probe_unmet.sh);
+    ctx->rc_ws_probe_unmet.ready = false;
+  }
+  if (ctx->rc_ws_probe_relax.ready) {
+    ng_shader_unload(&ctx->rc_ws_probe_relax.sh);
+    ctx->rc_ws_probe_relax.ready = false;
+  }
   if (ctx->ws_probe_ready) {
     UnloadRenderTexture(ctx->rt_probe_work);
     UnloadRenderTexture(ctx->rt_probe_keep);
@@ -951,6 +963,7 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     UnloadRenderTexture(ctx->rt_probe_hash);
     UnloadRenderTexture(ctx->rt_probe_union);
     UnloadRenderTexture(ctx->rt_probe_stats);
+    UnloadRenderTexture(ctx->rt_probe_unmet);
     ctx->ws_probe_ready = false;
     ctx->probe_gpu_valid = false;
   }
@@ -1240,6 +1253,15 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
       !mod_render_load_rc_pass(&ctx->rc_ws_probe_steal, NG_RES_ROOT "shaders/rc_ws_probe_steal.fs")) {
     return false;
   }
+  // agent: grok-4.6 | 2026-08-12 | persist probe tick GPU | cabbaa
+  if (!ctx->rc_ws_probe_unmet.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_probe_unmet, NG_RES_ROOT "shaders/rc_ws_probe_unmet.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_probe_relax.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_probe_relax, NG_RES_ROOT "shaders/rc_ws_probe_relax.fs")) {
+    return false;
+  }
   if (!ctx->rc_ws_probe_stats.ready &&
       !mod_render_load_rc_pass(&ctx->rc_ws_probe_stats, NG_RES_ROOT "shaders/rc_ws_probe_stats.fs")) {
     return false;
@@ -1257,9 +1279,10 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->rt_probe_hash = mod_render_load_rt_rgba32f(NG_RC_WS_HASH_MAX, 1);
     ctx->rt_probe_union = mod_render_load_rt_rgba32f(2, 1);
     ctx->rt_probe_stats = mod_render_load_rt_rgba32f(1, 1);
+    ctx->rt_probe_unmet = mod_render_load_rt_rgba32f(1, 1);
     if (ctx->rt_probe_work.id == 0 || ctx->rt_probe_keep.id == 0 || ctx->rt_probe_slots.id == 0 ||
         ctx->rt_probe_slots_b.id == 0 || ctx->rt_probe_meta.id == 0 || ctx->rt_probe_hash.id == 0 ||
-        ctx->rt_probe_union.id == 0 || ctx->rt_probe_stats.id == 0) {
+        ctx->rt_probe_union.id == 0 || ctx->rt_probe_stats.id == 0 || ctx->rt_probe_unmet.id == 0) {
       return false;
     }
     SetTextureFilter(ctx->rt_probe_keep.texture, TEXTURE_FILTER_POINT);
@@ -2751,17 +2774,20 @@ static void mod_render_rc_ws_probe_slots_swap(ModRenderCtx *ctx) {
 }
 
 /**
- * GPU incremental probes: union → release → compact → cover → lazy split →
- * steal → stats → meta/hash. No CPU residency; no wipe unless cold.
+ * GPU incremental probes: union → release → cover → split → unmet+relax →
+ * over-budget steal → stats → meta/hash. Persist keys; relax only if stuck.
  */
 static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-12 | GPU probe tick CPU order | c1f502
   // agent: composer-2.5 | 2026-08-12 | probe incremental residency tick | 5af26a
-  // agent: composer-2.5 | 2026-08-12 | lazy stochastic split steal | 1c5864
+  // agent: grok-4.6 | 2026-08-12 | split then steal skip compact | 680d06
+  // agent: grok-4.6 | 2026-08-12 | persist probe tick GPU | cabbaa
   NgRcWsCtx *ws = &ctx->ws_cpu;
   if (!ctx->ws_probe_ready || !ctx->ws_cull_ready || !ctx->rc_ws_probe_cover.ready ||
       !ctx->rc_ws_probe_apply.ready || !ctx->rc_ws_probe.ready || !ctx->rc_ws_probe_union.ready ||
       !ctx->rc_ws_probe_release.ready || !ctx->rc_ws_probe_merge.ready ||
-      !ctx->rc_ws_probe_steal.ready || !ctx->rc_ws_probe_stats.ready || ws->prim_count <= 0) {
+      !ctx->rc_ws_probe_steal.ready || !ctx->rc_ws_probe_stats.ready ||
+      !ctx->rc_ws_probe_unmet.ready || !ctx->rc_ws_probe_relax.ready || ws->prim_count <= 0) {
     return;
   }
   const float eye[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
@@ -2900,36 +2926,9 @@ static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
     mod_render_rc_ws_probe_slots_swap(ctx);
   }
 
-  /* 3) Compact used → front (free at end) */
-  {
-    NgRcPassShader *pass = &ctx->rc_ws_probe_merge;
-    rlDrawRenderBatchActive();
-    rlDisableColorBlend();
-    BeginTextureMode(ctx->rt_probe_slots_b);
-    ClearBackground(BLANK);
-    BeginShaderMode(pass->sh.handle);
-    ng_shader_set_common(&pass->sh, (float)GetTime());
-    {
-      int loc = GetShaderLocation(pass->sh.handle, "ng_slot_cap");
-      if (loc >= 0) {
-        SetShaderValue(pass->sh.handle, loc, &slot_cap_f, SHADER_UNIFORM_FLOAT);
-      }
-    }
-    {
-      int loc = GetShaderLocation(pass->sh.handle, "tex_slots");
-      if (loc >= 0) {
-        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_slots.texture);
-      }
-    }
-    DrawRectangle(0, 0, ctx->rt_probe_slots_b.texture.width, ctx->rt_probe_slots_b.texture.height,
-                  WHITE);
-    EndShaderMode();
-    EndTextureMode();
-    rlEnableColorBlend();
-    mod_render_rc_ws_probe_slots_swap(ctx);
-  }
-
-  /* 4) Cover: keep used; fill free with missing Gen0 cells */
+  /* 3) Lazy cover: keep used; insert ≤K missing surface cells (no compact). */
+  // agent: grok-4.6 | 2026-08-12 | split then steal skip compact | 680d06
+  // agent: grok-4.6 | 2026-08-12 | persist probe tick GPU | cabbaa
   {
     NgRcPassShader *pass = &ctx->rc_ws_probe_cover;
     rlDrawRenderBatchActive();
@@ -2969,6 +2968,19 @@ static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
       }
     }
     {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_budget");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &budget_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      const float cover_k = 64.0f;
+      int loc = GetShaderLocation(pass->sh.handle, "ng_cover_k");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &cover_k, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
       int loc = GetShaderLocation(pass->sh.handle, "tex_slots");
       if (loc >= 0) {
         SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_slots.texture);
@@ -3000,10 +3012,300 @@ static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
     mod_render_rc_ws_probe_slots_swap(ctx);
   }
 
-  /* 5) One lazy stochastic gen+split wave every frame (K=16). */
-  // agent: composer-2.5 | 2026-08-12 | lazy stochastic split steal | 1c5864
+  /* 4) Unmet flag → relax if stuck at budget. */
   int gens = 0;
-  if (ctx->rc_ws_probe_gen.ready) {
+  {
+    NgRcPassShader *upass = &ctx->rc_ws_probe_unmet;
+    rlDrawRenderBatchActive();
+    rlDisableColorBlend();
+    BeginTextureMode(ctx->rt_probe_unmet);
+    ClearBackground(BLANK);
+    BeginShaderMode(upass->sh.handle);
+    ng_shader_set_common(&upass->sh, (float)GetTime());
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_prim_count");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_world_cell");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_slot_cap");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &slot_cap_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_cover_lod");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &cover_lod, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_lod_soft_max");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &lod_soft, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_slots");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, ctx->rt_probe_slots.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_union");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, ctx->rt_probe_union.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_prim");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, ws->tex_prim);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_prim_vis");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, prim_vis);
+      }
+    }
+    DrawRectangle(0, 0, 1, 1, WHITE);
+    EndShaderMode();
+    EndTextureMode();
+    rlEnableColorBlend();
+  }
+  {
+    const float relax_k = 16.0f;
+    NgRcPassShader *pass = &ctx->rc_ws_probe_relax;
+    rlDrawRenderBatchActive();
+    rlDisableColorBlend();
+    BeginTextureMode(ctx->rt_probe_slots_b);
+    ClearBackground(BLANK);
+    BeginShaderMode(pass->sh.handle);
+    ng_shader_set_common(&pass->sh, (float)GetTime());
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_slot_cap");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &slot_cap_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_budget");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &budget_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_relax_k");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &relax_k, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_slots");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_slots.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_unmet");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_unmet.texture);
+      }
+    }
+    DrawRectangle(0, 0, ctx->rt_probe_slots_b.texture.width, ctx->rt_probe_slots_b.texture.height,
+                  WHITE);
+    EndShaderMode();
+    EndTextureMode();
+    rlEnableColorBlend();
+    mod_render_rc_ws_probe_slots_swap(ctx);
+  }
+
+  /* 5) Cover again after relax freed slots. */
+  // agent: composer-2.5 | 2026-08-12 | GPU cover after relax pass | ad8ebb
+  {
+    NgRcPassShader *pass = &ctx->rc_ws_probe_cover;
+    rlDrawRenderBatchActive();
+    rlDisableColorBlend();
+    BeginTextureMode(ctx->rt_probe_slots_b);
+    ClearBackground(BLANK);
+    BeginShaderMode(pass->sh.handle);
+    ng_shader_set_common(&pass->sh, (float)GetTime());
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_prim_count");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_slot_cap");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &slot_cap_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_lod_soft_max");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &lod_soft, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_cover_lod");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &cover_lod, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_budget");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &budget_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      const float cover_k = 64.0f;
+      int loc = GetShaderLocation(pass->sh.handle, "ng_cover_k");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &cover_k, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_slots");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_slots.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_union");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_union.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ws->tex_prim);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim_vis");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, prim_vis);
+      }
+    }
+    DrawRectangle(0, 0, ctx->rt_probe_slots_b.texture.width, ctx->rt_probe_slots_b.texture.height,
+                  WHITE);
+    EndShaderMode();
+    EndTextureMode();
+    rlEnableColorBlend();
+    mod_render_rc_ws_probe_slots_swap(ctx);
+  }
+
+  /* 6) Split gate: unmet readback + coarse band check. */
+  bool allow_split = true;
+  {
+    NgRcPassShader *upass = &ctx->rc_ws_probe_unmet;
+    rlDrawRenderBatchActive();
+    rlDisableColorBlend();
+    BeginTextureMode(ctx->rt_probe_unmet);
+    ClearBackground(BLANK);
+    BeginShaderMode(upass->sh.handle);
+    ng_shader_set_common(&upass->sh, (float)GetTime());
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_prim_count");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_world_cell");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_slot_cap");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &slot_cap_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_cover_lod");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &cover_lod, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "ng_lod_soft_max");
+      if (loc >= 0) {
+        SetShaderValue(upass->sh.handle, loc, &lod_soft, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_slots");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, ctx->rt_probe_slots.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_union");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, ctx->rt_probe_union.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_prim");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, ws->tex_prim);
+      }
+    }
+    {
+      int loc = GetShaderLocation(upass->sh.handle, "tex_prim_vis");
+      if (loc >= 0) {
+        SetShaderValueTexture(upass->sh.handle, loc, prim_vis);
+      }
+    }
+    DrawRectangle(0, 0, 1, 1, WHITE);
+    EndShaderMode();
+    EndTextureMode();
+    rlEnableColorBlend();
+    Image uimg = LoadImageFromTexture(ctx->rt_probe_unmet.texture);
+    if (uimg.data && uimg.width >= 1 && uimg.height >= 1) {
+      const float *px = (const float *)uimg.data;
+      const int unmet = px[0] > 0.5f;
+      int lmax = -1;
+      Image slots = LoadImageFromTexture(ctx->rt_probe_slots.texture);
+      if (slots.data && slots.width > 0) {
+        const float *sp = (const float *)slots.data;
+        const int n = slots.width < ws->slot_cap ? slots.width : ws->slot_cap;
+        for (int i = 0; i < n; i++) {
+          if (sp[i * 4 + 3] < 0.5f) {
+            continue;
+          }
+          const int lod = (int)(sp[i * 4 + 3] + 0.5f) - 1;
+          if (lod > lmax) {
+            lmax = lod;
+          }
+        }
+      }
+      UnloadImage(slots);
+      allow_split = !unmet || (lmax >= clod && lmax > 0);
+    }
+    UnloadImage(uimg);
+  }
+  if (allow_split && ctx->rc_ws_probe_gen.ready) {
     int nwork = ws->slot_cap * 8;
     if (nwork > NG_RC_WS_PROBE_WORK_MAX) {
       nwork = NG_RC_WS_PROBE_WORK_MAX;
@@ -3043,10 +3345,9 @@ static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
     gens = 1;
   }
 
-  /* 6) Stochastic steal up to K if over budget */
+  /* 7) Over-budget steal finest. */
   {
     const float steal_k = 16.0f;
-    const float frame_f = (float)ctx->probe_frame;
     NgRcPassShader *pass = &ctx->rc_ws_probe_steal;
     rlDrawRenderBatchActive();
     rlDisableColorBlend();
@@ -3070,12 +3371,6 @@ static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
       int loc = GetShaderLocation(pass->sh.handle, "ng_steal_k");
       if (loc >= 0) {
         SetShaderValue(pass->sh.handle, loc, &steal_k, SHADER_UNIFORM_FLOAT);
-      }
-    }
-    {
-      int loc = GetShaderLocation(pass->sh.handle, "ng_frame");
-      if (loc >= 0) {
-        SetShaderValue(pass->sh.handle, loc, &frame_f, SHADER_UNIFORM_FLOAT);
       }
     }
     {
@@ -3141,9 +3436,13 @@ static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
       freeable_n = (int)(px[1] + 0.5f);
     }
     UnloadImage(img);
+    int headroom_n = budget - used_n;
+    if (headroom_n < 0) {
+      headroom_n = 0;
+    }
     TraceLog(LOG_INFO,
-             "rc-ws probe used=%d freeable=%d budget=%d/%d gens=%d cover_lod=%d prims=%d", used_n,
-             freeable_n, budget, ws->slot_cap, gens, clod, ws->prim_count);
+             "rc-ws probe used=%d free=%d headroom=%d budget=%d/%d gens=%d cover_lod=%d prims=%d",
+             used_n, freeable_n, headroom_n, budget, ws->slot_cap, gens, clod, ws->prim_count);
   }
 }
 
@@ -3841,6 +4140,73 @@ void mod_render_snapshot_text(char *out, size_t cap) {
            ctx->have_curr ? ctx->curr.entity_count : 0, view_graph, view_entities);
 }
 
+/** MCP: used/free/headroom + lod hist from GPU stats + slots (rare readback). */
+void mod_render_probe_snapshot_text(char *out, size_t cap) {
+  // agent: grok-4.6 | 2026-08-12 | probe snapshot MCP text | 73bc00
+  if (!out || cap == 0) {
+    return;
+  }
+  ModRenderCtx *ctx = &g_render_ctx;
+  if (!ctx->ws_probe_ready || !ctx->probe_gpu_valid || ctx->rt_probe_stats.id == 0) {
+    snprintf(out, cap, "probe ready=0");
+    return;
+  }
+  const int budget = ctx->ws_cpu.slot_cap / 2;
+  int used_n = 0;
+  int free_n = ctx->ws_cpu.slot_cap;
+  Image img = LoadImageFromTexture(ctx->rt_probe_stats.texture);
+  if (img.data && img.width >= 1 && img.height >= 1) {
+    const float *px = (const float *)img.data;
+    used_n = (int)(px[0] + 0.5f);
+    free_n = (int)(px[1] + 0.5f);
+  }
+  UnloadImage(img);
+  int headroom = budget - used_n;
+  if (headroom < 0) {
+    headroom = 0;
+  }
+  int hist[NG_RC_WS_LOD_SOFT_MAX + 1];
+  memset(hist, 0, sizeof(hist));
+  int lmin = 99;
+  int lmax = -1;
+  if (ctx->rt_probe_slots.id != 0) {
+    Image slots = LoadImageFromTexture(ctx->rt_probe_slots.texture);
+    if (slots.data && slots.width > 0) {
+      const float *px = (const float *)slots.data;
+      const int n = slots.width < ctx->ws_cpu.slot_cap ? slots.width : ctx->ws_cpu.slot_cap;
+      for (int i = 0; i < n; i++) {
+        const float a = px[i * 4 + 3];
+        if (a < 0.5f) {
+          continue;
+        }
+        int lod = (int)(a + 0.5f) - 1;
+        if (lod < 0) {
+          lod = 0;
+        } else if (lod > NG_RC_WS_LOD_SOFT_MAX) {
+          lod = NG_RC_WS_LOD_SOFT_MAX;
+        }
+        hist[lod]++;
+        if (lod < lmin) {
+          lmin = lod;
+        }
+        if (lod > lmax) {
+          lmax = lod;
+        }
+      }
+    }
+    UnloadImage(slots);
+  }
+  size_t n = (size_t)snprintf(out, cap,
+                              "probe used=%d free=%d headroom=%d budget=%d/%d min=%d max=%d", used_n,
+                              free_n, headroom, budget, ctx->ws_cpu.slot_cap, lmin, lmax);
+  for (int L = NG_RC_WS_LOD_SOFT_MAX; L >= 0 && n + 12 < cap; L--) {
+    if (hist[L] <= 0) {
+      continue;
+    }
+    n += (size_t)snprintf(out + n, cap - n, " L%d=%d", L, hist[L]);
+  }
+}
+
 void mod_render_visibility_text(char *out, size_t cap) {
   if (!out || cap == 0) {
     return;
@@ -4053,3 +4419,11 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-12 | probe tick restore gen waves | d29207
 // agent: composer-2.5 | 2026-08-12 | probe incremental residency tick | 5af26a
 // agent: composer-2.5 | 2026-08-12 | lazy stochastic split steal | 1c5864
+// agent: grok-4.6 | 2026-08-12 | steal then even split log | b6ca16
+// agent: grok-4.6 | 2026-08-12 | cover pass budget uniform | eaf197
+// agent: grok-4.6 | 2026-08-12 | split then steal skip compact | 680d06
+// agent: grok-4.6 | 2026-08-12 | probe snapshot MCP text | 73bc00
+// agent: grok-4.6 | 2026-08-12 | steal cover-pressure uniform | 21c74e
+// agent: grok-4.6 | 2026-08-12 | persist probe tick GPU | cabbaa
+// agent: composer-2.5 | 2026-08-12 | GPU probe tick CPU order | c1f502
+// agent: composer-2.5 | 2026-08-12 | GPU cover after relax pass | ad8ebb
