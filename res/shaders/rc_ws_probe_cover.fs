@@ -1,16 +1,17 @@
-// agent: composer-2.5 | 2026-08-12 | cover flood overlap cells | 6f27f7
-/* Gen0: stamp every world cell at cover_lod that overlaps union AABB of ALL prims.
- * One cell cannot cover an AABB that straddles the origin-aligned grid (rc floor).
- * Coarsen lod until cell count fits slot_cap. Slot i < n writes that cell; else clear. */
+// agent: composer-2.5 | 2026-08-12 | probe cover fill free slots | 403e6c
+/* Incremental Gen0: keep used slots; fill free slots with missing cover_lod cells
+ * over vis-union AABB (from tex_union). Coarsen lod until cell count fits free+used. */
 in vec2 fragTexCoord;
 
+uniform sampler2D tex_slots;
+uniform sampler2D tex_union;
 uniform sampler2D tex_prim;
 uniform sampler2D tex_prim_vis;
 uniform float ng_prim_count;
 uniform float ng_world_cell;
 uniform float ng_slot_cap;
 uniform float ng_lod_soft_max;
-uniform float ng_cover_lod; /* preferred start lod (e.g. LOD_MAX-2) */
+uniform float ng_cover_lod;
 
 out vec4 finalColor;
 
@@ -18,23 +19,20 @@ const int PRIM_MAX = 64;
 const int SLOT_MAX = 512;
 const int LOD_SOFT = 24;
 
-vec4 prim_col(int row, int col) {
-  return texelFetch(tex_prim, ivec2(col, row), 0);
-}
-
-/** Sphere: radius; box: bound_r in half.a (fallback half extents). */
-void prim_aabb(int row, out vec3 bmin, out vec3 bmax) {
-  vec4 ctr = prim_col(row, 0);
-  vec4 halfv = prim_col(row, 1);
-  if (ctr.w > 0.5) {
-    float r = halfv.x;
-    bmin = ctr.xyz - vec3(r);
-    bmax = ctr.xyz + vec3(r);
-  } else {
-    float br = max(halfv.w, max(halfv.x, max(halfv.y, halfv.z)));
-    bmin = ctr.xyz - vec3(br);
-    bmax = ctr.xyz + vec3(br);
+bool slot_has_key(int scap, int lod, ivec3 ic) {
+  for (int i = 0; i < SLOT_MAX; i++) {
+    if (i >= scap) {
+      break;
+    }
+    vec4 s = texelFetch(tex_slots, ivec2(i, 0), 0);
+    if (s.a < 0.5) {
+      continue;
+    }
+    if (int(round(s.a)) - 1 == lod && ivec3(round(s.xyz)) == ic) {
+      return true;
+    }
   }
+  return false;
 }
 
 void main() {
@@ -45,24 +43,29 @@ void main() {
     return;
   }
 
-  int nprim = int(clamp(ng_prim_count, 0.0, float(PRIM_MAX)));
-  bool any = false;
-  vec3 umin = vec3(1e30);
-  vec3 umax = vec3(-1e30);
-  for (int p = 0; p < PRIM_MAX; p++) {
-    if (p >= nprim) {
-      break;
-    }
-    vec3 bmin;
-    vec3 bmax;
-    prim_aabb(p, bmin, bmax);
-    umin = min(umin, bmin);
-    umax = max(umax, bmax);
-    any = true;
+  vec4 cur = texelFetch(tex_slots, ivec2(si, 0), 0);
+  if (cur.a >= 0.5) {
+    finalColor = cur;
+    return;
   }
-  if (!any) {
+
+  vec4 u0 = texelFetch(tex_union, ivec2(0, 0), 0);
+  vec4 u1 = texelFetch(tex_union, ivec2(1, 0), 0);
+  if (u0.a < 0.5) {
     finalColor = vec4(0.0);
     return;
+  }
+  vec3 umin = u0.rgb;
+  vec3 umax = u1.rgb;
+
+  int free_rank = 0;
+  for (int i = 0; i < SLOT_MAX; i++) {
+    if (i >= scap || i >= si) {
+      break;
+    }
+    if (texelFetch(tex_slots, ivec2(i, 0), 0).a < 0.5) {
+      free_rank++;
+    }
   }
 
   int lod_max = int(clamp(ng_lod_soft_max, 0.0, float(LOD_SOFT)));
@@ -73,7 +76,7 @@ void main() {
   int nx = 1;
   int ny = 1;
   int nz = 1;
-  int n = 1;
+  int nneed = 1;
   for (int step = 0; step <= LOD_SOFT; step++) {
     if (lod > lod_max) {
       lod = lod_max;
@@ -88,25 +91,34 @@ void main() {
     nx = ix1 - ix0 + 1;
     ny = iy1 - iy0 + 1;
     nz = iz1 - iz0 + 1;
-    n = nx * ny * nz;
-    if (n <= scap || lod >= lod_max) {
+    nneed = nx * ny * nz;
+    if (nneed <= scap || lod >= lod_max) {
       break;
     }
     lod++;
   }
-  if (n > scap) {
-    n = scap;
+
+  int missing = 0;
+  for (int t = 0; t < SLOT_MAX; t++) {
+    if (t >= nneed) {
+      break;
+    }
+    int tt = t;
+    int ix = ix0 + (tt % nx);
+    tt /= nx;
+    int iy = iy0 + (tt % ny);
+    tt /= ny;
+    int iz = iz0 + tt;
+    ivec3 ic = ivec3(ix, iy, iz);
+    if (slot_has_key(scap, lod, ic)) {
+      continue;
+    }
+    if (missing == free_rank) {
+      finalColor = vec4(float(ic.x), float(ic.y), float(ic.z), float(lod + 1));
+      return;
+    }
+    missing++;
   }
-  if (si >= n) {
-    finalColor = vec4(0.0);
-    return;
-  }
-  int t = si;
-  int ix = ix0 + (t % nx);
-  t /= nx;
-  int iy = iy0 + (t % ny);
-  t /= ny;
-  int iz = iz0 + t;
-  finalColor = vec4(float(ix), float(iy), float(iz), float(lod + 1));
+  finalColor = vec4(0.0);
 }
-// agent: composer-2.5 | 2026-08-12 | cover flood overlap cells | 6f27f7
+// agent: composer-2.5 | 2026-08-12 | probe cover fill free slots | 403e6c

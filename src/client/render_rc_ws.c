@@ -6,19 +6,21 @@
  * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_inst_vis.fs, rc_ws_probe*.fs, rc_gbuf.vs
  * Debug: set debug.render.pass culling|probes|probes-lod|…
  *
- * rc-ws flow (GPU minimal surface):
- * 1) ensure → tex_prim + tex_bvh + probe RTs (slots/meta/hash)
- * 2) scene dirty → prims + inst_i + CPU BVH → upload (cold)
+ * rc-ws flow (GPU incremental residency):
+ * 1) ensure → tex_prim + tex_bvh + probe RTs (slots/meta/hash/union)
+ * 2) scene dirty → prims + inst_i + CPU BVH → upload; GPU clear probe RTs (cold)
  * 3) GPU frustum cull → tex_vis_curr; expand → tex_inst_vis
- * 4) probes: single root (union vis AABBs) → even split-merge waves → meta + open-address hash
+ * 4) probes (GPU only): vis-union → release → compact → cover gaps →
+ *    lazy stochastic split/steal (K=16) → stats → meta + open-address hash
  * 5) gbuf draw: VS samples tex_inst_vis (material-map bind; no CPU filter)
  * 6) swap vis prev←curr; compose/debug sample hash + depth
  *
  * Branches / invariants:
  * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
- * - One root → shell-discard kids; budget 50% slot_cap; reuse tex_prim + tex_prim_vis.
- * - Cold CPU OK for dirty rebuild; no hot-path vis readback / CPU SDF apply.
+ * - No mesh-owner; release via union AABB + shell empty; budget 50% slot_cap.
+ * - No hot-path CPU / LoadImageFromTexture / residency UpdateTexture.
  */
+// agent: composer-2.5 | 2026-08-12 | playbook incremental residency | 0f5a93
 // agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | d0ac59
 // agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d
 // agent: composer-2.5 | 2026-08-12 | rc-ws playbook GPU probes | 8defb7
@@ -2244,3 +2246,4 @@ void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n) 
 // agent: composer-2.5 | 2026-08-12 | rc-ws playbook GPU probes | 8defb7
 // agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d
 // agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | d0ac59
+// agent: composer-2.5 | 2026-08-12 | playbook incremental residency | 0f5a93

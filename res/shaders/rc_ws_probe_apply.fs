@@ -1,10 +1,12 @@
 // agent: composer-2.5 | 2026-08-12 | even split-merge slot_cap free | b633c9
 // agent: composer-2.5 | 2026-08-12 | split-merge no budget truncate | 816796
+// agent: composer-2.5 | 2026-08-12 | probe apply incremental hash | 90579d
+// agent: composer-2.5 | 2026-08-12 | stochastic split K lottery | b93c9c
 /* Probe residency apply.
  * ng_apply_pass:
  *  1 = meta from slots (xyz center, a=10+lod)
- *  2 = open-address hash from slots
- *  3 = split-merge: budget gates split; emit packed up to slot_cap (keep late parents)
+ *  2 = open-address hash from slots (GPU rebuild; no CPU pack)
+ *  3 = split-merge: budget gates split; stochastic lottery up to ng_split_k
  */
 in vec2 fragTexCoord;
 
@@ -16,6 +18,8 @@ uniform float ng_slot_cap;
 uniform float ng_budget;
 uniform float ng_hash_size;
 uniform float ng_world_cell;
+uniform float ng_split_k;
+uniform float ng_frame;
 uniform int ng_apply_pass;
 
 out vec4 finalColor;
@@ -30,6 +34,13 @@ uint cell_hash(int lod, ivec3 c) {
   h ^= uint(c.x) * 73856093u;
   h ^= uint(c.y) * 19349663u;
   h ^= uint(c.z) * 83492791u;
+  return h;
+}
+
+uint stoch(int si, int frame) {
+  uint h = uint(si) * 2654435761u;
+  h ^= uint(frame) * 2246822519u;
+  h ^= h >> 16;
   return h;
 }
 
@@ -112,11 +123,11 @@ void main() {
   }
 
   if (ng_apply_pass == 3) {
-    /* Even split-merge: budget gates splitting only; emit up to slot_cap (not budget).
-     * Truncating to budget ranks dropped late parents → one early chunk ate the pool. */
     int r = int(floor(gl_FragCoord.x));
     int budget = int(clamp(ng_budget, 0.0, float(SLOT_MAX)));
     int scap = int(clamp(ng_slot_cap, 1.0, float(SLOT_MAX)));
+    int split_k = int(clamp(ng_split_k, 0.0, 64.0));
+    int frame = int(ng_frame);
     if (r < 0 || r >= scap) {
       finalColor = vec4(0.0);
       return;
@@ -125,6 +136,7 @@ void main() {
     int free_n = scap - used;
     bool wave_ok = used < budget;
     int emit_count = 0;
+    int splits_done = 0;
     for (int si = 0; si < SLOT_MAX; si++) {
       if (si >= scap) {
         break;
@@ -150,11 +162,16 @@ void main() {
           free_n += 1;
           used -= 1;
         } else if (free_n + 1 >= nk && emit_count + nk <= scap) {
-          /* Prefer keep-parent over dropping late branches past emit capacity. */
-          do_split = true;
-          emit_n = nk;
-          free_n -= (nk - 1);
-          used += (nk - 1);
+          bool lottery = int(stoch(si, frame) % 64u) < split_k;
+          if (lottery && splits_done < split_k) {
+            do_split = true;
+            emit_n = nk;
+            free_n -= (nk - 1);
+            used += (nk - 1);
+            splits_done++;
+          } else {
+            emit_n = 1;
+          }
         } else {
           emit_n = 1;
         }
@@ -162,7 +179,6 @@ void main() {
       if (emit_n <= 0) {
         continue;
       }
-      /* If unsplit would not fit, stop — keep prior emits (do not drop earlier). */
       if (!do_split && emit_count + emit_n > scap) {
         break;
       }
@@ -234,3 +250,5 @@ void main() {
 }
 // agent: composer-2.5 | 2026-08-12 | even split-merge slot_cap free | b633c9
 // agent: composer-2.5 | 2026-08-12 | split-merge no budget truncate | 816796
+// agent: composer-2.5 | 2026-08-12 | probe apply incremental hash | 90579d
+// agent: composer-2.5 | 2026-08-12 | stochastic split K lottery | b93c9c
