@@ -1,7 +1,9 @@
-// agent: composer-2.5 | 2026-08-12 | AABB+shell keep empty skip | cee631
-/* GPU keep for probe work items (CPU shell / overlaps_vis).
+// agent: composer-2.5 | 2026-08-12 | coarse AABB fine shell keep | 822ba2
+/* GPU keep for probe work items.
  * tex_work: x=ix y=iy z=iz w=lod + prim*1000 (prim ignored if ng_probe_any!=0)
- * ng_probe_any: 0=shell vs packed prim; 1=AABB+shell vs any vis prim (split kids)
+ * ng_probe_any: 0=shell vs packed prim; 1=vs any vis prim
+ *   lod > ng_shell_lod_max → AABB only (coarse; avoids 15-sample misses)
+ *   lod <= ng_shell_lod_max → AABB + shell (drop empty/solid)
  * Output R=keep 1/0. Empty work → 0. */
 in vec2 fragTexCoord;
 
@@ -11,6 +13,7 @@ uniform sampler2D tex_prim_vis;
 uniform float ng_work_count;
 uniform float ng_prim_count;
 uniform float ng_world_cell;
+uniform float ng_shell_lod_max; /* shell only at/below this lod (e.g. 6) */
 uniform int ng_probe_any;
 
 out vec4 finalColor;
@@ -56,6 +59,7 @@ float prim_vis_at(int prim) {
   return max(a, b);
 }
 
+/** World AABB: sphere uses radius; box uses bound_r in half.a when set. */
 void prim_aabb(int row, out vec3 bmin, out vec3 bmax) {
   vec4 ctr = prim_col(row, 0);
   vec4 halfv = prim_col(row, 1);
@@ -64,8 +68,9 @@ void prim_aabb(int row, out vec3 bmin, out vec3 bmax) {
     bmin = ctr.xyz - vec3(r);
     bmax = ctr.xyz + vec3(r);
   } else {
-    bmin = ctr.xyz - halfv.xyz;
-    bmax = ctr.xyz + halfv.xyz;
+    float br = max(halfv.w, max(halfv.x, max(halfv.y, halfv.z)));
+    bmin = ctr.xyz - vec3(br);
+    bmax = ctr.xyz + vec3(br);
   }
 }
 
@@ -119,10 +124,14 @@ bool cell_hits_prim_shell(int row, int lod, ivec3 ic) {
   return minabs <= band;
 }
 
-/** CPU cell_overlaps_vis: AABB broadphase then shell. */
-bool cell_overlaps_vis_prim(int row, int lod, ivec3 ic) {
+/** Coarse: AABB only. Fine: AABB + shell (empty/solid out). */
+bool cell_keep_vis_prim(int row, int lod, ivec3 ic) {
   if (!cell_aabb_hits_prim(row, lod, ic)) {
     return false;
+  }
+  int shell_max = int(clamp(ng_shell_lod_max, 0.0, 24.0));
+  if (lod > shell_max) {
+    return true;
   }
   return cell_hits_prim_shell(row, lod, ic);
 }
@@ -153,7 +162,7 @@ void main() {
       if (prim_vis_at(row) < 0.5) {
         continue;
       }
-      if (cell_overlaps_vis_prim(row, lod, ic)) {
+      if (cell_keep_vis_prim(row, lod, ic)) {
         keep = true;
         break;
       }
@@ -166,4 +175,4 @@ void main() {
   }
   finalColor = vec4(keep ? 1.0 : 0.0, float(prim + 1), float(lod), 1.0);
 }
-// agent: composer-2.5 | 2026-08-12 | AABB+shell keep empty skip | cee631
+// agent: composer-2.5 | 2026-08-12 | coarse AABB fine shell keep | 822ba2

@@ -1,11 +1,13 @@
-<!-- agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | f56309 -->
+<!-- agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | 28e4b5 -->
 # Sparse probes & GPU feedback (ngame notes)
 
 Pair with [`docs/radiance-cascades-3d.md`](radiance-cascades-3d.md), `src/client/render_rc_ws.c`.
 
-Performance north star: **probe work ∝ resident slots**, not screen pixels. Seed from **GPU-culled prim AABBs** via `tex_prim_vis`.
+Performance north star: **probe work ∝ resident slots**, not screen pixels. Seed from **GPU-culled** geometry via `tex_prim_vis`.
 
-**Hot path (shipping):** GPU cull → expand `tex_inst_vis` → VS draw cull → GPU probes from `tex_prim_vis`: Gen0 shell cover → gen waves with **split-merge** (retain unsplit parents; child keep = AABB+shell like CPU `cell_overlaps_vis`) → meta + **open-address** hash (fingerprint skip) → gbuf. **No hot-path texture readback / no CPU vis or SDF apply.**
+**Hot path (shipping):** GPU cull → expand `tex_inst_vis` → VS draw cull → **single-root** probe over union of vis AABBs → even split-merge waves (shell keep on kids; free vs `slot_cap`) → meta + open-address hash (fingerprint skip) → gbuf.
+
+**Reuse:** cold `tex_prim` (SDF pack) + hot `tex_prim_vis`. BVH for cull only — probes do not rebuild prims/BVH/cull.
 
 ---
 
@@ -18,7 +20,7 @@ Performance north star: **probe work ∝ resident slots**, not screen pixels. Se
 | Nanite | Retained structure; cull then refine | Resolution-tied placement cost |
 | DDGI / cascaded volumes | Fixed probe budget | Dense N³ / look-at clip as long-term default |
 | Wright / GI-1.0 | World/hash for persistence | Treating gather cost as probe-pool cost |
-| CPU `surface_tick` | Per-parent split; budget stop; open-address hash | Full-pool child-only replace |
+| Surface octree | One root → split → shell discard | AABB flood Gen0 / first-N child wipe |
 
 ---
 
@@ -26,13 +28,13 @@ Performance north star: **probe work ∝ resident slots**, not screen pixels. Se
 
 | Bad | Why | Prefer |
 |-----|-----|--------|
-| Any hot-path `LoadImageFromTexture` | Sync stall | Keep vis/residency on GPU |
+| Any hot-path vis `LoadImageFromTexture` | Sync stall | Keep vis on GPU |
+| AABB×2048 Gen0 flood | Biased + expensive | Single root from union |
+| Early-index budget monopoly on split | Uneven / grey gaps | Even all-leaf split vs `slot_cap` free |
 | CPU draw filter / CPU vis `UpdateTexture` | Duplicates GPU cull | VS sample `tex_inst_vis` |
-| CPU SDF cover/insert for probes | Decode/rework | GPU cover → keep → split-merge → hash RTs |
-| Gen wipe → first-N children only | Thins density / grey gaps | Split-merge retain parents |
 | Per-frame probe wipe | Wastes stable slots | Fingerprint skip |
 | Placement cost ∝ resolution | Violates discrete-probe budget | Deduped keys; work ∝ `slot_cap` |
-| Full-clip always-cover | Fights camera motion | Culled-surface cover → gen waves |
+| Full-clip always-cover | Fights camera motion | Culled-surface root → gen waves |
 | Look-at clip cube as GI volume | Artificial root | Absolute world keys |
 
 ---
@@ -42,11 +44,11 @@ Performance north star: **probe work ∝ resident slots**, not screen pixels. Se
 | Phase | State |
 |-------|--------|
 | GPU cull + VS draw cull (no vis readback) | **shipping** |
-| GPU probes copy CPU split (`surface_tick` semantics) | **shipping** |
+| GPU single-root probes + even split | **shipping** |
 | Gbuf after probes; fill / resolve | **later** |
 | B.3–B.5 hash spine | retained as storage |
 | B.6–B.6.6 clip always-cover | **deprecated** |
 
-**Ship path:** GPU frustum cull → expand inst vis → VS cull draw → GPU probes (split-merge) → gbuf.
+**Ship path:** GPU frustum cull → expand inst vis → VS cull draw → single-root probes → gbuf.
 
-<!-- agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | f56309 -->
+<!-- agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | 28e4b5 -->

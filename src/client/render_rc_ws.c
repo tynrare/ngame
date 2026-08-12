@@ -10,15 +10,16 @@
  * 1) ensure → tex_prim + tex_bvh + probe RTs (slots/meta/hash)
  * 2) scene dirty → prims + inst_i + CPU BVH → upload (cold)
  * 3) GPU frustum cull → tex_vis_curr; expand → tex_inst_vis
- * 4) probes: Gen0 shell cover → split-merge gen waves (AABB+shell kids) → meta + open-address hash
+ * 4) probes: single root (union vis AABBs) → even split-merge waves → meta + open-address hash
  * 5) gbuf draw: VS samples tex_inst_vis (material-map bind; no CPU filter)
  * 6) swap vis prev←curr; compose/debug sample hash + depth
  *
  * Branches / invariants:
  * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
- * - Probes copy CPU surface_tick split (retain unsplit parents); budget 50% slot_cap.
- * - Cold CPU OK for dirty rebuild; no hot-path texture readback / CPU SDF apply.
+ * - One root → shell-discard kids; budget 50% slot_cap; reuse tex_prim + tex_prim_vis.
+ * - Cold CPU OK for dirty rebuild; no hot-path vis readback / CPU SDF apply.
  */
+// agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | d0ac59
 // agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d
 // agent: composer-2.5 | 2026-08-12 | rc-ws playbook GPU probes | 8defb7
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
@@ -2242,3 +2243,4 @@ void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n) 
 // agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078
 // agent: composer-2.5 | 2026-08-12 | rc-ws playbook GPU probes | 8defb7
 // agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d
+// agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | d0ac59

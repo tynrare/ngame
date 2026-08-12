@@ -1,10 +1,10 @@
-// agent: composer-2.5 | 2026-08-12 | GPU split-merge open-hash | c84c54
+// agent: composer-2.5 | 2026-08-12 | even split-merge slot_cap free | b633c9
+// agent: composer-2.5 | 2026-08-12 | split-merge no budget truncate | 816796
 /* Probe residency apply.
  * ng_apply_pass:
- *  0 = Gen0 slots from keep ranks (xyz=ic, a=lod+1)
  *  1 = meta from slots (xyz center, a=10+lod)
  *  2 = open-address hash from slots
- *  3 = split-merge: unsplit parents + kept children (read tex_slots, write other RT)
+ *  3 = split-merge: budget gates split; emit packed up to slot_cap (keep late parents)
  */
 in vec2 fragTexCoord;
 
@@ -39,24 +39,6 @@ bool keep_at(int w) {
   return max(a, b) > 0.5;
 }
 
-int keep_rank_work(int rank) {
-  int nwork = int(clamp(ng_work_count, 0.0, float(WORK_MAX)));
-  int r = 0;
-  for (int w = 0; w < WORK_MAX; w++) {
-    if (w >= nwork) {
-      break;
-    }
-    if (!keep_at(w)) {
-      continue;
-    }
-    if (r == rank) {
-      return w;
-    }
-    r++;
-  }
-  return -1;
-}
-
 int child_keep_count(int parent) {
   int nk = 0;
   for (int c = 0; c < 8; c++) {
@@ -71,7 +53,6 @@ int child_keep_count(int parent) {
   return nk;
 }
 
-/** Emit the rank-th kept child of parent into finalColor; false if missing. */
 bool emit_kept_child(int parent, int child_rank) {
   int r = 0;
   for (int c = 0; c < 8; c++) {
@@ -111,30 +92,6 @@ int count_used_slots(int scap) {
 }
 
 void main() {
-  if (ng_apply_pass == 0) {
-    int si = int(floor(gl_FragCoord.x));
-    int budget = int(clamp(ng_budget, 0.0, float(SLOT_MAX)));
-    int scap = int(clamp(ng_slot_cap, 1.0, float(SLOT_MAX)));
-    if (si < 0 || si >= scap || si >= budget) {
-      finalColor = vec4(0.0);
-      return;
-    }
-    int wi = keep_rank_work(si);
-    if (wi < 0) {
-      finalColor = vec4(0.0);
-      return;
-    }
-    vec4 w = texelFetch(tex_work, ivec2(wi, 0), 0);
-    if (length(w.xyz) < 1e-6 && abs(w.w) < 1e-6) {
-      finalColor = vec4(0.0);
-      return;
-    }
-    int pack_w = int(round(w.w));
-    int lod = pack_w % LOD_STRIDE;
-    finalColor = vec4(round(w.xyz), float(lod + 1));
-    return;
-  }
-
   if (ng_apply_pass == 1) {
     int si = int(floor(gl_FragCoord.y));
     int scap = int(clamp(ng_slot_cap, 1.0, float(SLOT_MAX)));
@@ -155,19 +112,24 @@ void main() {
   }
 
   if (ng_apply_pass == 3) {
-    /* Split-merge: copy CPU apply_split_surface wave (snapshot all parents). */
+    /* Even split-merge: budget gates splitting only; emit up to slot_cap (not budget).
+     * Truncating to budget ranks dropped late parents → one early chunk ate the pool. */
     int r = int(floor(gl_FragCoord.x));
     int budget = int(clamp(ng_budget, 0.0, float(SLOT_MAX)));
     int scap = int(clamp(ng_slot_cap, 1.0, float(SLOT_MAX)));
-    if (r < 0 || r >= scap || r >= budget) {
+    if (r < 0 || r >= scap) {
       finalColor = vec4(0.0);
       return;
     }
-    int used0 = count_used_slots(scap);
-    bool can_split = used0 < budget;
+    int used = count_used_slots(scap);
+    int free_n = scap - used;
+    bool wave_ok = used < budget;
     int emit_count = 0;
     for (int si = 0; si < SLOT_MAX; si++) {
       if (si >= scap) {
+        break;
+      }
+      if (emit_count >= scap) {
         break;
       }
       vec4 s = texelFetch(tex_slots, ivec2(si, 0), 0);
@@ -175,24 +137,41 @@ void main() {
         continue;
       }
       int lod = int(round(s.a)) - 1;
-      int nk = 0;
       bool do_split = false;
       int emit_n = 1;
       if (lod <= 0) {
         emit_n = 1;
+      } else if (!wave_ok) {
+        emit_n = 1;
       } else {
-        nk = child_keep_count(si);
+        int nk = child_keep_count(si);
         if (nk == 0) {
           emit_n = 0;
-        } else if (!can_split || emit_count + nk > budget) {
-          emit_n = 1;
-        } else {
+          free_n += 1;
+          used -= 1;
+        } else if (free_n + 1 >= nk && emit_count + nk <= scap) {
+          /* Prefer keep-parent over dropping late branches past emit capacity. */
           do_split = true;
           emit_n = nk;
+          free_n -= (nk - 1);
+          used += (nk - 1);
+        } else {
+          emit_n = 1;
         }
       }
       if (emit_n <= 0) {
         continue;
+      }
+      /* If unsplit would not fit, stop — keep prior emits (do not drop earlier). */
+      if (!do_split && emit_count + emit_n > scap) {
+        break;
+      }
+      if (do_split && emit_count + emit_n > scap) {
+        do_split = false;
+        emit_n = 1;
+        if (emit_count + emit_n > scap) {
+          break;
+        }
       }
       if (r >= emit_count && r < emit_count + emit_n) {
         if (do_split) {
@@ -210,7 +189,7 @@ void main() {
     return;
   }
 
-  /* pass 2: open-address hash (CPU rebuild_hash order). */
+  /* pass 2: open-address hash */
   int h = int(floor(gl_FragCoord.x));
   int hsz = int(clamp(ng_hash_size, 1.0, float(HASH_MAX)));
   if (h < 0 || h >= hsz) {
@@ -253,4 +232,5 @@ void main() {
     }
   }
 }
-// agent: composer-2.5 | 2026-08-12 | GPU split-merge open-hash | c84c54
+// agent: composer-2.5 | 2026-08-12 | even split-merge slot_cap free | b633c9
+// agent: composer-2.5 | 2026-08-12 | split-merge no budget truncate | 816796

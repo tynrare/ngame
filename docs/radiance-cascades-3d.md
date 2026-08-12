@@ -1,4 +1,4 @@
-<!-- agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 702dd1 -->
+<!-- agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | af5cf0 -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -17,7 +17,7 @@ Digests: [`docs/article_rc_gpu_probes.md`](article_rc_gpu_probes.md).
 | Geometry | SDF prims + `inst_i`; BVH on scene dirty | Cold CPU rebuild OK |
 | Cull | GPU frustum → `tex_vis` + expand `tex_inst_vis` | No hot-path readback / no CPU vis upload |
 | Draw | VS samples `tex_inst_vis` (kill culled) | CPU builds all matrices; material-map bind |
-| Probes | GPU cover → keep → **split-merge** waves → meta/hash | Copies CPU `surface_tick` split; fingerprint skip |
+| Probes | **Single-root** over culled union → even split-merge → meta/hash | Reuse `tex_prim` + `tex_prim_vis`; fingerprint skip |
 | Gbuf | After cull + probes | Depth for compose/debug, not placement |
 | Debug | `culling` / `probes` / `probes-lod` | `rt_probe_id` viz aid |
 | Compose | Ambient + direct | GI fill offline |
@@ -29,7 +29,7 @@ Digests: [`docs/article_rc_gpu_probes.md`](article_rc_gpu_probes.md).
 ```
 cold: scene dirty? → prims + BVH + inst_i
 → 1) GPU frustum cull → tex_vis_curr → expand tex_inst_vis
-→ 2) probes: Gen0 shell cover → gen waves (AABB+shell kids, split-merge retain parents) → meta + open-address hash; fingerprint skip
+→ 2) probes: 1 root cell (union of vis AABBs) → gen waves (shell kids, even split vs slot_cap) → meta + open-address hash; fingerprint skip
 → 3) gbuf: VS cull via tex_inst_vis (no CPU filter)
 → 4) swap vis prev←curr
 → compose / debug (sample hash + depth)
@@ -37,7 +37,7 @@ cold: scene dirty? → prims + BVH + inst_i
 
 ## Probe split base
 
-World-snapped octree on **culled-visible** surfaces; **50% of `slot_cap`**. Empty / air / interior octants dropped. GPU gen waves **retain unsplit parents** (no full-pool child-only replace). Slot/meta/hash RTs persist; rebuild on view fingerprint miss.
+One world cell covering the **union** of culled-visible prim AABBs; octree-split until **50% of `slot_cap`**. Empty / air / interior octants dropped via packed SDF shell. Even waves (all leaves; free vs `slot_cap`). BVH used for cull only.
 
 ## Deprecated / refactoring archive
 
@@ -53,8 +53,9 @@ World-snapped octree on **culled-visible** surfaces; **50% of `slot_cap`**. Empt
 | CPU frustum duplicate feeding draw | deprecated (VS cull) |
 | CPU `UpdateTexture` of prim/inst vis | deprecated (GPU cull + expand) |
 | Hot-path `LoadImageFromTexture` vis/keep | deprecated |
-| CPU SDF apply / CPU vis lists for probes | **deprecated** (GPU cover/keep/split-merge) |
-| Full-pool gen replace (children-only wipe) | **fixed** (split-merge) |
+| AABB-flood Gen0 into WORK_MAX | **removed** (single root) |
+| Full-pool gen replace / early-index budget monopoly | **fixed** (even split-merge) |
+| CPU SDF apply / CPU vis lists for probes | **deprecated** |
 | Per-frame probe wipe | deprecated (fingerprint + incremental) |
 | Screen-pixel / depth-seed probe placement | rejected |
 
@@ -63,8 +64,8 @@ World-snapped octree on **culled-visible** surfaces; **50% of `slot_cap`**. Empt
 | Phase | State |
 |------:|--------|
 | GPU cull + VS draw cull (no vis readback) | **shipping** |
-| GPU probes copy `surface_tick` split (split-merge + open-address hash) | **shipping** |
+| GPU single-root probes + even split-merge | **shipping** |
 | Gbuf-last + fill/resolve | **later** (order shipping) |
 | B.1–B.6.6 clip path | **deprecated** |
 
-<!-- agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 702dd1 -->
+<!-- agent: composer-2.5 | 2026-08-12 | docs single-root GPU probes | af5cf0 -->
