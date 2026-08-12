@@ -8,6 +8,7 @@
 // agent: composer-2.5 | 2026-08-11 | LOD_SOFT_MAX for root cover | 92f417
 // agent: composer-2.5 | 2026-08-12 | inst_i on NgRcWsPrim | 8dfbc3
 // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+// agent: composer-2.5 | 2026-08-12 | probe API incremental | 134400
 #ifndef NG_RENDER_RC_WS_H
 #define NG_RENDER_RC_WS_H
 
@@ -170,6 +171,13 @@ int ng_rc_ws_probe_enum_cover(const NgRcWsCtx *ws, int pi, int lod, int32_t *ix,
 /** Enumerate 8 children of leaf si into work arrays. */
 int ng_rc_ws_probe_enum_children(const NgRcWsCtx *ws, int si, int32_t *ix, int32_t *iy, int32_t *iz,
                                  int *lod_out, int *parent_out, int *child_out, int cap);
+/** True if world cell hits prim SDF shell. */
+int ng_rc_ws_probe_cell_keep(const NgRcWsCtx *ws, int pi, int lod, int32_t ix, int32_t iy,
+                             int32_t iz);
+/** Fingerprint for probe skip: scene + quantized eye/forward. */
+uint32_t ng_rc_ws_probe_view_fp(const NgRcWsCtx *ws, const float eye[3], const float forward[3]);
+/** Evict used slots that fail shell against any of vis_prims (incremental). */
+void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n);
 
 /**
  * @deprecated transitional — use GPU probe tick in render.c.
@@ -203,3 +211,4 @@ void ng_rc_ws_sparse_clear_dirty(NgRcWsCtx *ws);
 // agent: composer-2.5 | 2026-08-11 | LOD_SOFT_MAX for root cover | 92f417
 // agent: composer-2.5 | 2026-08-12 | inst_i on NgRcWsPrim | 8dfbc3
 // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+// agent: composer-2.5 | 2026-08-12 | probe API incremental | 134400

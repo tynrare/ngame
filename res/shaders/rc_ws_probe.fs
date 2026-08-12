@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-08-12 | GPU probe cover shell shader | a910be
 // agent: composer-2.5 | 2026-08-12 | rename packed reserved GLSL keyword | bc7e12
+// agent: composer-2.5 | 2026-08-12 | GPU probe apply no readback | fc3300
 /* GPU SDF-shell keep for probe work items.
  * tex_work: x=ix y=iy z=iz w=lod + prim*1000 (prim ignored if ng_probe_any!=0)
  * Output R=keep 1/0. */
@@ -123,7 +124,8 @@ void main() {
       }
     }
   } else {
-    if (prim >= 0 && prim < nprim && cell_hits_prim_shell(prim, lod, ic)) {
+    if (prim >= 0 && prim < nprim && prim_vis_at(prim) >= 0.5 &&
+        cell_hits_prim_shell(prim, lod, ic)) {
       keep = true;
     }
   }
@@ -131,3 +133,4 @@ void main() {
 }
 // agent: composer-2.5 | 2026-08-12 | GPU probe cover shell shader | a910be
 // agent: composer-2.5 | 2026-08-12 | rename packed reserved GLSL keyword | bc7e12
+// agent: composer-2.5 | 2026-08-12 | GPU probe apply no readback | fc3300

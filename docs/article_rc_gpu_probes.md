@@ -2,13 +2,14 @@
 <!-- agent: composer-2.5 | 2026-08-11 | B63 Nanite cut cover article | 2b8343 -->
 <!-- agent: composer-2.5 | 2026-08-11 | article deprecate clip always-cover | b04b5b -->
 <!-- agent: composer-2.5 | 2026-08-12 | article GPU hot path vis bridge | 23a111 -->
+<!-- agent: composer-2.5 | 2026-08-12 | article zero readback | e6fdf1 -->
 # Sparse probes & GPU feedback (ngame notes)
 
 Pair with [`docs/radiance-cascades-3d.md`](radiance-cascades-3d.md), `src/client/render_rc_ws.c`.
 
 Performance north star: **probe work ∝ resident slots**, not screen pixels. Seed from **culled meshes**, not screen-pixel loops.
 
-**Hot path target:** GPU cull → CPU drop culled draw → GPU probe cover/waves → gbuf. Tiny `tex_vis` readback (≤PRIM_MAX) is allowed for the draw filter; depth/seed readback is not.
+**Hot path target:** GPU cull → VS draw cull → probes from prev `tex_vis` (fingerprint skip) → gbuf. **No hot-path texture readback.**
 
 ---
 
@@ -68,8 +69,9 @@ Performance north star: **probe work ∝ resident slots**, not screen pixels. Se
 
 | Bad | Why | Prefer |
 |-----|-----|--------|
-| Depth / full RT seed readback every frame | Sync stall; CPU O(seed) | GPU cull → tiny `tex_vis` readback or GPU-only consumers |
-| CPU frustum duplicate of GPU cull | Double work; drifts from `tex_vis` | GPU cull sole; CPU only drops draw/active set |
+| Any hot-path `LoadImageFromTexture` | Sync stall | Keep vis/keep on GPU; VS / prev-frame consumers |
+| CPU draw filter from vis bits | Needs readback | VS sample `tex_inst_vis` |
+| Per-frame probe wipe | Wastes stable slots | Fingerprint skip + evict/insert |
 | Placement cost ∝ resolution | Violates discrete-probe budget | Deduped keys; work ∝ `slot_cap` |
 | Full-clip always-cover | Fights camera motion; not surface-matched | Culled-surface cover → gen waves |
 | Look-at clip cube as GI volume | Artificial root; unstable for static cache | Absolute world keys |
@@ -81,13 +83,13 @@ Performance north star: **probe work ∝ resident slots**, not screen pixels. Se
 
 | Phase | State |
 |-------|--------|
-| GPU cull sole + CPU draw drop | **shipping** |
-| GPU Gen0 cover → gen waves → hash | **shipping** |
-| Gbuf after filter; fill / resolve | **later** (gbuf order shipping) |
+| GPU cull + VS draw cull (no vis readback) | **shipping** |
+| Prev-vis probes + fingerprint + persistent slots | **shipping** |
+| Gbuf after probes; fill / resolve | **later** |
 | B.3–B.5 hash spine | retained as storage |
 | B.6–B.6.6 clip always-cover | **deprecated** |
 
-**Ship path:** GPU frustum cull → drop culled draw → GPU surface cover/waves → world hash → gbuf; refine/fill later.
+**Ship path:** GPU frustum cull → VS cull draw → prev-vis probes → world hash → gbuf; refine/fill later.
 
 <!-- agent: composer-2.5 | 2026-08-11 | B62 GPU prio article map | 75bc1b -->
 <!-- agent: composer-2.5 | 2026-08-11 | B63 Nanite cut cover article | 2b8343 -->
@@ -97,4 +99,4 @@ Performance north star: **probe work ∝ resident slots**, not screen pixels. Se
 <!-- agent: composer-2.5 | 2026-08-11 | B66 always-cover collapse article | 2aaa29 -->
 <!-- agent: composer-2.5 | 2026-08-11 | B66 want-have balanced article | 5928ce -->
 <!-- agent: composer-2.5 | 2026-08-11 | article deprecate clip always-cover | b04b5b -->
-<!-- agent: composer-2.5 | 2026-08-12 | phases mark GPU path shipping | da9e49 -->
+<!-- agent: composer-2.5 | 2026-08-12 | article zero readback | e6fdf1 -->

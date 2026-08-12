@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-08-01 | boot registers scene modules | f6ec11
 // agent: composer-2.5 | 2026-08-02 | register stress_spawn scene | adb274
 // agent: composer-2.5 | 2026-08-09 | register rc scene | fbdaa0
+// agent: composer-2.5 | 2026-08-12 | boot starts scene rc | 3b27c7
 global.register("sphere", "scenes/sphere.js");
 global.register("cube", "scenes/cube.js");
 global.register("physics", "scenes/physics.js");
@@ -27,7 +28,7 @@ Boot.prototype.init = function () {
 
 Boot.prototype.start = function (session) {
   if (global.is_server()) {
-    global.change_scene("sphere");
+    global.change_scene("rc");
   }
 };
 
@@ -41,3 +42,4 @@ global.module(Boot);
 // agent: composer-2.5 | 2026-08-01 | boot registers scene modules | f6ec11
 // agent: composer-2.5 | 2026-08-02 | register stress_spawn scene | adb274
 // agent: composer-2.5 | 2026-08-09 | register rc scene | fbdaa0
+// agent: composer-2.5 | 2026-08-12 | boot starts scene rc | 3b27c7

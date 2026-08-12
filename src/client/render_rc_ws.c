@@ -2,23 +2,22 @@
  * World-space RC geometry + quality. North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (GPU cull, GPU probes, gbuf, compose)
- * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_probe.fs, rc_ws_debug.fs
+ * Related: src/client/render.c (GPU cull, VS draw cull, probes, gbuf)
+ * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_inst_vis.fs, rc_ws_probe.fs, rc_gbuf.vs
  * Debug: set debug.render.pass culling|probes|probes-lod|…
  *
- * rc-ws flow (GPU hot path):
+ * rc-ws flow (GPU minimal surface):
  * 1) ensure → tex_prim + tex_bvh + sparse hash pool
  * 2) scene dirty → prims + inst_i + CPU BVH → upload
- * 3) GPU frustum cull → tex_vis (sole frustum authority)
- * 4) CPU drop culled meshes / active prims (tiny tex_vis readback)
- * 5) GPU probes: Gen0 cover + gen waves (SDF shell) → pack tex_hash
- * 6) gbuf from visible batches; debug/compose sample hash + depth
+ * 3) GPU frustum cull → tex_vis_curr; expand → tex_inst_vis
+ * 4) probes from tex_vis_prev (fingerprint skip; persistent slots)
+ * 5) gbuf draw: VS samples tex_inst_vis (no CPU filter / no readback)
+ * 6) swap vis prev←curr; compose/debug sample hash + depth
  *
  * Branches / invariants:
  * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
- * - Probes = SDF shell octants only (no air / interior volume cells).
- * - Budget 50% slot_cap; full gen waves (lod-locked; overshoot OK).
- * - Cold CPU OK for dirty rebuild / hash pack; no CPU frustum dupe.
+ * - Probes = SDF shell octants only; budget 50% slot_cap.
+ * - Cold CPU OK for dirty rebuild / slot mirror; no hot-path texture readback.
  */
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
 // agent: composer-2.5 | 2026-08-11 | octree cover split surface tick | 6ba63e
@@ -506,7 +505,9 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     rowf[20] = p.lit[0];
     rowf[21] = p.lit[1];
     rowf[22] = p.lit[2];
-    rowf[23] = 1.0f;
+    /* a = inst_i+1 for GPU prim→inst vis expand */
+    // agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078
+    rowf[23] = (float)(i + 1);
     ws->prim_count++;
   }
   UpdateTexture(ws->tex_prim, ws->prim_rgba);
@@ -2173,6 +2174,54 @@ int ng_rc_ws_probe_enum_children(const NgRcWsCtx *ws, int si, int32_t *ix, int32
   }
   return 8;
 }
+
+int ng_rc_ws_probe_cell_keep(const NgRcWsCtx *ws, int pi, int lod, int32_t ix, int32_t iy,
+                             int32_t iz) {
+  // agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078
+  if (!ws || pi < 0 || pi >= ws->prim_count) {
+    return 0;
+  }
+  return ng_rc_ws_cell_hits_prim_shell(&ws->prims[pi], lod, ix, iy, iz);
+}
+
+uint32_t ng_rc_ws_probe_view_fp(const NgRcWsCtx *ws, const float eye[3], const float forward[3]) {
+  // agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078
+  uint32_t h = ws ? ws->scene_hash : 0u;
+  if (!eye || !forward) {
+    return h;
+  }
+  /* ~0.25m / ~few degrees — skip probe rebuild while view idle. */
+  const int ex = (int)floorf(eye[0] * 4.0f);
+  const int ey = (int)floorf(eye[1] * 4.0f);
+  const int ez = (int)floorf(eye[2] * 4.0f);
+  const int fx = (int)floorf(forward[0] * 16.0f);
+  const int fy = (int)floorf(forward[1] * 16.0f);
+  const int fz = (int)floorf(forward[2] * 16.0f);
+  h ^= (uint32_t)(ex * 73856093) ^ (uint32_t)(ey * 19349663) ^ (uint32_t)(ez * 83492791);
+  h ^= (uint32_t)(fx * 2654435761u) ^ (uint32_t)(fy * 2246822519u) ^ (uint32_t)(fz * 3266489917u);
+  if (ws) {
+    h ^= (uint32_t)ws->slot_cap * 0x9e3779b9u;
+    h ^= (uint32_t)ws->prim_count * 0x85ebca6bu;
+  }
+  return h;
+}
+
+void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n) {
+  // agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078
+  if (!ws || !vis_prims || vis_n <= 0) {
+    return;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    if (!ws->slots[i].used) {
+      continue;
+    }
+    if (!ng_rc_ws_cell_overlaps_vis(ws, (int)ws->slots[i].lod, ws->slots[i].ix, ws->slots[i].iy,
+                                   ws->slots[i].iz, vis_prims, vis_n)) {
+      ws->slots[i].used = 0;
+      ws->slots[i].dirty = 0;
+    }
+  }
+}
 // agent: composer-2.5 | 2026-08-11 | B66 always-cover collapse tick | c46cdb
 // agent: composer-2.5 | 2026-08-11 | B66 want-have balanced depth score | 4f6d2d
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
@@ -2188,3 +2237,4 @@ int ng_rc_ws_probe_enum_children(const NgRcWsCtx *ws, int si, int32_t *ix, int32
 // agent: composer-2.5 | 2026-08-11 | enforce surface budget half pool | de62a7
 // agent: composer-2.5 | 2026-08-12 | rebuild_prims store inst_i | 267192
 // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+// agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078

@@ -2,10 +2,12 @@
 // agent: composer-2.5 | 2026-08-10 | gbuf A geometry not clip | e7e855
 // agent: composer-2.5 | 2026-08-11 | gbuf cam-relative depth pack | 4615c1
 // agent: composer-2.5 | 2026-08-12 | gbuf prim probe id modes | 9f50c1
+// agent: composer-2.5 | 2026-08-12 | gbuf FS discard inst cull | 74ac42
 in vec3 fragPosition;
 in vec2 fragTexCoord;
 in vec4 fragColor;
 in vec3 fragNormal;
+flat in float vInstId;
 
 uniform vec3 ng_tint;
 uniform vec3 ng_glow;
@@ -15,10 +17,22 @@ uniform vec3 ng_cam_pos;
 uniform vec3 ng_ws_origin;
 uniform vec3 ng_ws_size;
 uniform int ng_gbuf_mode; /* 0 albedo+rough, 1 normal+metal, 2 glow, 3 depth+world, 4 prim_id, 5 probe_id */
+uniform sampler2D tex_inst_vis;
+uniform int ng_inst_cull; /* 1 = sample tex_inst_vis */
 
 out vec4 finalColor;
 
 void main() {
+  if (ng_inst_cull != 0) {
+    int ii = int(floor(vInstId + 0.5));
+    if (ii >= 0) {
+      float a = texelFetch(tex_inst_vis, ivec2(ii, 0), 0).r;
+      float b = texelFetch(tex_inst_vis, ivec2(ii, 1), 0).r;
+      if (max(a, b) < 0.5) {
+        discard;
+      }
+    }
+  }
   if (ng_gbuf_mode == 1) {
     vec3 n = normalize(fragNormal) * 0.5 + 0.5;
     finalColor = vec4(n, clamp(ng_metalness, 0.0, 1.0));
@@ -40,3 +54,4 @@ void main() {
 // agent: composer-2.5 | 2026-08-10 | gbuf A geometry not clip | e7e855
 // agent: composer-2.5 | 2026-08-11 | gbuf cam-relative depth pack | 4615c1
 // agent: composer-2.5 | 2026-08-12 | gbuf prim probe id modes | 9f50c1
+// agent: composer-2.5 | 2026-08-12 | gbuf FS discard inst cull | 74ac42
