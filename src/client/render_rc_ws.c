@@ -2,24 +2,23 @@
  * World-space RC geometry + quality. North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (cull + compose; GI offline)
- * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_debug.fs
- * Debug: set debug.render.pass culling|uvw|…
+ * Related: src/client/render.c (GPU cull, GPU probes, gbuf, compose)
+ * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_probe.fs, rc_ws_debug.fs
+ * Debug: set debug.render.pass culling|probes|probes-lod|…
  *
- * rc-ws flow (foundation — surface-hash probes):
+ * rc-ws flow (GPU hot path):
  * 1) ensure → tex_prim + tex_bvh + sparse hash pool
- * 2) render.c → gbuf world XYZ (float depth)
- * 3) scene dirty → all graph prims + CPU BVH → upload tex_bvh
- * 4) each frame → GPU frustum cull → vis list
- * 5) surface_tick → coarse cover prims → gen-complete waves (drop empty)
- * 6) debug probes → covering leaf tiles; compose ambient+direct
+ * 2) scene dirty → prims + inst_i + CPU BVH → upload
+ * 3) GPU frustum cull → tex_vis (sole frustum authority)
+ * 4) CPU drop culled meshes / active prims (tiny tex_vis readback)
+ * 5) GPU probes: Gen0 cover + gen waves (SDF shell) → pack tex_hash
+ * 6) gbuf from visible batches; debug/compose sample hash + depth
  *
  * Branches / invariants:
  * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
  * - Probes = SDF shell octants only (no air / interior volume cells).
- * - Gen0 stamps coarse surface cells over each culled prim.
  * - Budget 50% slot_cap; full gen waves (lod-locked; overshoot OK).
- * - No distance-want / collapse / curvature this milestone.
+ * - Cold CPU OK for dirty rebuild / hash pack; no CPU frustum dupe.
  */
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
 // agent: composer-2.5 | 2026-08-11 | octree cover split surface tick | 6ba63e
@@ -33,6 +32,8 @@
 // agent: composer-2.5 | 2026-08-11 | SDF shell keep surface cells only | a394a2
 // agent: composer-2.5 | 2026-08-11 | 50pct budget slots 512 quality | 3cc717
 // agent: composer-2.5 | 2026-08-11 | enforce surface budget half pool | de62a7
+// agent: composer-2.5 | 2026-08-12 | rebuild_prims store inst_i | 267192
+// agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -479,6 +480,7 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     }
 #endif
     const int row = ws->prim_count;
+    p.inst_i = i;
     ws->prims[row] = p;
     float *rowf = ws->prim_rgba + row * NG_RC_WS_PRIM_COLS * 4;
     rowf[0] = p.center[0];
@@ -2033,6 +2035,144 @@ void ng_rc_ws_surface_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n) {
     }
   }
 }
+
+void ng_rc_ws_probe_clear(NgRcWsCtx *ws) {
+  // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+  if (!ws || !ws->ready || !ng_rc_ws_sparse_alloc(ws)) {
+    return;
+  }
+  for (int i = 0; i < ws->slot_cap; i++) {
+    ws->slots[i].used = 0;
+    ws->slots[i].dirty = 0;
+    ws->slots[i].pad = 0;
+  }
+  ws->slot_count = 0;
+}
+
+int ng_rc_ws_probe_insert_cell(NgRcWsCtx *ws, uint8_t lod, int32_t ix, int32_t iy, int32_t iz) {
+  if (!ws) {
+    return -1;
+  }
+  return ng_rc_ws_apply_insert_cell(ws, lod, ix, iy, iz) ? 1 : -1;
+}
+
+int ng_rc_ws_probe_used(const NgRcWsCtx *ws) {
+  return ws ? ng_rc_ws_slot_used_count(ws) : 0;
+}
+
+void ng_rc_ws_probe_upload(NgRcWsCtx *ws) {
+  if (!ws || !ws->ready) {
+    return;
+  }
+  ng_rc_ws_meta_upload_all(ws);
+}
+
+int ng_rc_ws_probe_apply_split_mask(NgRcWsCtx *ws, int si, unsigned keep_mask) {
+  // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+  if (!ws || si < 0 || !ws->slots[si].used || ws->slots[si].lod == 0) {
+    return 0;
+  }
+  const int child_lod = (int)ws->slots[si].lod - 1;
+  const int32_t bx = ws->slots[si].ix * 2;
+  const int32_t by = ws->slots[si].iy * 2;
+  const int32_t bz = ws->slots[si].iz * 2;
+  int keep[8];
+  int nk = 0;
+  for (int c = 0; c < 8; c++) {
+    if (keep_mask & (1u << c)) {
+      keep[nk++] = c;
+    }
+  }
+  if (nk == 0) {
+    ws->slots[si].used = 0;
+    ws->slots[si].dirty = 0;
+    return 1;
+  }
+  if (ng_rc_ws_slot_count_free(ws) + 1 < nk) {
+    return 0;
+  }
+  const NgRcWsSlot saved = ws->slots[si];
+  ws->slots[si].used = 0;
+  ws->slots[si].dirty = 0;
+  int kids[8];
+  for (int k = 0; k < nk; k++) {
+    kids[k] = ng_rc_ws_slot_alloc(ws);
+    if (kids[k] < 0) {
+      for (int j = 0; j < k; j++) {
+        ws->slots[kids[j]].used = 0;
+        ws->slots[kids[j]].dirty = 0;
+      }
+      ws->slots[si] = saved;
+      return 0;
+    }
+    ws->slots[kids[k]].used = 1;
+  }
+  for (int k = 0; k < nk; k++) {
+    const int c = keep[k];
+    const int kid = kids[k];
+    ws->slots[kid].lod = (uint8_t)child_lod;
+    ws->slots[kid].ix = bx + (c & 1);
+    ws->slots[kid].iy = by + ((c >> 1) & 1);
+    ws->slots[kid].iz = bz + ((c >> 2) & 1);
+    ws->slots[kid].dirty = 0;
+    ws->slots[kid].pad = 0;
+  }
+  return 1;
+}
+
+int ng_rc_ws_probe_enum_cover(const NgRcWsCtx *ws, int pi, int lod, int32_t *ix, int32_t *iy,
+                              int32_t *iz, int *prim_out, int cap) {
+  // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+  if (!ws || pi < 0 || pi >= ws->prim_count || !ix || !iy || !iz || !prim_out || cap <= 0) {
+    return 0;
+  }
+  float pmin[3], pmax[3];
+  ng_rc_ws_prim_aabb(&ws->prims[pi], pmin, pmax);
+  const float cell = ng_rc_ws_cell_size(lod);
+  if (cell < 1e-5f) {
+    return 0;
+  }
+  const int32_t ix0 = (int32_t)floorf(pmin[0] / cell);
+  const int32_t iy0 = (int32_t)floorf(pmin[1] / cell);
+  const int32_t iz0 = (int32_t)floorf(pmin[2] / cell);
+  const int32_t ix1 = (int32_t)floorf(pmax[0] / cell);
+  const int32_t iy1 = (int32_t)floorf(pmax[1] / cell);
+  const int32_t iz1 = (int32_t)floorf(pmax[2] / cell);
+  int n = 0;
+  for (int32_t z = iz0; z <= iz1 && n < cap; z++) {
+    for (int32_t y = iy0; y <= iy1 && n < cap; y++) {
+      for (int32_t x = ix0; x <= ix1 && n < cap; x++) {
+        ix[n] = x;
+        iy[n] = y;
+        iz[n] = z;
+        prim_out[n] = pi;
+        n++;
+      }
+    }
+  }
+  return n;
+}
+
+int ng_rc_ws_probe_enum_children(const NgRcWsCtx *ws, int si, int32_t *ix, int32_t *iy, int32_t *iz,
+                                 int *lod_out, int *parent_out, int *child_out, int cap) {
+  // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+  if (!ws || si < 0 || !ws->slots[si].used || ws->slots[si].lod == 0 || cap < 8) {
+    return 0;
+  }
+  const int child_lod = (int)ws->slots[si].lod - 1;
+  const int32_t bx = ws->slots[si].ix * 2;
+  const int32_t by = ws->slots[si].iy * 2;
+  const int32_t bz = ws->slots[si].iz * 2;
+  for (int c = 0; c < 8; c++) {
+    ix[c] = bx + (c & 1);
+    iy[c] = by + ((c >> 1) & 1);
+    iz[c] = bz + ((c >> 2) & 1);
+    lod_out[c] = child_lod;
+    parent_out[c] = si;
+    child_out[c] = c;
+  }
+  return 8;
+}
 // agent: composer-2.5 | 2026-08-11 | B66 always-cover collapse tick | c46cdb
 // agent: composer-2.5 | 2026-08-11 | B66 want-have balanced depth score | 4f6d2d
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
@@ -2046,3 +2186,5 @@ void ng_rc_ws_surface_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n) {
 // agent: composer-2.5 | 2026-08-11 | restore cover then gen wave | 8e1bf4
 // agent: composer-2.5 | 2026-08-11 | SDF shell keep surface cells only | a394a2
 // agent: composer-2.5 | 2026-08-11 | enforce surface budget half pool | de62a7
+// agent: composer-2.5 | 2026-08-12 | rebuild_prims store inst_i | 267192
+// agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49

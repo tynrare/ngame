@@ -6,6 +6,8 @@
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 5c2aa5
 // agent: composer-2.5 | 2026-08-11 | surface tick API header | d996d7
 // agent: composer-2.5 | 2026-08-11 | LOD_SOFT_MAX for root cover | 92f417
+// agent: composer-2.5 | 2026-08-12 | inst_i on NgRcWsPrim | 8dfbc3
+// agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
 #ifndef NG_RENDER_RC_WS_H
 #define NG_RENDER_RC_WS_H
 
@@ -47,7 +49,9 @@
 #define NG_RC_WS_BVH_FLOATS (NG_RC_WS_BVH_MAX * NG_RC_WS_BVH_COLS * 4)
 /** Top-K / per-tick structure ops (amortize remarch). */
 #define NG_RC_WS_PRIO_K 16
-/** Foundation: GI/octree offline; BVH+frustum cull active. */
+/** Max GPU shell work items per batch (Gen0 / wave). */
+#define NG_RC_WS_PROBE_WORK_MAX 2048
+/** Foundation: GI fill offline; GPU cull + GPU probe cover/waves. */
 #define NG_RC_WS_GI_OFFLINE 1
 
 typedef struct NgRcWsPrim {
@@ -60,6 +64,7 @@ typedef struct NgRcWsPrim {
   float roughness;
   float metalness;
   int type; /* 0 box, 1 sphere */
+  int inst_i; /* graph instance index */
 } NgRcWsPrim;
 
 typedef struct NgRcWsSlot {
@@ -139,15 +144,35 @@ bool ng_rc_ws_ensure(NgRcWsCtx *ws, int quality);
 uint32_t ng_rc_ws_scene_hash(void);
 /** Fill NgRcWsPrim from graph inst (pose + materials). false if skip. */
 bool ng_rc_ws_inst_prim(int i, NgRcWsPrim *out);
-/** Rebuild analytic SDF prims overlapping clip; upload tex_prim; rebuild BVH. */
+/** Rebuild analytic SDF prims; upload tex_prim; rebuild BVH. */
 void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws);
 /** Pack CPU BVH → tex_bvh (scene dirty only). */
 void ng_rc_ws_upload_bvh(NgRcWsCtx *ws);
 /** Stamp prim AABB into clip grid; upload tex_grid (after rebuild_prims). */
 void ng_rc_ws_rebuild_grid(NgRcWsCtx *ws);
+
+/** Clear all probe slots (GPU probe tick). */
+void ng_rc_ws_probe_clear(NgRcWsCtx *ws);
+/** Insert world cell if free; returns slot or -1. */
+int ng_rc_ws_probe_insert_cell(NgRcWsCtx *ws, uint8_t lod, int32_t ix, int32_t iy, int32_t iz);
+/** Used slot count. */
+int ng_rc_ws_probe_used(const NgRcWsCtx *ws);
+/** Upload slots → tex_meta / tex_hash. */
+void ng_rc_ws_probe_upload(NgRcWsCtx *ws);
 /**
- * Foundation: world-aligned octree cover of culled AABBs → split to lod0;
- * surface octants only; upload tex_meta/tex_hash.
+ * Apply octree split keeping GPU-approved children (bit0..7).
+ * @return 1 if parent replaced.
+ */
+int ng_rc_ws_probe_apply_split_mask(NgRcWsCtx *ws, int si, unsigned keep_mask);
+/** Enumerate Gen0 AABB cells for prim into work arrays (no SDF). */
+int ng_rc_ws_probe_enum_cover(const NgRcWsCtx *ws, int pi, int lod, int32_t *ix, int32_t *iy,
+                              int32_t *iz, int *prim_out, int cap);
+/** Enumerate 8 children of leaf si into work arrays. */
+int ng_rc_ws_probe_enum_children(const NgRcWsCtx *ws, int si, int32_t *ix, int32_t *iy, int32_t *iz,
+                                 int *lod_out, int *parent_out, int *child_out, int cap);
+
+/**
+ * @deprecated transitional — use GPU probe tick in render.c.
  */
 void ng_rc_ws_surface_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n);
 /**
@@ -176,3 +201,5 @@ void ng_rc_ws_sparse_clear_dirty(NgRcWsCtx *ws);
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 5c2aa5
 // agent: composer-2.5 | 2026-08-11 | surface tick API header | d996d7
 // agent: composer-2.5 | 2026-08-11 | LOD_SOFT_MAX for root cover | 92f417
+// agent: composer-2.5 | 2026-08-12 | inst_i on NgRcWsPrim | 8dfbc3
+// agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
