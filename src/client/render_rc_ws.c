@@ -2,23 +2,25 @@
  * World-space RC geometry + quality. North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (GPU cull, VS draw cull, probes, gbuf)
- * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_inst_vis.fs, rc_ws_probe.fs, rc_gbuf.vs
+ * Related: src/client/render.c (GPU cull, VS draw cull, GPU probes, gbuf)
+ * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_inst_vis.fs, rc_ws_probe*.fs, rc_gbuf.vs
  * Debug: set debug.render.pass culling|probes|probes-lod|…
  *
  * rc-ws flow (GPU minimal surface):
- * 1) ensure → tex_prim + tex_bvh + sparse hash pool
- * 2) scene dirty → prims + inst_i + CPU BVH → upload
+ * 1) ensure → tex_prim + tex_bvh + probe RTs (slots/meta/hash)
+ * 2) scene dirty → prims + inst_i + CPU BVH → upload (cold)
  * 3) GPU frustum cull → tex_vis_curr; expand → tex_inst_vis
- * 4) probes from tex_vis_prev (fingerprint skip; persistent slots)
- * 5) gbuf draw: VS samples tex_inst_vis (no CPU filter / no readback)
+ * 4) probes: Gen0 shell cover → split-merge gen waves (AABB+shell kids) → meta + open-address hash
+ * 5) gbuf draw: VS samples tex_inst_vis (material-map bind; no CPU filter)
  * 6) swap vis prev←curr; compose/debug sample hash + depth
  *
  * Branches / invariants:
  * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
- * - Probes = SDF shell octants only; budget 50% slot_cap.
- * - Cold CPU OK for dirty rebuild / slot mirror; no hot-path texture readback.
+ * - Probes copy CPU surface_tick split (retain unsplit parents); budget 50% slot_cap.
+ * - Cold CPU OK for dirty rebuild; no hot-path texture readback / CPU SDF apply.
  */
+// agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d
+// agent: composer-2.5 | 2026-08-12 | rc-ws playbook GPU probes | 8defb7
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
 // agent: composer-2.5 | 2026-08-11 | octree cover split surface tick | 6ba63e
 // agent: composer-2.5 | 2026-08-11 | fair 75pct poorest-mesh split | 844498
@@ -2238,3 +2240,5 @@ void ng_rc_ws_probe_evict_unvis(NgRcWsCtx *ws, const int *vis_prims, int vis_n) 
 // agent: composer-2.5 | 2026-08-12 | rebuild_prims store inst_i | 267192
 // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
 // agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078
+// agent: composer-2.5 | 2026-08-12 | rc-ws playbook GPU probes | 8defb7
+// agent: composer-2.5 | 2026-08-12 | docs GPU copies surface split | 89f49d

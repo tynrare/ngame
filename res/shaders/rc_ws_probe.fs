@@ -1,9 +1,8 @@
-// agent: composer-2.5 | 2026-08-12 | GPU probe cover shell shader | a910be
-// agent: composer-2.5 | 2026-08-12 | rename packed reserved GLSL keyword | bc7e12
-// agent: composer-2.5 | 2026-08-12 | GPU probe apply no readback | fc3300
-/* GPU SDF-shell keep for probe work items.
+// agent: composer-2.5 | 2026-08-12 | AABB+shell keep empty skip | cee631
+/* GPU keep for probe work items (CPU shell / overlaps_vis).
  * tex_work: x=ix y=iy z=iz w=lod + prim*1000 (prim ignored if ng_probe_any!=0)
- * Output R=keep 1/0. */
+ * ng_probe_any: 0=shell vs packed prim; 1=AABB+shell vs any vis prim (split kids)
+ * Output R=keep 1/0. Empty work → 0. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_work;
@@ -12,7 +11,7 @@ uniform sampler2D tex_prim_vis;
 uniform float ng_work_count;
 uniform float ng_prim_count;
 uniform float ng_world_cell;
-uniform int ng_probe_any; /* 0=single prim from work.a; 1=any visible prim */
+uniform int ng_probe_any;
 
 out vec4 finalColor;
 
@@ -57,6 +56,30 @@ float prim_vis_at(int prim) {
   return max(a, b);
 }
 
+void prim_aabb(int row, out vec3 bmin, out vec3 bmax) {
+  vec4 ctr = prim_col(row, 0);
+  vec4 halfv = prim_col(row, 1);
+  if (ctr.w > 0.5) {
+    float r = halfv.x;
+    bmin = ctr.xyz - vec3(r);
+    bmax = ctr.xyz + vec3(r);
+  } else {
+    bmin = ctr.xyz - halfv.xyz;
+    bmax = ctr.xyz + halfv.xyz;
+  }
+}
+
+bool cell_aabb_hits_prim(int row, int lod, ivec3 ic) {
+  float cell = max(ng_world_cell, 0.001) * exp2(float(lod));
+  vec3 cmin = vec3(ic) * cell;
+  vec3 cmax = cmin + vec3(cell);
+  vec3 pmin;
+  vec3 pmax;
+  prim_aabb(row, pmin, pmax);
+  return !(pmin.x > cmax.x || pmax.x < cmin.x || pmin.y > cmax.y || pmax.y < cmin.y ||
+           pmin.z > cmax.z || pmax.z < cmin.z);
+}
+
 /** Corner/center/face samples — matches CPU shell keep. */
 bool cell_hits_prim_shell(int row, int lod, ivec3 ic) {
   float cell = max(ng_world_cell, 0.001) * exp2(float(lod));
@@ -96,6 +119,14 @@ bool cell_hits_prim_shell(int row, int lod, ivec3 ic) {
   return minabs <= band;
 }
 
+/** CPU cell_overlaps_vis: AABB broadphase then shell. */
+bool cell_overlaps_vis_prim(int row, int lod, ivec3 ic) {
+  if (!cell_aabb_hits_prim(row, lod, ic)) {
+    return false;
+  }
+  return cell_hits_prim_shell(row, lod, ic);
+}
+
 void main() {
   int x = int(floor(gl_FragCoord.x));
   int nwork = int(clamp(ng_work_count, 0.0, float(WORK_MAX)));
@@ -104,6 +135,10 @@ void main() {
     return;
   }
   vec4 w = texelFetch(tex_work, ivec2(x, 0), 0);
+  if (length(w.xyz) < 1e-6 && abs(w.w) < 1e-6) {
+    finalColor = vec4(0.0);
+    return;
+  }
   ivec3 ic = ivec3(round(w.xyz));
   int pack_w = int(round(w.w));
   int lod = pack_w % LOD_STRIDE;
@@ -118,7 +153,7 @@ void main() {
       if (prim_vis_at(row) < 0.5) {
         continue;
       }
-      if (cell_hits_prim_shell(row, lod, ic)) {
+      if (cell_overlaps_vis_prim(row, lod, ic)) {
         keep = true;
         break;
       }
@@ -131,6 +166,4 @@ void main() {
   }
   finalColor = vec4(keep ? 1.0 : 0.0, float(prim + 1), float(lod), 1.0);
 }
-// agent: composer-2.5 | 2026-08-12 | GPU probe cover shell shader | a910be
-// agent: composer-2.5 | 2026-08-12 | rename packed reserved GLSL keyword | bc7e12
-// agent: composer-2.5 | 2026-08-12 | GPU probe apply no readback | fc3300
+// agent: composer-2.5 | 2026-08-12 | AABB+shell keep empty skip | cee631

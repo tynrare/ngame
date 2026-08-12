@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-08-12 | gbuf VS pass inst id only | 938e73
 // agent: composer-2.5 | 2026-08-12 | gbuf VS rebuild instance W | fe1ddf
-/* Gbuf mesh VS: pack graph inst_i in instanceTransform[3][3]; FS discards via vis. */
+// agent: composer-2.5 | 2026-08-12 | gbuf VS texelFetch cull | 69c0a2
+/* Gbuf mesh VS: pack graph inst_i in instanceTransform[3][3]; cull via tex_inst_vis. */
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec3 vertexNormal;
@@ -8,6 +9,8 @@ in vec4 vertexColor;
 in mat4 instanceTransform;
 
 uniform mat4 mvp;
+uniform sampler2D tex_inst_vis;
+uniform int ng_inst_cull; /* 1 = sample tex_inst_vis */
 
 out vec3 fragPosition;
 out vec2 fragTexCoord;
@@ -25,7 +28,19 @@ void main() {
   fragTexCoord = vertexTexCoord;
   fragColor = vertexColor;
   fragNormal = normalize(mat3(M) * vertexNormal);
+  if (ng_inst_cull != 0) {
+    int ii = int(floor(inst_i + 0.5));
+    if (ii >= 0) {
+      float a = texelFetch(tex_inst_vis, ivec2(ii, 0), 0).r;
+      float b = texelFetch(tex_inst_vis, ivec2(ii, 1), 0).r;
+      if (max(a, b) < 0.5) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0); /* off-screen */
+        return;
+      }
+    }
+  }
   gl_Position = mvp * M * vec4(vertexPosition, 1.0);
 }
 // agent: composer-2.5 | 2026-08-12 | gbuf VS pass inst id only | 938e73
 // agent: composer-2.5 | 2026-08-12 | gbuf VS rebuild instance W | fe1ddf
+// agent: composer-2.5 | 2026-08-12 | gbuf VS texelFetch cull | 69c0a2

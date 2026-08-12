@@ -277,15 +277,26 @@ typedef struct ModRenderCtx {
   Vector4 ws_frustum[6];
   bool ws_frustum_valid;
   uint32_t probe_fp;
+  bool probe_gpu_valid;
   NgRcPassShader rc_ws_probe;
-  Texture2D tex_probe_work;
-  float *probe_work_rgba;
-  RenderTexture2D rt_probe_keep; /* WORK_MAX × 2 keep flags (GPU only) */
+  NgRcPassShader rc_ws_probe_cover;
+  NgRcPassShader rc_ws_probe_apply;
+  NgRcPassShader rc_ws_probe_gen;
+  RenderTexture2D rt_probe_work; /* WORK_MAX × 1 float work cells */
+  RenderTexture2D rt_probe_keep; /* WORK_MAX × 2 keep flags */
+  RenderTexture2D rt_probe_slots; /* slot_cap × 1 ix,iy,iz,lod+1 */
+  // agent: composer-2.5 | 2026-08-12 | slots ping-pong for split | f33dd4
+  RenderTexture2D rt_probe_slots_b; /* ping-pong for split-merge */
+  RenderTexture2D rt_probe_meta; /* 1 × slot_cap center+occ */
+  RenderTexture2D rt_probe_hash; /* hash_size × 1 */
   bool ws_probe_ready;
 } ModRenderCtx;
 
 static ModRenderCtx g_render_ctx;
 static const Vector3 NG_RC_SKY = {0.08f, 0.10f, 0.14f};
+
+/** Load RGBA32F color + depth renderbuffer FBO (world XYZ packing). */
+static RenderTexture2D mod_render_load_rt_rgba32f(int width, int height);
 
 /** Internal RT size from viewport × render_scale (clamped). */
 static void mod_render_internal_size(const ModRenderCtx *ctx, int *out_w, int *out_h) {
@@ -740,11 +751,9 @@ static void mod_render_set_gbuf_uniforms(ModRenderCtx *ctx, const RenderAsset *a
       SetShaderValue(sh->handle, loc, far->size, SHADER_UNIFORM_VEC3);
     }
   }
-  // agent: composer-2.5 | 2026-08-12 | VS cull double-buffer vis | aac081
-  // agent: composer-2.5 | 2026-08-12 | gbuf FS discard inst cull | 74ac42
+  // agent: composer-2.5 | 2026-08-12 | VS cull material map bind | 1fd856
   {
-    /* Draw cull is CPU batch filter; keep FS path off (sampler clobbered by DrawMeshInstanced). */
-    int cull = 0;
+    int cull = ctx->ws_cull_ready ? 1 : 0;
     int loc = GetShaderLocation(sh->handle, "ng_inst_cull");
     if (loc >= 0) {
       SetShaderValue(sh->handle, loc, &cull, SHADER_UNIFORM_INT);
@@ -892,12 +901,27 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     ng_shader_unload(&ctx->rc_ws_probe.sh);
     ctx->rc_ws_probe.ready = false;
   }
+  if (ctx->rc_ws_probe_cover.ready) {
+    ng_shader_unload(&ctx->rc_ws_probe_cover.sh);
+    ctx->rc_ws_probe_cover.ready = false;
+  }
+  if (ctx->rc_ws_probe_apply.ready) {
+    ng_shader_unload(&ctx->rc_ws_probe_apply.sh);
+    ctx->rc_ws_probe_apply.ready = false;
+  }
+  if (ctx->rc_ws_probe_gen.ready) {
+    ng_shader_unload(&ctx->rc_ws_probe_gen.sh);
+    ctx->rc_ws_probe_gen.ready = false;
+  }
   if (ctx->ws_probe_ready) {
-    UnloadTexture(ctx->tex_probe_work);
+    UnloadRenderTexture(ctx->rt_probe_work);
     UnloadRenderTexture(ctx->rt_probe_keep);
-    free(ctx->probe_work_rgba);
-    ctx->probe_work_rgba = NULL;
+    UnloadRenderTexture(ctx->rt_probe_slots);
+    UnloadRenderTexture(ctx->rt_probe_slots_b);
+    UnloadRenderTexture(ctx->rt_probe_meta);
+    UnloadRenderTexture(ctx->rt_probe_hash);
     ctx->ws_probe_ready = false;
+    ctx->probe_gpu_valid = false;
   }
 }
 
@@ -1156,30 +1180,35 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
       !mod_render_load_rc_pass(&ctx->rc_ws_probe, NG_RES_ROOT "shaders/rc_ws_probe.fs")) {
     return false;
   }
+  if (!ctx->rc_ws_probe_cover.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_probe_cover, NG_RES_ROOT "shaders/rc_ws_probe_cover.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_probe_apply.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_probe_apply, NG_RES_ROOT "shaders/rc_ws_probe_apply.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_probe_gen.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_probe_gen, NG_RES_ROOT "shaders/rc_ws_probe_gen.fs")) {
+    return false;
+  }
   if (!ctx->ws_probe_ready) {
-    ctx->probe_work_rgba =
-        (float *)calloc((size_t)NG_RC_WS_PROBE_WORK_MAX * 4u, sizeof(float));
-    if (!ctx->probe_work_rgba) {
-      return false;
-    }
-    Image wimg = {0};
-    wimg.data = ctx->probe_work_rgba;
-    wimg.width = NG_RC_WS_PROBE_WORK_MAX;
-    wimg.height = 1;
-    wimg.mipmaps = 1;
-    wimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
-    ctx->tex_probe_work = LoadTextureFromImage(wimg);
-    wimg.data = NULL;
-    UnloadImage(wimg);
+    // agent: composer-2.5 | 2026-08-12 | GPU probe residency RTs | 4b745d
+    // agent: composer-2.5 | 2026-08-12 | slots ping-pong for split | f33dd4
+    ctx->rt_probe_work = mod_render_load_rt_rgba32f(NG_RC_WS_PROBE_WORK_MAX, 1);
     ctx->rt_probe_keep = LoadRenderTexture(NG_RC_WS_PROBE_WORK_MAX, 2);
-    if (ctx->tex_probe_work.id == 0 || ctx->rt_probe_keep.id == 0) {
+    ctx->rt_probe_slots = mod_render_load_rt_rgba32f(NG_RC_WS_SLOT_MAX, 1);
+    ctx->rt_probe_slots_b = mod_render_load_rt_rgba32f(NG_RC_WS_SLOT_MAX, 1);
+    ctx->rt_probe_meta = mod_render_load_rt_rgba32f(1, NG_RC_WS_SLOT_MAX);
+    ctx->rt_probe_hash = mod_render_load_rt_rgba32f(NG_RC_WS_HASH_MAX, 1);
+    if (ctx->rt_probe_work.id == 0 || ctx->rt_probe_keep.id == 0 || ctx->rt_probe_slots.id == 0 ||
+        ctx->rt_probe_slots_b.id == 0 || ctx->rt_probe_meta.id == 0 || ctx->rt_probe_hash.id == 0) {
       return false;
     }
-    SetTextureFilter(ctx->tex_probe_work, TEXTURE_FILTER_POINT);
-    SetTextureWrap(ctx->tex_probe_work, TEXTURE_WRAP_CLAMP);
     SetTextureFilter(ctx->rt_probe_keep.texture, TEXTURE_FILTER_POINT);
     SetTextureWrap(ctx->rt_probe_keep.texture, TEXTURE_WRAP_CLAMP);
     ctx->ws_probe_ready = true;
+    ctx->probe_gpu_valid = false;
   }
   if (!ng_rc_ws_ensure(&ctx->ws_cpu, ctx->rc_quality)) {
     return false;
@@ -1693,7 +1722,7 @@ static void mod_render_rc_ws_casc_fill(ModRenderCtx *ctx, NgRcWsClip *clip, int 
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_meta");
     if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_meta);
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_meta.texture);
     }
   }
   {
@@ -1875,13 +1904,13 @@ static void mod_render_rc_ws_resolve(ModRenderCtx *ctx, int dest) {
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_meta");
     if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_meta);
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_meta.texture);
     }
   }
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
     if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_hash.texture);
     }
   }
   mod_render_fs_draw(ctx->rt_depth.texture, ctx->rt_ws[dest].texture.width,
@@ -2078,7 +2107,7 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
     {
       int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
       if (loc >= 0 && ctx->ws_cpu.sparse_tex_ready) {
-        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_hash.texture);
       }
     }
     {
@@ -2128,7 +2157,7 @@ static void mod_render_rc_ws_id_tick(ModRenderCtx *ctx) {
     {
       int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
       if (loc >= 0) {
-        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_hash.texture);
       }
     }
     {
@@ -2388,101 +2417,18 @@ static void mod_render_rc_ws_vis_swap(ModRenderCtx *ctx) {
   EndTextureMode();
 }
 
-/** Prim AABB vs stored frustum planes (probe seed + draw vis authority). */
-static int mod_render_rc_ws_prim_in_frustum(const ModRenderCtx *ctx, int pi) {
-  if (!ctx->ws_frustum_valid || pi < 0 || pi >= ctx->ws_cpu.prim_count) {
-    return 0;
-  }
-  const NgRcWsPrim *p = &ctx->ws_cpu.prims[pi];
-  float bmin[3];
-  float bmax[3];
-  if (p->type == 1) {
-    const float r = p->half[0];
-    bmin[0] = p->center[0] - r;
-    bmin[1] = p->center[1] - r;
-    bmin[2] = p->center[2] - r;
-    bmax[0] = p->center[0] + r;
-    bmax[1] = p->center[1] + r;
-    bmax[2] = p->center[2] + r;
-  } else {
-    bmin[0] = p->center[0] - p->half[0];
-    bmin[1] = p->center[1] - p->half[1];
-    bmin[2] = p->center[2] - p->half[2];
-    bmax[0] = p->center[0] + p->half[0];
-    bmax[1] = p->center[1] + p->half[1];
-    bmax[2] = p->center[2] + p->half[2];
-  }
-  for (int i = 0; i < 6; i++) {
-    const Vector4 *pl = &ctx->ws_frustum[i];
-    const float nx = pl->x, ny = pl->y, nz = pl->z;
-    const float px = nx > 0.0f ? bmax[0] : bmin[0];
-    const float py = ny > 0.0f ? bmax[1] : bmin[1];
-    const float pz = nz > 0.0f ? bmax[2] : bmin[2];
-    if (nx * px + ny * py + nz * pz + pl->w < 0.0f) {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-/** Write rt_inst_vis from camera-basis prim AABB + prim.inst_i (both FBO rows). */
-static void mod_render_rc_ws_inst_vis_cpu(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-12 | inst vis CPU direct write | 6f17e8
-  static unsigned char px[NG_SCENE_INST_MAX * 2 * 4];
-  /* Default visible (non-prim graph insts). */
-  memset(px, 255, sizeof(px));
-  const int n = ctx->ws_cpu.prim_count;
-  for (int p = 0; p < n; p++) {
-    const int ii = ctx->ws_cpu.prims[p].inst_i;
-    if (ii < 0 || ii >= NG_SCENE_INST_MAX) {
-      continue;
-    }
-    const unsigned char v = (unsigned char)(mod_render_rc_ws_prim_in_frustum(ctx, p) ? 255 : 0);
-    for (int y = 0; y < 2; y++) {
-      const int o = (y * NG_SCENE_INST_MAX + ii) * 4;
-      px[o + 0] = v;
-      px[o + 1] = v;
-      px[o + 2] = v;
-      px[o + 3] = 255;
-    }
-  }
-  UpdateTexture(ctx->rt_inst_vis.texture, px);
-}
-
-/** Write rt_prim_vis from camera-basis CPU AABB test (both FBO rows). */
-static void mod_render_rc_ws_prim_vis_cpu(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-12 | prim vis CPU match planes | 79c1b1
-  static unsigned char px[NG_RC_WS_PRIM_MAX * 2 * 4];
-  memset(px, 0, sizeof(px));
-  const int n = ctx->ws_cpu.prim_count;
-  for (int i = 0; i < n && i < NG_RC_WS_PRIM_MAX; i++) {
-    const unsigned char v = (unsigned char)(mod_render_rc_ws_prim_in_frustum(ctx, i) ? 255 : 0);
-    for (int y = 0; y < 2; y++) {
-      const int o = (y * NG_RC_WS_PRIM_MAX + i) * 4;
-      px[o + 0] = v;
-      px[o + 1] = v;
-      px[o + 2] = v;
-      px[o + 3] = 255;
-    }
-  }
-  UpdateTexture(ctx->rt_prim_vis.texture, px);
-}
-
-/** GPU BVH frustum cull → rt_prim_vis + rt_inst_vis (no CPU readback). */
+/** GPU prim frustum cull → rt_prim_vis → expand rt_inst_vis (no CPU upload). */
 static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-11 | camera-basis GPU frustum planes | 749a9e
   // agent: composer-2.5 | 2026-08-12 | VS cull double-buffer vis | aac081
+  // agent: composer-2.5 | 2026-08-12 | GPU prim cull expand restore | 0dcbca
   ctx->ws_frustum_valid = false;
-  if (!ctx->ws_cull_ready || !ctx->rc_ws_cull.ready || !ctx->ws_cpu.bvh_tex_ready) {
+  if (!ctx->ws_cull_ready || !ctx->rc_ws_cull.ready || !ctx->ws_cpu.prim_tex_ready) {
     return;
   }
   NgRcPassShader *pass = &ctx->rc_ws_cull;
-  const float bvh_count = (float)(ctx->ws_cpu.bvh_count > 0 ? ctx->ws_cpu.bvh_count : 0);
   const float prim_count = (float)(ctx->ws_cpu.prim_count > 0 ? ctx->ws_cpu.prim_count : 0);
-  if (bvh_count < 0.5f) {
-    BeginTextureMode(ctx->rt_node_vis);
-    ClearBackground(BLACK);
-    EndTextureMode();
+  if (prim_count < 0.5f) {
     BeginTextureMode(ctx->rt_prim_vis);
     ClearBackground(BLACK);
     EndTextureMode();
@@ -2519,21 +2465,16 @@ static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
   rlDrawRenderBatchActive();
   rlDisableColorBlend();
 
-  int pass0 = 0;
-  BeginTextureMode(ctx->rt_node_vis);
+  /* Pass 1 only — prim AABB; node pass unused by expand/draw. */
+  int pass1 = 1;
+  BeginTextureMode(ctx->rt_prim_vis);
   ClearBackground(BLACK);
   BeginShaderMode(pass->sh.handle);
   ng_shader_set_common(&pass->sh, (float)GetTime());
   {
     int loc = GetShaderLocation(pass->sh.handle, "ng_cull_pass");
     if (loc >= 0) {
-      SetShaderValue(pass->sh.handle, loc, &pass0, SHADER_UNIFORM_INT);
-    }
-  }
-  {
-    int loc = GetShaderLocation(pass->sh.handle, "ng_bvh_count");
-    if (loc >= 0) {
-      SetShaderValue(pass->sh.handle, loc, &bvh_count, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(pass->sh.handle, loc, &pass1, SHADER_UNIFORM_INT);
     }
   }
   {
@@ -2552,34 +2493,28 @@ static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
     }
   }
   {
-    int loc = GetShaderLocation(pass->sh.handle, "tex_bvh");
+    int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
     if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_bvh);
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_prim);
     }
   }
-  DrawRectangle(0, 0, ctx->rt_node_vis.texture.width, ctx->rt_node_vis.texture.height, WHITE);
+  DrawRectangle(0, 0, ctx->rt_prim_vis.texture.width, ctx->rt_prim_vis.texture.height, WHITE);
   EndShaderMode();
   EndTextureMode();
-
-  /* Prim + inst vis from camera-basis AABB (draw + probes; no GPU expand). */
-  // agent: composer-2.5 | 2026-08-12 | prim vis CPU match planes | 79c1b1
-  // agent: composer-2.5 | 2026-08-12 | inst vis CPU direct write | 6f17e8
-  mod_render_rc_ws_prim_vis_cpu(ctx);
-  mod_render_rc_ws_inst_vis_cpu(ctx);
   rlEnableColorBlend();
+
+  mod_render_rc_ws_inst_vis_expand(ctx);
 }
 
-/** GPU shell keep into rt_probe_keep (no CPU readback). */
-static void mod_render_rc_ws_probe_shell(ModRenderCtx *ctx, int nwork, int probe_any,
-                                        Texture2D prim_vis_tex) {
-  // agent: composer-2.5 | 2026-08-12 | GPU probe apply no readback | fc3300
-  if (nwork <= 0 || !ctx->ws_probe_ready || !ctx->rc_ws_probe.ready || !ctx->ws_cpu.prim_tex_ready) {
+/** GPU shell keep: work + prim + prim_vis → rt_probe_keep. */
+static void mod_render_rc_ws_probe_keep(ModRenderCtx *ctx, int nwork, int probe_any,
+                                       Texture2D prim_vis) {
+  if (nwork <= 0 || !ctx->ws_probe_ready || !ctx->rc_ws_probe.ready) {
     return;
   }
   if (nwork > NG_RC_WS_PROBE_WORK_MAX) {
     nwork = NG_RC_WS_PROBE_WORK_MAX;
   }
-  UpdateTexture(ctx->tex_probe_work, ctx->probe_work_rgba);
   NgRcPassShader *pass = &ctx->rc_ws_probe;
   const float work_count = (float)nwork;
   const float prim_count = (float)ctx->ws_cpu.prim_count;
@@ -2617,7 +2552,7 @@ static void mod_render_rc_ws_probe_shell(ModRenderCtx *ctx, int nwork, int probe
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_work");
     if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->tex_probe_work);
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_work.texture);
     }
   }
   {
@@ -2629,7 +2564,7 @@ static void mod_render_rc_ws_probe_shell(ModRenderCtx *ctx, int nwork, int probe
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_prim_vis");
     if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, prim_vis_tex);
+      SetShaderValueTexture(pass->sh.handle, loc, prim_vis);
     }
   }
   DrawRectangle(0, 0, ctx->rt_probe_keep.texture.width, ctx->rt_probe_keep.texture.height, WHITE);
@@ -2638,164 +2573,238 @@ static void mod_render_rc_ws_probe_shell(ModRenderCtx *ctx, int nwork, int probe
   rlEnableColorBlend();
 }
 
+/** Cover / gen / apply / meta / hash GPU residency passes. Pass 3 ping-pongs slots. */
+static void mod_render_rc_ws_probe_apply_passes(ModRenderCtx *ctx, int nwork, int pass_id) {
+  // agent: composer-2.5 | 2026-08-12 | probe tick split-merge wire | 3bc02b
+  NgRcPassShader *pass = &ctx->rc_ws_probe_apply;
+  if (!pass->ready) {
+    return;
+  }
+  const float work_count = (float)nwork;
+  const float slot_cap = (float)ctx->ws_cpu.slot_cap;
+  const float budget = (float)(ctx->ws_cpu.slot_cap / 2);
+  const float hash_size = (float)ctx->ws_cpu.hash_size;
+  const float world_cell = NG_RC_WS_CELL;
+  rlDrawRenderBatchActive();
+  rlDisableColorBlend();
+  RenderTexture2D *dst = &ctx->rt_probe_hash;
+  if (pass_id == 0) {
+    dst = &ctx->rt_probe_slots;
+  } else if (pass_id == 1) {
+    dst = &ctx->rt_probe_meta;
+  } else if (pass_id == 3) {
+    dst = &ctx->rt_probe_slots_b;
+  }
+  BeginTextureMode(*dst);
+  ClearBackground(BLANK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_work_count");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &work_count, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_slot_cap");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &slot_cap, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_budget");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &budget, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_hash_size");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &hash_size, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "ng_apply_pass");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &pass_id, SHADER_UNIFORM_INT);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_work");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_work.texture);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_keep");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_keep.texture);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_slots");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_slots.texture);
+    }
+  }
+  DrawRectangle(0, 0, dst->texture.width, dst->texture.height, WHITE);
+  EndShaderMode();
+  EndTextureMode();
+  rlEnableColorBlend();
+  if (pass_id == 3) {
+    RenderTexture2D tmp = ctx->rt_probe_slots;
+    ctx->rt_probe_slots = ctx->rt_probe_slots_b;
+    ctx->rt_probe_slots_b = tmp;
+  }
+}
+
 /**
- * Persistent probes: fingerprint skip; seed from prev vis; CPU SDF apply (no keep readback).
+ * GPU probes from culled tex_prim_vis: cover → keep → split-merge waves → meta/hash.
+ * Gen waves copy CPU surface_tick (retain unsplit parents; AABB+shell kids).
  */
 static void mod_render_rc_ws_probe_tick(ModRenderCtx *ctx) {
-  // agent: composer-2.5 | 2026-08-12 | persistent probe fingerprint | 00025d
-  // agent: composer-2.5 | 2026-08-12 | GPU probe apply no readback | fc3300
+  // agent: composer-2.5 | 2026-08-12 | probe tick split-merge wire | 3bc02b
   NgRcWsCtx *ws = &ctx->ws_cpu;
+  if (!ctx->ws_probe_ready || !ctx->ws_cull_ready || !ctx->rc_ws_probe_cover.ready ||
+      !ctx->rc_ws_probe_apply.ready || ws->prim_count <= 0) {
+    return;
+  }
   const float eye[3] = {ctx->camera.position.x, ctx->camera.position.y, ctx->camera.position.z};
   Vector3 fwd = Vector3Normalize(Vector3Subtract(ctx->camera.target, ctx->camera.position));
   const float forward[3] = {fwd.x, fwd.y, fwd.z};
   const uint32_t fp = ng_rc_ws_probe_view_fp(ws, eye, forward);
-  if (fp == ctx->probe_fp && ng_rc_ws_probe_used(ws) > 0) {
+  if (fp == ctx->probe_fp && ctx->probe_gpu_valid) {
     return;
   }
   ctx->probe_fp = fp;
 
-  int vis_prims[NG_RC_WS_PRIM_MAX];
-  int vis_n = 0;
-  for (int i = 0; i < ws->prim_count && vis_n < NG_RC_WS_PRIM_MAX; i++) {
-    if (mod_render_rc_ws_prim_in_frustum(ctx, i)) {
-      vis_prims[vis_n++] = i;
-    }
-  }
-
-  if (ng_rc_ws_probe_used(ws) <= 0) {
-    ng_rc_ws_probe_clear(ws);
-  } else {
-    ng_rc_ws_probe_evict_unvis(ws, vis_prims, vis_n);
-  }
-
-  if (vis_n <= 0 || !ctx->ws_probe_ready) {
-    ng_rc_ws_probe_upload(ws);
-    return;
-  }
-
   const int budget = ws->slot_cap / 2;
   const int cover_lod = NG_RC_WS_LOD_MAX - 2;
-  int32_t wix[NG_RC_WS_PROBE_WORK_MAX];
-  int32_t wiy[NG_RC_WS_PROBE_WORK_MAX];
-  int32_t wiz[NG_RC_WS_PROBE_WORK_MAX];
-  int wprim[NG_RC_WS_PROBE_WORK_MAX];
-  int wlod[NG_RC_WS_PROBE_WORK_MAX];
-  int wparent[NG_RC_WS_PROBE_WORK_MAX];
-  int wchild[NG_RC_WS_PROBE_WORK_MAX];
-  Texture2D prev_vis = ctx->rt_prim_vis_prev.texture;
+  const float prim_count = (float)ws->prim_count;
+  const float cover_lod_f = (float)cover_lod;
+  const float world_cell = NG_RC_WS_CELL;
+  const float work_count = (float)NG_RC_WS_PROBE_WORK_MAX;
+  Texture2D prim_vis = ctx->rt_prim_vis.texture;
 
-  for (int vi = 0; vi < vis_n && ng_rc_ws_probe_used(ws) < budget; vi++) {
-    const int pi = vis_prims[vi];
-    int nwork = ng_rc_ws_probe_enum_cover(ws, pi, cover_lod, wix, wiy, wiz, wprim,
-                                          NG_RC_WS_PROBE_WORK_MAX);
-    if (nwork <= 0) {
-      continue;
-    }
-    for (int i = 0; i < nwork; i++) {
-      ctx->probe_work_rgba[i * 4 + 0] = (float)wix[i];
-      ctx->probe_work_rgba[i * 4 + 1] = (float)wiy[i];
-      ctx->probe_work_rgba[i * 4 + 2] = (float)wiz[i];
-      ctx->probe_work_rgba[i * 4 + 3] =
-          (float)(cover_lod + wprim[i] * NG_RC_WS_HASH_LOD_STRIDE);
-    }
-    mod_render_rc_ws_probe_shell(ctx, nwork, 0, prev_vis);
-    for (int i = 0; i < nwork && ng_rc_ws_probe_used(ws) < budget; i++) {
-      if (!ng_rc_ws_probe_cell_keep(ws, wprim[i], cover_lod, wix[i], wiy[i], wiz[i])) {
-        continue;
+  /* Gen0 cover */
+  {
+    NgRcPassShader *pass = &ctx->rc_ws_probe_cover;
+    rlDrawRenderBatchActive();
+    rlDisableColorBlend();
+    BeginTextureMode(ctx->rt_probe_work);
+    ClearBackground(BLANK);
+    BeginShaderMode(pass->sh.handle);
+    ng_shader_set_common(&pass->sh, (float)GetTime());
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_prim_count");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
       }
-      (void)ng_rc_ws_probe_insert_cell(ws, (uint8_t)cover_lod, wix[i], wiy[i], wiz[i]);
     }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_cover_lod");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &cover_lod_f, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_work_count");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &work_count, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ws->tex_prim);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim_vis");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, prim_vis);
+      }
+    }
+    DrawRectangle(0, 0, ctx->rt_probe_work.texture.width, ctx->rt_probe_work.texture.height, WHITE);
+    EndShaderMode();
+    EndTextureMode();
+    rlEnableColorBlend();
   }
+
+  mod_render_rc_ws_probe_keep(ctx, NG_RC_WS_PROBE_WORK_MAX, 0, prim_vis);
+  mod_render_rc_ws_probe_apply_passes(ctx, NG_RC_WS_PROBE_WORK_MAX, 0); /* Gen0 slots */
 
   int gens = 0;
-  for (;;) {
-    if (ng_rc_ws_probe_used(ws) >= budget) {
+  const int max_gens = 8;
+  for (; gens < max_gens; gens++) {
+    /* Emit children → overlaps_vis keep → split-merge (parents retained). */
+    if (!ctx->rc_ws_probe_gen.ready) {
       break;
     }
-    int snap_i[NG_RC_WS_SLOT_MAX];
-    uint8_t snap_lod[NG_RC_WS_SLOT_MAX];
-    int ns = 0;
-    for (int i = 0; i < ws->slot_cap && ns < NG_RC_WS_SLOT_MAX; i++) {
-      if (!ws->slots[i].used || ws->slots[i].lod == 0) {
-        continue;
-      }
-      snap_i[ns] = i;
-      snap_lod[ns] = ws->slots[i].lod;
-      ns++;
+    const float slot_cap = (float)ws->slot_cap;
+    int nwork = ws->slot_cap * 8;
+    if (nwork > NG_RC_WS_PROBE_WORK_MAX) {
+      nwork = NG_RC_WS_PROBE_WORK_MAX;
     }
-    if (ns <= 0) {
-      break;
-    }
-    int split_ok = 0;
-    const int chunk = NG_RC_WS_PROBE_WORK_MAX / 8;
-    for (int base = 0; base < ns; base += chunk) {
-      const int nchunk = (base + chunk <= ns) ? chunk : (ns - base);
-      int nwork = 0;
-      int parents[NG_RC_WS_PROBE_WORK_MAX / 8];
-      int nparents = 0;
-      for (int s = 0; s < nchunk; s++) {
-        const int si = snap_i[base + s];
-        if (!ws->slots[si].used || ws->slots[si].lod != snap_lod[base + s]) {
-          continue;
-        }
-        const int got = ng_rc_ws_probe_enum_children(ws, si, wix + nwork, wiy + nwork, wiz + nwork,
-                                                    wlod + nwork, wparent + nwork, wchild + nwork,
-                                                    NG_RC_WS_PROBE_WORK_MAX - nwork);
-        if (got != 8) {
-          continue;
-        }
-        parents[nparents++] = si;
-        for (int c = 0; c < 8; c++) {
-          const int wi = nwork + c;
-          ctx->probe_work_rgba[wi * 4 + 0] = (float)wix[wi];
-          ctx->probe_work_rgba[wi * 4 + 1] = (float)wiy[wi];
-          ctx->probe_work_rgba[wi * 4 + 2] = (float)wiz[wi];
-          ctx->probe_work_rgba[wi * 4 + 3] = (float)wlod[wi];
-        }
-        nwork += 8;
-      }
-      if (nwork <= 0) {
-        continue;
-      }
-      mod_render_rc_ws_probe_shell(ctx, nwork, 1, prev_vis);
-      for (int p = 0; p < nparents; p++) {
-        unsigned mask = 0;
-        for (int c = 0; c < 8; c++) {
-          const int wi = p * 8 + c;
-          int keep_c = 0;
-          for (int v = 0; v < vis_n && !keep_c; v++) {
-            keep_c = ng_rc_ws_probe_cell_keep(ws, vis_prims[v], wlod[wi], wix[wi], wiy[wi], wiz[wi]);
-          }
-          if (keep_c) {
-            mask |= 1u << c;
-          }
-        }
-        if (ng_rc_ws_probe_apply_split_mask(ws, parents[p], mask)) {
-          split_ok = 1;
-        }
-      }
-      if (ng_rc_ws_probe_used(ws) >= budget) {
-        break;
+    const float nwork_f = (float)nwork;
+    NgRcPassShader *gpass = &ctx->rc_ws_probe_gen;
+    rlDrawRenderBatchActive();
+    rlDisableColorBlend();
+    BeginTextureMode(ctx->rt_probe_work);
+    ClearBackground(BLANK);
+    BeginShaderMode(gpass->sh.handle);
+    ng_shader_set_common(&gpass->sh, (float)GetTime());
+    {
+      int loc = GetShaderLocation(gpass->sh.handle, "ng_slot_cap");
+      if (loc >= 0) {
+        SetShaderValue(gpass->sh.handle, loc, &slot_cap, SHADER_UNIFORM_FLOAT);
       }
     }
-    if (!split_ok) {
-      break;
+    {
+      int loc = GetShaderLocation(gpass->sh.handle, "ng_work_count");
+      if (loc >= 0) {
+        SetShaderValue(gpass->sh.handle, loc, &nwork_f, SHADER_UNIFORM_FLOAT);
+      }
     }
-    gens++;
+    {
+      int loc = GetShaderLocation(gpass->sh.handle, "tex_slots");
+      if (loc >= 0) {
+        SetShaderValueTexture(gpass->sh.handle, loc, ctx->rt_probe_slots.texture);
+      }
+    }
+    DrawRectangle(0, 0, ctx->rt_probe_work.texture.width, ctx->rt_probe_work.texture.height, WHITE);
+    EndShaderMode();
+    EndTextureMode();
+    rlEnableColorBlend();
+
+    mod_render_rc_ws_probe_keep(ctx, nwork, 1, prim_vis);
+    mod_render_rc_ws_probe_apply_passes(ctx, nwork, 3); /* split-merge */
   }
 
-  ng_rc_ws_probe_upload(ws);
+  mod_render_rc_ws_probe_apply_passes(ctx, NG_RC_WS_PROBE_WORK_MAX, 1); /* meta */
+  mod_render_rc_ws_probe_apply_passes(ctx, NG_RC_WS_PROBE_WORK_MAX, 2); /* hash */
+  ctx->probe_gpu_valid = true;
+
   {
-    const int used = ng_rc_ws_probe_used(ws);
-    static int s_log_used = -1;
     static int s_log_gens = -1;
-    static int s_log_vis = -1;
-    if (used != s_log_used || gens != s_log_gens || vis_n != s_log_vis) {
-      s_log_used = used;
+    static uint32_t s_log_fp = 0;
+    if (gens != s_log_gens || fp != s_log_fp) {
       s_log_gens = gens;
-      s_log_vis = vis_n;
-      TraceLog(LOG_INFO, "rc-ws probe cells=%d budget=%d/%d gens=%d vis=%d cover_lod=%d", used,
-               budget, ws->slot_cap, gens, vis_n, cover_lod);
+      s_log_fp = fp;
+      TraceLog(LOG_INFO, "rc-ws probe gpu gens=%d budget=%d/%d cover_lod=%d prims=%d", gens, budget,
+               ws->slot_cap, cover_lod, ws->prim_count);
     }
   }
 }
@@ -2807,7 +2816,8 @@ static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
   const int force = mod_render_rc_ws_vox_dirty(ctx) ? 1 : 0;
   if (force || ctx->ws_cpu.prim_count <= 0) {
     ng_rc_ws_rebuild_prims(&ctx->ws_cpu);
-    ctx->probe_fp = 0; /* force probe rebuild after prim change */
+    ctx->probe_fp = 0;
+    ctx->probe_gpu_valid = false;
 #if !NG_RC_WS_GI_OFFLINE
     ng_rc_ws_rebuild_grid(&ctx->ws_cpu);
 #endif
@@ -2975,6 +2985,7 @@ static void mod_render_draw_batch(const RenderAsset *a, NgInstanceBatch *b) {
 
 static void mod_render_draw_batch_gbuf(ModRenderCtx *ctx, const RenderAsset *a, NgInstanceBatch *b,
                                       int mode) {
+  // agent: composer-2.5 | 2026-08-12 | VS cull material map bind | 1fd856
   if (!a || !a->ready || !ctx->gbuf_shader_ready || !b || b->count <= 0 || !b->mats) {
     return;
   }
@@ -2983,54 +2994,31 @@ static void mod_render_draw_batch_gbuf(ModRenderCtx *ctx, const RenderAsset *a, 
   }
   Material mat = a->model.materials[0];
   mat.shader = ctx->gbuf_shader.handle;
+  Texture2D prev_emis = {0};
+  const int bind_vis = ctx->ws_cull_ready && ctx->rt_inst_vis.texture.id > 0 && mat.maps != NULL;
+  if (bind_vis) {
+    prev_emis = mat.maps[MATERIAL_MAP_EMISSION].texture;
+    mat.maps[MATERIAL_MAP_EMISSION].texture = ctx->rt_inst_vis.texture;
+    /* DrawMeshInstanced binds slot i and sets locs[SHADER_LOC_MAP_DIFFUSE+i]. */
+    mat.shader.locs[SHADER_LOC_MAP_EMISSION] =
+        GetShaderLocation(mat.shader, "tex_inst_vis");
+  }
   mod_render_set_gbuf_uniforms(ctx, a, mode);
   DrawMeshInstanced(a->model.meshes[0], mat, b->mats, b->count);
-}
-
-/** True if graph inst should draw (non-prim, or any prim in frustum). */
-static int mod_render_graph_inst_visible(const ModRenderCtx *ctx, int inst_i) {
-  // agent: composer-2.5 | 2026-08-12 | CPU batch draw frustum filter | d70703
-  if (!ctx->ws_cull_ready || !ctx->ws_frustum_valid) {
-    return 1;
+  if (bind_vis) {
+    mat.maps[MATERIAL_MAP_EMISSION].texture = prev_emis;
   }
-  int matched = 0;
-  for (int p = 0; p < ctx->ws_cpu.prim_count; p++) {
-    if (ctx->ws_cpu.prims[p].inst_i != inst_i) {
-      continue;
-    }
-    matched = 1;
-    if (mod_render_rc_ws_prim_in_frustum(ctx, p)) {
-      return 1;
-    }
-  }
-  return matched ? 0 : 1;
-}
-
-/** Count prims inside current frustum planes. */
-static int mod_render_frustum_vis_count(const ModRenderCtx *ctx) {
-  int n = 0;
-  for (int p = 0; p < ctx->ws_cpu.prim_count; p++) {
-    n += mod_render_rc_ws_prim_in_frustum(ctx, p);
-  }
-  return n;
 }
 
 static void mod_render_collect_graph_batches(ModRenderCtx *ctx) {
   mod_render_batches_reset_counts(ctx);
   // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5
   // agent: composer-2.5 | 2026-08-12 | VS cull double-buffer vis | aac081
-  // agent: composer-2.5 | 2026-08-12 | CPU batch draw frustum filter | d70703
   mod_scene_graph_expire_live_draw(GetTime());
   const int n = mod_scene_graph_inst_count();
-  /* Fail-open if frustum rejects everything (bad planes) — never blank the scene. */
-  const int cull_draw = ctx->ws_cull_ready && ctx->ws_frustum_valid &&
-                        mod_render_frustum_vis_count(ctx) > 0;
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
     if (!inst || !inst->model[0]) {
-      continue;
-    }
-    if (cull_draw && !mod_render_graph_inst_visible(ctx, i)) {
       continue;
     }
     if (!mod_render_asset_for_model(ctx, inst->model)) {
@@ -3052,6 +3040,8 @@ static void mod_render_collect_graph_batches(ModRenderCtx *ctx) {
       rot[2] = inst->rot[2];
     }
     Matrix m = mod_render_pose_matrix(pos[0], pos[1], pos[2], rot, inst->scale);
+    /* Pack graph inst_i for rc_gbuf.vs cull (restore W=1 in VS). */
+    m.m15 = (float)i;
     (void)mod_render_batch_push(b, m);
   }
 }
@@ -3708,11 +3698,11 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-12 | add probes-lod debug pass | b65b50
 // agent: composer-2.5 | 2026-08-12 | VS cull double-buffer vis | aac081
 // agent: composer-2.5 | 2026-08-12 | persistent probe fingerprint | 00025d
-// agent: composer-2.5 | 2026-08-12 | GPU probe apply no readback | fc3300
 // agent: composer-2.5 | 2026-08-12 | camera-basis inward frustum planes | 8e0518
-// agent: composer-2.5 | 2026-08-12 | gbuf FS discard inst cull | 74ac42
-// agent: composer-2.5 | 2026-08-12 | prim AABB cull match CPU | 886089
-// agent: composer-2.5 | 2026-08-12 | prim vis CPU match planes | 79c1b1
-// agent: composer-2.5 | 2026-08-12 | inst vis CPU direct write | 6f17e8
-// agent: composer-2.5 | 2026-08-12 | CPU batch draw frustum filter | d70703
 // agent: composer-2.5 | 2026-08-12 | frustum per-plane target orient | 8a11d4
+// agent: composer-2.5 | 2026-08-12 | GPU prim cull expand restore | 0dcbca
+// agent: composer-2.5 | 2026-08-12 | VS cull material map bind | 1fd856
+// agent: composer-2.5 | 2026-08-12 | GPU probe residency RTs | 4b745d
+// agent: composer-2.5 | 2026-08-12 | GPU probe tick no CPU | 7befcb
+// agent: composer-2.5 | 2026-08-12 | probe tick split-merge wire | 3bc02b
+// agent: composer-2.5 | 2026-08-12 | slots ping-pong for split | f33dd4
