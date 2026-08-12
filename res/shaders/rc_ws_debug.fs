@@ -15,7 +15,10 @@
 // agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
 // agent: composer-2.5 | 2026-08-11 | unlimit lod walk debug shader | 582e49
 // agent: composer-2.5 | 2026-08-12 | debug consume prim probe ids | 224b28
-/* WS RC debug: 0=leaf tiles, 1=world frac, 2=grid, 3=culling vis mask. */
+// agent: composer-2.5 | 2026-08-12 | remove probe checkerboard debug | 09bf7e
+// agent: composer-2.5 | 2026-08-12 | probe debug color from probe id texture | fb8b05
+// agent: composer-2.5 | 2026-08-12 | probes-lod from probe id texture | 5c276e
+/* WS RC debug: 0=probe id, 1=world frac, 2=grid, 3=culling, 4=probes-lod. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_depth;
@@ -176,6 +179,31 @@ vec3 prim_hash_color(int prim) {
   return rgb + m;
 }
 
+/** Stable pseudo-color from integer id. */
+vec3 id_hash_color(float idf) {
+  float h = fract(sin(idf * 12.9898 + 78.233) * 43758.5453);
+  float s = 0.55 + 0.35 * fract(sin(idf * 39.346 + 11.17) * 23421.63);
+  float v = 0.65 + 0.3 * fract(sin(idf * 7.91 + 3.1) * 9123.12);
+  float ch = v * s;
+  float x = ch * (1.0 - abs(mod(h * 6.0, 2.0) - 1.0));
+  float m = v - ch;
+  vec3 rgb;
+  if (h < 1.0 / 6.0) {
+    rgb = vec3(ch, x, 0.0);
+  } else if (h < 2.0 / 6.0) {
+    rgb = vec3(x, ch, 0.0);
+  } else if (h < 3.0 / 6.0) {
+    rgb = vec3(0.0, ch, x);
+  } else if (h < 4.0 / 6.0) {
+    rgb = vec3(0.0, x, ch);
+  } else if (h < 5.0 / 6.0) {
+    rgb = vec3(x, 0.0, ch);
+  } else {
+    rgb = vec3(ch, 0.0, x);
+  }
+  return rgb + m;
+}
+
 void main() {
   /* Match rc_compose.fs — FragCoord UV; depth RGB = world XYZ (float RT). */
   // agent: composer-2.5 | 2026-08-11 | debug cam-relative world | 455296
@@ -231,17 +259,24 @@ void main() {
   }
 
   vec4 pid = texture(tex_probe_id, uv);
-  int lod = int(round(pid.g));
   float slot = pid.r - 1.0;
-  // agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
-  vec3 base = lod < 0 ? vec3(0.35) : LOD_COL[clamp(lod, 0, 7)];
-  if (slot < 0.0) {
-    base = vec3(0.35);
-  } else {
-    float parity = step(0.5, pid.b);
-    base = mix(base, base * 0.7, parity);
+  if (mode == 4) {
+    int lod = int(round(pid.g));
+    vec3 base = lod < 0 ? vec3(0.35) : LOD_COL[clamp(lod, 0, 7)];
+    if (slot < 0.0) {
+      base = vec3(0.35);
+    } else {
+      float parity = step(0.5, pid.b);
+      base = mix(base, base * 0.7, parity);
+    }
+    finalColor = vec4(base, 1.0);
+    return;
   }
-  finalColor = vec4(base, 1.0);
+  if (slot < 0.0) {
+    finalColor = vec4(0.35, 0.35, 0.35, 1.0);
+    return;
+  }
+  finalColor = vec4(id_hash_color(slot + 1.0), 1.0);
 }
 // agent: composer-2.5 | 2026-08-10 | B4 debug lod colors | 3cf97d
 // agent: composer-2.5 | 2026-08-10 | rename packed GLSL keyword | dff788
@@ -260,3 +295,6 @@ void main() {
 // agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
 // agent: composer-2.5 | 2026-08-11 | unlimit lod walk debug shader | 582e49
 // agent: composer-2.5 | 2026-08-12 | debug consume prim probe ids | 224b28
+// agent: composer-2.5 | 2026-08-12 | remove probe checkerboard debug | 09bf7e
+// agent: composer-2.5 | 2026-08-12 | probe debug color from probe id texture | fb8b05
+// agent: composer-2.5 | 2026-08-12 | probes-lod from probe id texture | 5c276e

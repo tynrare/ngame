@@ -1,6 +1,7 @@
 // agent: composer-2.5 | 2026-08-09 | pass under debug.render | d0d7e2
 // agent: composer-2.5 | 2026-08-10 | cli debug probes grid atlas | bc502d
 // agent: composer-2.5 | 2026-08-11 | CLI culling debug pass | 7e1962
+// agent: composer-2.5 | 2026-08-12 | cli probes-lod debug pass | a668a1
 /* Loaded by bus.js — registers set.debug.render.pass */
 if (typeof ng_cli === "undefined") {
   throw new Error("cli/debug.js requires bus.js ng_cli");
@@ -24,6 +25,7 @@ ng_cli.set.debug.render.pass = {
     "irradiance",
     "uvw",
     "probes",
+    "probes-lod",
     "grid",
     "atlas",
     "culling",
@@ -46,3 +48,4 @@ ng_cli.set.debug.render.pass = {
 // agent: composer-2.5 | 2026-08-09 | pass under debug.render | d0d7e2
 // agent: composer-2.5 | 2026-08-10 | cli debug probes grid atlas | bc502d
 // agent: composer-2.5 | 2026-08-11 | CLI culling debug pass | 7e1962
+// agent: composer-2.5 | 2026-08-12 | cli probes-lod debug pass | a668a1

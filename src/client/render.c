@@ -76,6 +76,8 @@ typedef enum NgRenderDebugPass {
   // agent: composer-2.5 | 2026-08-10 | debug probes grid atlas wire | 49402d
   NG_RENDER_PASS_UVW,
   NG_RENDER_PASS_PROBES,
+  // agent: composer-2.5 | 2026-08-12 | add probes-lod debug pass | b65b50
+  NG_RENDER_PASS_PROBES_LOD,
   NG_RENDER_PASS_GRID,
   NG_RENDER_PASS_ATLAS,
   NG_RENDER_PASS_CULLING,
@@ -308,6 +310,9 @@ static const char *mod_render_pass_name(NgRenderDebugPass pass) {
     return "uvw";
   case NG_RENDER_PASS_PROBES:
     return "probes";
+  // agent: composer-2.5 | 2026-08-12 | add probes-lod debug pass | b65b50
+  case NG_RENDER_PASS_PROBES_LOD:
+    return "probes-lod";
   case NG_RENDER_PASS_GRID:
     return "grid";
   case NG_RENDER_PASS_ATLAS:
@@ -355,6 +360,11 @@ static bool mod_render_pass_from_name(const char *name, NgRenderDebugPass *out) 
   }
   if (strcmp(name, "probes") == 0) {
     *out = NG_RENDER_PASS_PROBES;
+    return true;
+  }
+  // agent: composer-2.5 | 2026-08-12 | add probes-lod debug pass | b65b50
+  if (strcmp(name, "probes-lod") == 0) {
+    *out = NG_RENDER_PASS_PROBES_LOD;
     return true;
   }
   if (strcmp(name, "grid") == 0) {
@@ -1826,7 +1836,7 @@ static void mod_render_rc_ws_view(ModRenderCtx *ctx) {
   EndShaderMode();
 }
 
-/** WS debug: 0=leaf lod, 1=world frac, 2=grid, 3=culling vis mask. */
+/** WS debug: 0=probe id, 1=world frac, 2=grid, 3=culling, 4=probes-lod. */
 static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
   // agent: composer-2.5 | 2026-08-11 | fix cull debug tex unit bind | a5a0fc
   // agent: composer-2.5 | 2026-08-11 | wipe look-at cube cull path | bf3c1d
@@ -2775,6 +2785,10 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
         } else if (ctx->debug_pass == NG_RENDER_PASS_PROBES && rc_ready) {
           ClearBackground(BLACK);
           mod_render_rc_ws_debug(ctx, 0);
+        // agent: composer-2.5 | 2026-08-12 | add probes-lod debug pass | b65b50
+        } else if (ctx->debug_pass == NG_RENDER_PASS_PROBES_LOD && rc_ready) {
+          ClearBackground(BLACK);
+          mod_render_rc_ws_debug(ctx, 4);
         } else if (ctx->debug_pass == NG_RENDER_PASS_GRID && rc_ready) {
           ClearBackground(BLACK);
           mod_render_rc_ws_debug(ctx, 2);
@@ -3195,3 +3209,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-11 | disable cull GPU TraceLog | 413ecd
 // agent: composer-2.5 | 2026-08-11 | wire surface tick after cull | 3a9cde
 // agent: composer-2.5 | 2026-08-12 | deferred prim probe id passes | f9cfb4
+// agent: composer-2.5 | 2026-08-12 | add probes-lod debug pass | b65b50
