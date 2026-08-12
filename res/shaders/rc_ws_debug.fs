@@ -14,6 +14,7 @@
 // agent: composer-2.5 | 2026-08-11 | crisp probe tile checker debug | 592ced
 // agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
 // agent: composer-2.5 | 2026-08-11 | unlimit lod walk debug shader | 582e49
+// agent: composer-2.5 | 2026-08-12 | debug consume prim probe ids | 224b28
 /* WS RC debug: 0=leaf tiles, 1=world frac, 2=grid, 3=culling vis mask. */
 in vec2 fragTexCoord;
 
@@ -24,6 +25,8 @@ uniform sampler2D tex_hash;
 uniform sampler2D tex_bvh;
 uniform sampler2D tex_prim;
 uniform sampler2D tex_prim_vis;
+uniform sampler2D tex_prim_id;
+uniform sampler2D tex_probe_id;
 uniform vec3 ng_ws_origin;
 uniform vec3 ng_ws_size;
 uniform vec3 ng_eye;
@@ -211,7 +214,7 @@ void main() {
   }
 
   if (mode == 3) {
-    int prim = find_prim_at(world);
+    int prim = int(round(texture(tex_prim_id, uv).r)) - 1;
     if (prim < 0) {
       /* Magenta: depth ok but not on an analytic prim. */
       finalColor = vec4(0.85, 0.1, 0.75, 1.0);
@@ -227,20 +230,15 @@ void main() {
     return;
   }
 
-  int lod = find_covering_lod(world);
-  ivec3 ic = ivec3(0);
-  float slot = -1.0;
-  if (lod >= 0) {
-    float cell = max(ng_world_cell, 0.001) * exp2(float(lod));
-    ic = ivec3(floor(world / cell));
-    slot = lookup_slot(lod, ic);
-  }
+  vec4 pid = texture(tex_probe_id, uv);
+  int lod = int(round(pid.g));
+  float slot = pid.r - 1.0;
   // agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
   vec3 base = lod < 0 ? vec3(0.35) : LOD_COL[clamp(lod, 0, 7)];
   if (slot < 0.0) {
     base = vec3(0.35);
   } else {
-    float parity = mod(float(ic.x + ic.y + ic.z), 2.0);
+    float parity = step(0.5, pid.b);
     base = mix(base, base * 0.7, parity);
   }
   finalColor = vec4(base, 1.0);
@@ -261,3 +259,4 @@ void main() {
 // agent: composer-2.5 | 2026-08-11 | crisp probe tile checker debug | 592ced
 // agent: composer-2.5 | 2026-08-11 | restore probes LOD parity debug | f6e37a
 // agent: composer-2.5 | 2026-08-11 | unlimit lod walk debug shader | 582e49
+// agent: composer-2.5 | 2026-08-12 | debug consume prim probe ids | 224b28

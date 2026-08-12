@@ -13,6 +13,7 @@
 // agent: composer-2.5 | 2026-08-09 | fix present FBO nesting | c075d5
 // agent: composer-2.5 | 2026-08-09 | wire WS RC quality path | d68d00
 // agent: composer-2.5 | 2026-08-09 | uniform WS quality cost scale | 45673f
+// agent: composer-2.5 | 2026-08-12 | deferred prim probe id passes | f9cfb4
 // agent: composer-2.5 | 2026-08-09 | Phase2 GPU FBO RC path | 5642b8
 // agent: composer-2.5 | 2026-08-09 | WS then SS pipeline wire | ed5dfb
 // agent: composer-2.5 | 2026-08-09 | stamp seed prop butter order | b9a6eb
@@ -201,6 +202,8 @@ typedef struct ModRenderCtx {
   RenderTexture2D rt_normal;
   RenderTexture2D rt_glow;
   RenderTexture2D rt_depth;
+  RenderTexture2D rt_prim_id;
+  RenderTexture2D rt_probe_id;
   bool gbuf_ready;
   int gbuf_w;
   int gbuf_h;
@@ -248,6 +251,7 @@ typedef struct ModRenderCtx {
   NgRcPassShader rc_ws_view;
   // agent: composer-2.5 | 2026-08-10 | debug probes grid atlas wire | 49402d
   NgRcPassShader rc_ws_debug;
+  NgRcPassShader rc_ws_id;
   NgRcPassShader rc_ws_vox_stamp;
   // agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
   NgRcPassShader rc_ws_prio;
@@ -718,6 +722,8 @@ static void mod_render_unload_gbuf(ModRenderCtx *ctx) {
     UnloadRenderTexture(ctx->rt_normal);
     UnloadRenderTexture(ctx->rt_glow);
     UnloadRenderTexture(ctx->rt_depth);
+    UnloadRenderTexture(ctx->rt_prim_id);
+    UnloadRenderTexture(ctx->rt_probe_id);
     ctx->gbuf_ready = false;
     ctx->gbuf_w = 0;
     ctx->gbuf_h = 0;
@@ -809,6 +815,10 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
   if (ctx->rc_ws_debug.ready) {
     ng_shader_unload(&ctx->rc_ws_debug.sh);
     ctx->rc_ws_debug.ready = false;
+  }
+  if (ctx->rc_ws_id.ready) {
+    ng_shader_unload(&ctx->rc_ws_id.sh);
+    ctx->rc_ws_id.ready = false;
   }
   // agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
   if (ctx->rc_ws_prio.ready) {
@@ -1028,6 +1038,10 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-10 | debug probes grid atlas wire | 49402d
   if (!ctx->rc_ws_debug.ready &&
       !mod_render_load_rc_pass(&ctx->rc_ws_debug, NG_RES_ROOT "shaders/rc_ws_debug.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_id.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_id, NG_RES_ROOT "shaders/rc_ws_id.fs")) {
     return false;
   }
   // agent: composer-2.5 | 2026-08-11 | B64 wire GPU prio passes | f7b538
@@ -1925,6 +1939,12 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
         SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_prim_vis.texture);
       }
     }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim_id");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_prim_id.texture);
+      }
+    }
     /* Same carrier path as compose — FragCoord UV aligns with gbuf RTs. */
     mod_render_fs_draw(ctx->rt_depth.texture, pw, ph);
   } else {
@@ -1957,9 +1977,84 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
         SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
       }
     }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_probe_id");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_probe_id.texture);
+      }
+    }
     DrawRectangle(0, 0, pw, ph, WHITE);
   }
   EndShaderMode();
+}
+
+/** Build screen-space ID RTs from depth: prim_id and probe_id. */
+static void mod_render_rc_ws_id_tick(ModRenderCtx *ctx) {
+  // agent: composer-2.5 | 2026-08-12 | deferred prim probe id passes | 5f5d17
+  if (!ctx->rc_ws_id.ready || !ctx->gbuf_ready || !ctx->ws_cpu.prim_tex_ready ||
+      !ctx->ws_cpu.sparse_tex_ready) {
+    return;
+  }
+  NgRcPassShader *pass = &ctx->rc_ws_id;
+  const float world_cell = NG_RC_WS_CELL;
+  const float hash_size = (float)(ctx->ws_cpu.hash_size > 0 ? ctx->ws_cpu.hash_size : 64);
+  const float prim_count = (float)(ctx->ws_cpu.prim_count > 0 ? ctx->ws_cpu.prim_count : 0);
+  int iw = 0;
+  int ih = 0;
+  mod_render_internal_size(ctx, &iw, &ih);
+  const float res[2] = {(float)iw, (float)ih};
+  for (int mode = 0; mode < 2; mode++) {
+    RenderTexture2D *dest = (mode == 0) ? &ctx->rt_prim_id : &ctx->rt_probe_id;
+    BeginTextureMode(*dest);
+    ClearBackground(BLACK);
+    BeginShaderMode(pass->sh.handle);
+    ng_shader_set_common(&pass->sh, (float)GetTime());
+    if (pass->sh.loc_resolution >= 0) {
+      SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
+    }
+    if (pass->loc_tex_depth >= 0) {
+      SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_prim);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_hash");
+      if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_hash);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_hash_size");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &hash_size, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_prim_count");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &prim_count, SHADER_UNIFORM_FLOAT);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "ng_id_mode");
+      if (loc >= 0) {
+        SetShaderValue(pass->sh.handle, loc, &mode, SHADER_UNIFORM_INT);
+      }
+    }
+    mod_render_fs_draw(ctx->rt_depth.texture, dest->texture.width, dest->texture.height);
+    EndShaderMode();
+    EndTextureMode();
+  }
 }
 
 /** Shared look-at scroll with hysteresis; near nested in far (lockstep). */
@@ -2395,9 +2490,13 @@ static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
   ctx->rt_albedo = LoadRenderTexture(w, h);
   ctx->rt_normal = LoadRenderTexture(w, h);
   ctx->rt_glow = LoadRenderTexture(w, h);
+  ctx->rt_prim_id = mod_render_load_rt_rgba32f(w, h);
+  ctx->rt_probe_id = mod_render_load_rt_rgba32f(w, h);
   /* Float depth: world XYZ without RGBA8 UVW clamp (culling debug association). */
   ctx->rt_depth = mod_render_load_rt_rgba32f(w, h);
-  if (ctx->rt_depth.id == 0 || ctx->rt_depth.texture.id == 0) {
+  if (ctx->rt_depth.id == 0 || ctx->rt_depth.texture.id == 0 || ctx->rt_prim_id.id == 0 ||
+      ctx->rt_prim_id.texture.id == 0 || ctx->rt_probe_id.id == 0 ||
+      ctx->rt_probe_id.texture.id == 0) {
     return false;
   }
   ctx->gbuf_w = w;
@@ -2637,10 +2736,13 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_normal, 1);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_glow, 2);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_depth, 3);
+      mod_render_fill_gbuf_graph(ctx, &ctx->rt_prim_id, 4);
+      mod_render_fill_gbuf_graph(ctx, &ctx->rt_probe_id, 5);
 
       bool rc_ready = false;
       if (want_rc && mod_render_ensure_rc(ctx)) {
         mod_render_rc_gpu_tick(ctx);
+        mod_render_rc_ws_id_tick(ctx);
         rc_ready = ctx->rc_rt_ready && ctx->ws_rt_ready && ctx->rc_compose.ready &&
                    ctx->ws_cpu.prim_tex_ready && ctx->ws_cpu.bvh_tex_ready && ctx->ws_cull_ready;
       }
@@ -3092,3 +3194,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-11 | vox dirty scene hash only | ec6769
 // agent: composer-2.5 | 2026-08-11 | disable cull GPU TraceLog | 413ecd
 // agent: composer-2.5 | 2026-08-11 | wire surface tick after cull | 3a9cde
+// agent: composer-2.5 | 2026-08-12 | deferred prim probe id passes | f9cfb4
