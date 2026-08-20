@@ -33,7 +33,7 @@ const float HIT_EPS = 0.02;
 const float HALF_PAD = 1.12;
 const float SELF_T_MIN = 0.1;
 const int DIR_MAX = 48;
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 const float GRID_EMPTY = 255.0;
 
 vec3 dir_from_index(int i, int n) {

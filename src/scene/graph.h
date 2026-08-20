@@ -11,8 +11,8 @@
 struct duk_hthread;
 
 #define NG_SCENE_DESC_MAX 32
-// agent: composer-2.5 | 2026-08-01 | inst max 512 refuse reuse | 8a078a
-#define NG_SCENE_INST_MAX 512
+// agent: composer-2.5 | 2026-08-13 | inst max 2048 scale cull | a1c3e7
+#define NG_SCENE_INST_MAX 2048
 
 /* Net entity id bands (input-sim). Start/join use low ids [1, SIM_BASE). */
 // agent: composer-2.5 | 2026-08-01 | entity id band helpers | 21c51e

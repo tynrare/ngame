@@ -18,7 +18,7 @@ uniform int ng_probe_any;
 
 out vec4 finalColor;
 
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 const int LOD_STRIDE = 1000;
 const int WORK_MAX = 2048;
 

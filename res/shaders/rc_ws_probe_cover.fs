@@ -18,7 +18,7 @@ uniform float ng_cover_lod;
 
 out vec4 finalColor;
 
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 const int SLOT_MAX = 512;
 const int LOD_SOFT = 24;
 

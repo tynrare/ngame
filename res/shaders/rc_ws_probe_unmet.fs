@@ -1,5 +1,6 @@
 // agent: grok-4.6 | 2026-08-12 | probe unmet 1x1 flag | f671d1
-/* 1×1: r=1 if any cover_lod surface cell in vis-union is not octant-occupied. */
+// agent: composer-2.5 | 2026-08-13 | GPU split gate lod max | 876029
+/* 1×1: r=unmet g=lod_max/LOD_SOFT b=allow_split (cover ok or coarse band). */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_slots;
@@ -14,7 +15,7 @@ uniform float ng_lod_soft_max;
 
 out vec4 finalColor;
 
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 const int SLOT_MAX = 512;
 const int LOD_SOFT = 24;
 
@@ -123,14 +124,41 @@ bool octant_occupied(int scap, int lod, ivec3 ic) {
   return false;
 }
 
+int slot_lod_max(int scap) {
+  int lmax = -1;
+  for (int i = 0; i < SLOT_MAX; i++) {
+    if (i >= scap) {
+      break;
+    }
+    vec4 s = texelFetch(tex_slots, ivec2(i, 0), 0);
+    if (s.a < 0.5) {
+      continue;
+    }
+    int lod = int(round(s.a)) - 1;
+    if (lod > lmax) {
+      lmax = lod;
+    }
+  }
+  return lmax;
+}
+
+float split_allow(float unmet, int lmax, int cover_lod) {
+  if (unmet < 0.5) {
+    return 1.0;
+  }
+  return (lmax >= cover_lod && lmax > 0) ? 1.0 : 0.0;
+}
+
 void main() {
   int scap = int(clamp(ng_slot_cap, 1.0, float(SLOT_MAX)));
+  int cover_lod = int(clamp(ng_cover_lod, 0.0, float(LOD_SOFT)));
+  int lmax = slot_lod_max(scap);
   int lod_max = int(clamp(ng_lod_soft_max, 0.0, float(LOD_SOFT)));
   int lod = int(clamp(ng_cover_lod, 0.0, float(lod_max)));
   vec4 u0 = texelFetch(tex_union, ivec2(0, 0), 0);
   vec4 u1 = texelFetch(tex_union, ivec2(1, 0), 0);
   if (u0.a < 0.5) {
-    finalColor = vec4(0.0);
+    finalColor = vec4(0.0, float(lmax) / float(LOD_SOFT), split_allow(0.0, lmax, cover_lod), 1.0);
     return;
   }
   vec3 umin = u0.rgb;
@@ -162,10 +190,11 @@ void main() {
       continue;
     }
     if (cell_hits_vis_surface(lod, ic)) {
-      finalColor = vec4(1.0, 0.0, 0.0, 1.0);
+      finalColor = vec4(1.0, float(lmax) / float(LOD_SOFT), split_allow(1.0, lmax, cover_lod), 1.0);
       return;
     }
   }
-  finalColor = vec4(0.0);
+  finalColor = vec4(0.0, float(lmax) / float(LOD_SOFT), split_allow(0.0, lmax, cover_lod), 1.0);
 }
+// agent: composer-2.5 | 2026-08-13 | GPU split gate lod max | 876029
 // agent: grok-4.6 | 2026-08-12 | probe unmet 1x1 flag | f671d1

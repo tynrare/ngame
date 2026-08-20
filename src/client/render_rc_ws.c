@@ -2,20 +2,20 @@
  * World-space RC geometry + quality. North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (GPU cull, VS draw cull, GPU probes, gbuf)
- * Downstream: res/shaders/rc_ws_cull.fs, rc_ws_inst_vis.fs, rc_ws_probe*.fs, rc_gbuf.vs
+ * Related: src/client/render.c (CPU cull, prim_vis upload, GPU probes, gbuf)
+ * Downstream: res/shaders/rc_ws_probe*.fs, rc_gbuf.vs, rc_ws_debug.fs
  * Debug: set debug.render.pass culling|probes|probes-lod|…
  *
  * rc-ws flow (GPU incremental residency):
  * 1) ensure → tex_prim + tex_bvh + probe RTs (slots/meta/hash/union)
  * 2) scene dirty → prims + inst_i + CPU BVH → upload; GPU clear probe RTs (cold)
- * 3) GPU frustum cull → tex_vis_curr; expand → tex_inst_vis
+ * 3) CPU BVH frustum cull → inst bitset + UploadTexture tex_prim_vis
  * 4) probes (GPU only): vis-union → release → cover → unmet → relax → cover → split → steal
  *    (collapse only if unmet at budget) → steal excess → stats → meta/hash
  * CPU oracle: ng_rc_ws_probe_lazy_tick + tools/rc_ws_probe_smoke (tests/rc_ws)
  * Persist keys; cover-first; no view-move shuffle.
- * 5) gbuf draw: VS samples tex_inst_vis (material-map bind; no CPU filter)
- * 6) swap vis prev←curr; compose/debug sample hash + depth
+ * 5) gbuf draw: CPU batch filter from cull_vis_bits
+ * 6) swap vis prev←curr; compose/debug sample tex_prim_vis
  *
  * Branches / invariants:
  * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
@@ -45,6 +45,7 @@
 // agent: composer-2.5 | 2026-08-11 | enforce surface budget half pool | de62a7
 // agent: composer-2.5 | 2026-08-12 | rebuild_prims store inst_i | 267192
 // agent: composer-2.5 | 2026-08-12 | GPU probe tick API | af2c49
+// agent: composer-2.5 | 2026-08-13 | BVH scale cull 2048 | c4e91a
 #include "render_rc_ws.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
@@ -85,6 +86,12 @@ void ng_rc_ws_init(NgRcWsCtx *ws) {
   ws->steps = 5;
   ws->bvh_root = -1;
   ws->bvh_count = 0;
+  ws->bvh_max_depth = 0;
+  ws->cull_valid = false;
+  ws->cull_vis_n = 0;
+  for (int i = 0; i < NG_RC_WS_INST_MAX; i++) {
+    ws->inst_prim[i] = -1;
+  }
   // agent: composer-2.5 | 2026-08-11 | B66 always-cover collapse tick | c46cdb
   ws->forward[2] = 1.0f;
   ws->tan_half_fov = 0.414f;
@@ -107,12 +114,20 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
     UnloadTexture(ws->tex_bvh);
     ws->bvh_tex_ready = false;
   }
+  if (ws->inst_prim_tex_ready) {
+    UnloadTexture(ws->tex_inst_prim);
+    ws->inst_prim_tex_ready = false;
+  }
   free(ws->prim_rgba);
   ws->prim_rgba = NULL;
   free(ws->grid_rgba);
   ws->grid_rgba = NULL;
   free(ws->bvh_rgba);
   ws->bvh_rgba = NULL;
+  free(ws->inst_prim_rgba);
+  ws->inst_prim_rgba = NULL;
+  free(ws->prim_vis_rgba);
+  ws->prim_vis_rgba = NULL;
   if (ws->sparse_tex_ready) {
     UnloadTexture(ws->tex_meta);
     UnloadTexture(ws->tex_hash);
@@ -130,14 +145,15 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
   ws->prio_rgba = NULL;
   ws->prim_count = 0;
   ws->slot_count = 0;
+  ws->cull_valid = false;
   ws->ready = false;
 }
 
 /** Allocate prim + grid + bvh GPU/CPU scratch. */
 static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
-  // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
+  // agent: composer-2.5 | 2026-08-13 | BVH scale cull 2048 | c4e91a
   if (ws->ready && ws->prim_tex_ready && ws->prim_rgba && ws->grid_tex_ready && ws->grid_rgba &&
-      ws->bvh_tex_ready && ws->bvh_rgba) {
+      ws->bvh_tex_ready && ws->bvh_rgba && ws->inst_prim_tex_ready && ws->inst_prim_rgba) {
     return true;
   }
   if (!ws->prim_rgba) {
@@ -149,7 +165,14 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
   if (!ws->bvh_rgba) {
     ws->bvh_rgba = (float *)calloc((size_t)NG_RC_WS_BVH_FLOATS, sizeof(float));
   }
-  if (!ws->prim_rgba || !ws->grid_rgba || !ws->bvh_rgba) {
+  if (!ws->inst_prim_rgba) {
+    ws->inst_prim_rgba = (float *)calloc((size_t)NG_RC_WS_INST_PRIM_FLOATS, sizeof(float));
+  }
+  if (!ws->prim_vis_rgba) {
+    ws->prim_vis_rgba = (unsigned char *)calloc((size_t)NG_RC_WS_PRIM_VIS_BYTES, 1);
+  }
+  if (!ws->prim_rgba || !ws->grid_rgba || !ws->bvh_rgba || !ws->inst_prim_rgba ||
+      !ws->prim_vis_rgba) {
     ng_rc_ws_shutdown(ws);
     return false;
   }
@@ -207,6 +230,24 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
     SetTextureFilter(ws->tex_bvh, TEXTURE_FILTER_POINT);
     SetTextureWrap(ws->tex_bvh, TEXTURE_WRAP_CLAMP);
     ws->bvh_tex_ready = true;
+  }
+  if (!ws->inst_prim_tex_ready) {
+    Image iimg = {0};
+    iimg.data = ws->inst_prim_rgba;
+    iimg.width = 1;
+    iimg.height = NG_RC_WS_INST_MAX;
+    iimg.mipmaps = 1;
+    iimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+    ws->tex_inst_prim = LoadTextureFromImage(iimg);
+    iimg.data = NULL;
+    UnloadImage(iimg);
+    if (ws->tex_inst_prim.id == 0) {
+      ng_rc_ws_shutdown(ws);
+      return false;
+    }
+    SetTextureFilter(ws->tex_inst_prim, TEXTURE_FILTER_POINT);
+    SetTextureWrap(ws->tex_inst_prim, TEXTURE_WRAP_CLAMP);
+    ws->inst_prim_tex_ready = true;
   }
   ws->ready = true;
   return true;
@@ -485,7 +526,11 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     return;
   }
   ws->prim_count = 0;
+  ws->cull_valid = false;
   memset(ws->prim_rgba, 0, (size_t)NG_RC_WS_PRIM_FLOATS * sizeof(float));
+  for (int i = 0; i < NG_RC_WS_INST_MAX; i++) {
+    ws->inst_prim[i] = -1;
+  }
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n && ws->prim_count < NG_RC_WS_PRIM_MAX; i++) {
     NgRcWsPrim p;
@@ -502,7 +547,9 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
 #endif
     const int row = ws->prim_count;
     p.inst_i = i;
+    p.leaf_node = -1;
     ws->prims[row] = p;
+    ws->inst_prim[i] = (int16_t)row;
     float *rowf = ws->prim_rgba + row * NG_RC_WS_PRIM_COLS * 4;
     rowf[0] = p.center[0];
     rowf[1] = p.center[1];
@@ -527,23 +574,31 @@ void ng_rc_ws_rebuild_prims(NgRcWsCtx *ws) {
     rowf[20] = p.lit[0];
     rowf[21] = p.lit[1];
     rowf[22] = p.lit[2];
-    /* a = inst_i+1 for GPU prim→inst vis expand */
-    // agent: composer-2.5 | 2026-08-12 | probe incremental helpers | a22078
     rowf[23] = (float)(i + 1);
+    rowf[24] = 0.0f;
+    rowf[25] = 0.0f;
+    rowf[26] = 0.0f;
+    rowf[27] = 1.0f;
     ws->prim_count++;
   }
   UpdateTexture(ws->tex_prim, ws->prim_rgba);
   ng_rc_ws_bvh_rebuild(ws);
+  for (int pi = 0; pi < ws->prim_count; pi++) {
+    float *rowf = ws->prim_rgba + pi * NG_RC_WS_PRIM_COLS * 4;
+    rowf[24] = (float)(ws->prims[pi].leaf_node + 1);
+  }
+  UpdateTexture(ws->tex_prim, ws->prim_rgba);
   ng_rc_ws_upload_bvh(ws);
+  ng_rc_ws_upload_inst_prim(ws);
 #if NG_RC_WS_GI_OFFLINE
-  TraceLog(LOG_INFO, "rc-ws prims rebuild count=%d bvh=%d (camera frustum cull, no clip filter)",
-           ws->prim_count, ws->bvh_count);
+  TraceLog(LOG_INFO, "rc-ws prims rebuild count=%d bvh=%d depth=%d",
+           ws->prim_count, ws->bvh_count, ws->bvh_max_depth);
 #endif
 }
 
-/** Pack CPU BVH nodes into tex_bvh (cols: bmin+left, bmax+right, prim). */
+/** Pack CPU BVH nodes into tex_bvh (cols: bmin+left, bmax+right, prim+parent, depth). */
 void ng_rc_ws_upload_bvh(NgRcWsCtx *ws) {
-  // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
+  // agent: composer-2.5 | 2026-08-13 | BVH parent depth upload | b7a2c0
   if (!ws || !ws->bvh_tex_ready || !ws->bvh_rgba) {
     return;
   }
@@ -561,11 +616,32 @@ void ng_rc_ws_upload_bvh(NgRcWsCtx *ws) {
     row[6] = nd->bmax[2];
     row[7] = (float)nd->right;
     row[8] = (float)nd->prim;
-    row[9] = 0.0f;
+    row[9] = (float)nd->parent;
     row[10] = 0.0f;
     row[11] = 1.0f;
+    row[12] = (float)nd->depth;
+    row[13] = 0.0f;
+    row[14] = 0.0f;
+    row[15] = 1.0f;
   }
   UpdateTexture(ws->tex_bvh, ws->bvh_rgba);
+}
+
+/** Upload inst→prim map (cold only). */
+void ng_rc_ws_upload_inst_prim(NgRcWsCtx *ws) {
+  // agent: composer-2.5 | 2026-08-13 | inst prim map cold upload | d3f8e1
+  if (!ws || !ws->inst_prim_tex_ready || !ws->inst_prim_rgba) {
+    return;
+  }
+  memset(ws->inst_prim_rgba, 0, (size_t)NG_RC_WS_INST_PRIM_FLOATS * sizeof(float));
+  const int n = mod_scene_graph_inst_count();
+  const int cap = n < NG_RC_WS_INST_MAX ? n : NG_RC_WS_INST_MAX;
+  for (int i = 0; i < cap; i++) {
+    const int pi = (int)ws->inst_prim[i];
+    ws->inst_prim_rgba[i * 4] = pi >= 0 ? (float)(pi + 1) : 0.0f;
+    ws->inst_prim_rgba[i * 4 + 3] = 1.0f;
+  }
+  UpdateTexture(ws->tex_inst_prim, ws->inst_prim_rgba);
 }
 
 /** World AABB for analytic prim (bound sphere padded). */
@@ -592,8 +668,8 @@ static void ng_rc_ws_aabb_merge(float omin[3], float omax[3], const float amin[3
 }
 
 /** Centroid-split BVH; returns node index or -1. */
-static int ng_rc_ws_bvh_build_range(NgRcWsCtx *ws, int *idx, int n) {
-  // agent: composer-2.5 | 2026-08-11 | B6 BVH cache scene dirty | e0cf18
+static int ng_rc_ws_bvh_build_range(NgRcWsCtx *ws, int *idx, int n, int parent, int depth) {
+  // agent: composer-2.5 | 2026-08-13 | BVH parent depth links | e8d4f2
   if (n <= 0 || ws->bvh_count >= NG_RC_WS_BVH_MAX) {
     return -1;
   }
@@ -602,10 +678,16 @@ static int ng_rc_ws_bvh_build_range(NgRcWsCtx *ws, int *idx, int n) {
   nd->left = -1;
   nd->right = -1;
   nd->prim = -1;
+  nd->parent = parent;
+  nd->depth = depth;
+  if (depth > ws->bvh_max_depth) {
+    ws->bvh_max_depth = depth;
+  }
   if (n == 1) {
     const int pi = idx[0];
     nd->prim = pi;
     ng_rc_ws_prim_aabb(&ws->prims[pi], nd->bmin, nd->bmax);
+    ws->prims[pi].leaf_node = node;
     return node;
   }
   float cmin[3] = {1e30f, 1e30f, 1e30f};
@@ -652,25 +734,29 @@ static int ng_rc_ws_bvh_build_range(NgRcWsCtx *ws, int *idx, int n) {
   const int mid = n / 2;
   if (mid <= 0 || mid >= n) {
     nd->prim = idx[0];
+    ws->prims[idx[0]].leaf_node = node;
+    ng_rc_ws_prim_aabb(&ws->prims[idx[0]], nd->bmin, nd->bmax);
     return node;
   }
-  nd->left = ng_rc_ws_bvh_build_range(ws, idx, mid);
-  nd->right = ng_rc_ws_bvh_build_range(ws, idx + mid, n - mid);
+  nd->left = ng_rc_ws_bvh_build_range(ws, idx, mid, node, depth + 1);
+  nd->right = ng_rc_ws_bvh_build_range(ws, idx + mid, n - mid, node, depth + 1);
   return node;
 }
 
 static void ng_rc_ws_bvh_rebuild(NgRcWsCtx *ws) {
-  // agent: composer-2.5 | 2026-08-11 | B6 BVH cache scene dirty | e0cf18
+  // agent: composer-2.5 | 2026-08-13 | BVH parent depth rebuild | a1b3c5
   ws->bvh_count = 0;
   ws->bvh_root = -1;
+  ws->bvh_max_depth = 0;
   if (!ws || ws->prim_count <= 0) {
     return;
   }
   int idx[NG_RC_WS_PRIM_MAX];
   for (int i = 0; i < ws->prim_count; i++) {
     idx[i] = i;
+    ws->prims[i].leaf_node = -1;
   }
-  ws->bvh_root = ng_rc_ws_bvh_build_range(ws, idx, ws->prim_count);
+  ws->bvh_root = ng_rc_ws_bvh_build_range(ws, idx, ws->prim_count, -1, 0);
 }
 
 void ng_rc_ws_rebuild_grid(NgRcWsCtx *ws) {
@@ -2706,7 +2792,112 @@ void ng_rc_ws_probe_lazy_tick(NgRcWsCtx *ws, const int *vis_prims, int vis_n, ui
 
   ws->slot_count = ng_rc_ws_slot_used_count(ws);
 }
-// agent: composer-2.5 | 2026-08-11 | B66 always-cover collapse tick | c46cdb
+
+/** True if AABB fully outside any frustum plane. */
+static bool ng_rc_ws_aabb_outside_frustum(const float bmin[3], const float bmax[3],
+                                          const Vector4 planes[6]) {
+  // agent: composer-2.5 | 2026-08-13 | CPU BVH traverse prim vis | 7fc2f1
+  for (int i = 0; i < 6; i++) {
+    const Vector4 p = planes[i];
+    const float px = p.x > 0.0f ? bmax[0] : bmin[0];
+    const float py = p.y > 0.0f ? bmax[1] : bmin[1];
+    const float pz = p.z > 0.0f ? bmax[2] : bmin[2];
+    if (p.x * px + p.y * py + p.z * pz + p.w < -NG_RC_WS_AABB_PAD) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** CPU BVH stack traverse; sets inst bitset + cull_prim_vis. */
+int ng_rc_ws_cull_traverse(NgRcWsCtx *ws, const Vector4 planes[6], int *vis_inst, int vis_cap) {
+  // agent: composer-2.5 | 2026-08-13 | CPU BVH traverse prim vis | 7fc2f1
+  ws->cull_valid = false;
+  ws->cull_vis_n = 0;
+  memset(ws->cull_vis_bits, 0, sizeof(ws->cull_vis_bits));
+  memset(ws->cull_prim_vis, 0, sizeof(ws->cull_prim_vis));
+  if (!ws || ws->bvh_root < 0 || ws->prim_count <= 0) {
+    return 0;
+  }
+  int stack[NG_RC_WS_CULL_STACK];
+  int sp = 0;
+  stack[sp++] = ws->bvh_root;
+  int vis_n = 0;
+  while (sp > 0) {
+    const int node_i = stack[--sp];
+    if (node_i < 0 || node_i >= ws->bvh_count) {
+      continue;
+    }
+    const NgRcWsBvhNode *nd = &ws->bvh[node_i];
+    float bmin[3] = {nd->bmin[0], nd->bmin[1], nd->bmin[2]};
+    float bmax[3] = {nd->bmax[0], nd->bmax[1], nd->bmax[2]};
+    if (ng_rc_ws_aabb_outside_frustum(bmin, bmax, planes)) {
+      continue;
+    }
+    if (nd->prim >= 0) {
+      const int pi = nd->prim;
+      if (pi >= 0 && pi < NG_RC_WS_PRIM_MAX) {
+        ws->cull_prim_vis[pi] = 1;
+      }
+      const int inst = ws->prims[pi].inst_i;
+      if (inst >= 0 && inst < NG_RC_WS_INST_MAX) {
+        ws->cull_vis_bits[inst >> 5] |= (1u << (inst & 31));
+        if (vis_inst && vis_n < vis_cap) {
+          vis_inst[vis_n++] = inst;
+        }
+      }
+      continue;
+    }
+    if (nd->right >= 0 && sp < NG_RC_WS_CULL_STACK) {
+      stack[sp++] = nd->right;
+    }
+    if (nd->left >= 0 && sp < NG_RC_WS_CULL_STACK) {
+      stack[sp++] = nd->left;
+    }
+  }
+  ws->cull_vis_n = vis_n;
+  ws->cull_valid = true;
+  return vis_n;
+}
+
+/** Pack CPU prim vis → tex_prim_vis (R=255 visible). */
+void ng_rc_ws_upload_prim_vis(NgRcWsCtx *ws, Texture2D tex) {
+  // agent: composer-2.5 | 2026-08-13 | CPU BVH traverse prim vis | 7fc2f1
+  if (!ws || !ws->prim_vis_rgba || tex.id == 0) {
+    return;
+  }
+  memset(ws->prim_vis_rgba, 0, (size_t)NG_RC_WS_PRIM_VIS_BYTES);
+  const int pc = ws->prim_count < NG_RC_WS_PRIM_MAX ? ws->prim_count : NG_RC_WS_PRIM_MAX;
+  const int row_bytes = NG_RC_WS_PRIM_MAX * 4;
+  for (int pi = 0; pi < pc; pi++) {
+    if (!ws->cull_prim_vis[pi]) {
+      continue;
+    }
+    for (int row = 0; row < 2; row++) {
+      unsigned char *px = ws->prim_vis_rgba + row * row_bytes + pi * 4;
+      px[0] = 255;
+      px[1] = (unsigned char)((pi + 1) & 255);
+      px[3] = 255;
+    }
+  }
+  UpdateTexture(tex, ws->prim_vis_rgba);
+}
+
+/** True if inst passed last CPU cull traverse. */
+bool ng_rc_ws_inst_visible(const NgRcWsCtx *ws, int inst_i) {
+  if (!ws || !ws->cull_valid) {
+    return true;
+  }
+  if (inst_i < 0 || inst_i >= NG_RC_WS_INST_MAX) {
+    return false;
+  }
+  if (ws->inst_prim[inst_i] < 0) {
+    return true;
+  }
+  return (ws->cull_vis_bits[inst_i >> 5] >> (inst_i & 31)) & 1u;
+}
+// agent: composer-2.5 | 2026-08-13 | CPU BVH traverse prim vis | 7fc2f1
+// agent: composer-2.5 | 2026-08-13 | BVH scale cull 2048 | c4e91a
 // agent: composer-2.5 | 2026-08-11 | B66 want-have balanced depth score | 4f6d2d
 // agent: composer-2.5 | 2026-08-11 | GI offline BVH cull foundation | 69e867
 // agent: composer-2.5 | 2026-08-11 | cull prims ignore clip volume | 22f8df

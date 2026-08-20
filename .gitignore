@@ -1,4 +1,5 @@
 /build/
+.cache/
 /build-web/
 /compile_commands.json
 *.o

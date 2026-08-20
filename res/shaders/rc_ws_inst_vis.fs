@@ -1,18 +1,16 @@
 // agent: composer-2.5 | 2026-08-12 | inst expand cull shader | 0cbb9f
-/* Expand prim frustum vis → per-graph-inst vis.
- * One fragment = one inst index. Default visible; prim-backed insts copy prim_vis.
- * tex_prim col5.a = inst_i+1 (packed at rebuild). */
+// agent: composer-2.5 | 2026-08-13 | rename packed GLSL keyword | 36d46b
+// agent: composer-2.5 | 2026-08-13 | O1 inst prim vis map | c7d4e3
+/* Expand prim frustum vis → per-graph-inst vis (O(1) via tex_inst_prim). */
 in vec2 fragTexCoord;
 
-uniform sampler2D tex_prim;
+uniform sampler2D tex_inst_prim;
 uniform sampler2D tex_prim_vis;
-uniform float ng_prim_count;
 uniform float ng_inst_count;
 
 out vec4 finalColor;
 
-const int PRIM_MAX = 64;
-const int INST_MAX = 512;
+const int INST_MAX = 2048;
 
 float prim_vis_at(int prim) {
   float a = texelFetch(tex_prim_vis, ivec2(prim, 0), 0).r;
@@ -27,24 +25,13 @@ void main() {
     finalColor = vec4(0.0);
     return;
   }
-  int nprim = int(clamp(ng_prim_count, 0.0, float(PRIM_MAX)));
-  bool matched = false;
-  float vis = 0.0;
-  for (int p = 0; p < PRIM_MAX; p++) {
-    if (p >= nprim) {
-      break;
-    }
-    int ii = int(round(texelFetch(tex_prim, ivec2(5, p), 0).a)) - 1;
-    if (ii != x) {
-      continue;
-    }
-    matched = true;
-    vis = max(vis, prim_vis_at(p));
-  }
-  if (!matched) {
-    finalColor = vec4(1.0); /* non-prim inst: always draw */
+  float prim_r = texelFetch(tex_inst_prim, ivec2(0, x), 0).r;
+  int prim = int(round(prim_r)) - 1;
+  if (prim < 0) {
+    finalColor = vec4(1.0);
     return;
   }
-  finalColor = vec4(vis, float(x + 1), 0.0, 1.0);
+  finalColor = vec4(prim_vis_at(prim), float(x + 1), 0.0, 1.0);
 }
-// agent: composer-2.5 | 2026-08-12 | inst expand cull shader | 0cbb9f
+// agent: composer-2.5 | 2026-08-13 | rename packed GLSL keyword | 36d46b
+// agent: composer-2.5 | 2026-08-13 | O1 inst prim vis map | c7d4e3

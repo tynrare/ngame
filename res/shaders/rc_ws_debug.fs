@@ -47,7 +47,7 @@ out vec4 finalColor;
 
 const int LOD_STRIDE = 1000;
 const int LOD_WALK = 25; /* matches NG_RC_WS_LOD_SOFT_MAX+1 */
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 const float HIT_EPS = 0.12;
 const float GRID_EMPTY = 255.0;
 const vec3 LOD_COL[8] = vec3[](vec3(0.2, 0.5, 1.0), vec3(0.2, 0.85, 0.9), vec3(0.3, 0.9, 0.3),

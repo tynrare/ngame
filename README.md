@@ -1,4 +1,5 @@
 # ngame
+# [mgame](https://github.com/tynrare/mgame)
 
 Headless server + raylib client. Three launch modes on native; embedded in-process on web.
 

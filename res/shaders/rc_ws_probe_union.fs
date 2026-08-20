@@ -8,7 +8,7 @@ uniform float ng_prim_count;
 
 out vec4 finalColor;
 
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 
 vec4 prim_col(int row, int col) {
   return texelFetch(tex_prim, ivec2(col, row), 0);

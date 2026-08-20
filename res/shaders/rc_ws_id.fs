@@ -14,7 +14,7 @@ uniform vec2 ng_resolution;
 
 out vec4 finalColor;
 
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 const int LOD_STRIDE = 1000;
 const int LOD_WALK = 25;
 const float HIT_EPS = 0.12;

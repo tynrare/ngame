@@ -14,7 +14,7 @@ uniform float ng_shell_lod_max;
 
 out vec4 finalColor;
 
-const int PRIM_MAX = 64;
+const int PRIM_MAX = 2048;
 const int SLOT_MAX = 512;
 
 vec3 quat_inv_rotate(vec4 q, vec3 v) {
