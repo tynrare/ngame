@@ -266,7 +266,8 @@ typedef struct ModRenderCtx {
   NgRcPassShader rc_ws_chunk_resolve;
   RenderTexture2D rt_chunk_casc[NG_RC_CASCADES_MAX];
   RenderTexture2D rt_chunk_merge;
-  RenderTexture2D rt_page_irr; /* PAGE_CAP*8 × 64 RGB cache */
+  RenderTexture2D rt_chunk_merge_c1; /* 24×64 C1 T-merge ping */
+  RenderTexture2D rt_page_irr; /* PAGE_CAP*8 × 256 SH bands */
   bool chunk_gi_ready;
   uint32_t chunk_gi_scene_hash;
   // agent: composer-2.5 | 2026-08-10 | debug probes grid atlas wire | 49402d
@@ -828,6 +829,7 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
       UnloadRenderTexture(ctx->rt_chunk_casc[i]);
     }
     UnloadRenderTexture(ctx->rt_chunk_merge);
+    UnloadRenderTexture(ctx->rt_chunk_merge_c1);
     UnloadRenderTexture(ctx->rt_page_irr);
     ctx->chunk_gi_ready = false;
   }
@@ -1473,10 +1475,11 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
         return false;
       }
     }
-    // agent: grok-4.6 | 2026-08-21 | merge ping matches c0 atlas | b8c8b2
+    // agent: grok-4.6 | 2026-08-21 | full merge C1 ping SH atlas | 57ccd6
     ctx->rt_chunk_merge = mod_render_load_rt_rgba32f(6, 512);
-    ctx->rt_page_irr = mod_render_load_rt_rgba32f(NG_RC_WS_PAGE_CAP * 8, 64);
-    if (ctx->rt_chunk_merge.id == 0 || ctx->rt_page_irr.id == 0) {
+    ctx->rt_chunk_merge_c1 = mod_render_load_rt_rgba32f(24, 64);
+    ctx->rt_page_irr = mod_render_load_rt_rgba32f(NG_RC_WS_PAGE_CAP * 8, 256);
+    if (ctx->rt_chunk_merge.id == 0 || ctx->rt_chunk_merge_c1.id == 0 || ctx->rt_page_irr.id == 0) {
       return false;
     }
     BeginTextureMode(ctx->rt_page_irr);
@@ -2575,8 +2578,8 @@ static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
 static const int k_chunk_dirs[NG_RC_CASCADES_MAX] = {6, 24, 24};
 static const int k_chunk_side[NG_RC_CASCADES_MAX] = {8, 4, 2};
 static const float k_chunk_cell[NG_RC_CASCADES_MAX] = {1.0f, 2.0f, 4.0f};
-static const float k_chunk_t0[NG_RC_CASCADES_MAX] = {0.05f, 1.0f, 3.0f};
-static const float k_chunk_t1[NG_RC_CASCADES_MAX] = {1.0f, 3.0f, 8.0f};
+static const float k_chunk_t0[NG_RC_CASCADES_MAX] = {0.05f, 1.0f, 4.0f};
+static const float k_chunk_t1[NG_RC_CASCADES_MAX] = {1.0f, 4.0f, 16.0f};
 
 static void mod_render_chunk_fill_casc(ModRenderCtx *ctx, int c, const float origin[3]) {
   // agent: grok-4.6 | 2026-08-21 | fill prim carrier no merge wipe | b8bc5a
@@ -2611,6 +2614,12 @@ static void mod_render_chunk_fill_casc(ModRenderCtx *ctx, int c, const float ori
                  SHADER_UNIFORM_FLOAT);
   SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_sky"), sky,
                  SHADER_UNIFORM_VEC3);
+  // agent: grok-4.6 | 2026-08-21 | full merge C1 ping SH atlas | 57ccd6
+  {
+    float sky_on = (c == NG_RC_CASCADES_MAX - 1) ? 1.0f : 0.0f;
+    SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_sky_on"), &sky_on,
+                   SHADER_UNIFORM_FLOAT);
+  }
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
     if (loc >= 0) {
@@ -2623,15 +2632,16 @@ static void mod_render_chunk_fill_casc(ModRenderCtx *ctx, int c, const float ori
   rlEnableColorBlend();
 }
 
-/** C0 T-merge into same-size ping; encode samples the ping. */
-static void mod_render_chunk_merge_c0(ModRenderCtx *ctx) {
-  // agent: grok-4.6 | 2026-08-21 | merge ping matches c0 atlas | b8c8b2
+/** T-merge near with far into dest (dest size must match near atlas). */
+static void mod_render_chunk_merge_to(ModRenderCtx *ctx, int c_near, Texture2D far_tex,
+                                     RenderTexture2D *dest) {
+  // agent: grok-4.6 | 2026-08-21 | full merge C1 ping SH atlas | 57ccd6
   NgRcPassShader *pass = &ctx->rc_ws_chunk_merge;
-  RenderTexture2D *dest = &ctx->rt_chunk_merge;
-  const int nd = k_chunk_dirs[0];
-  const int ndp = k_chunk_dirs[1];
-  const int nside = k_chunk_side[0];
-  const int nside_p = k_chunk_side[1];
+  RenderTexture2D *near_rt = &ctx->rt_chunk_casc[c_near];
+  const int nd = k_chunk_dirs[c_near];
+  const int ndp = k_chunk_dirs[c_near + 1];
+  const int nside = k_chunk_side[c_near];
+  const int nside_p = k_chunk_side[c_near + 1];
   rlDisableColorBlend();
   BeginTextureMode(*dest);
   ClearBackground(BLACK);
@@ -2648,13 +2658,13 @@ static void mod_render_chunk_merge_c0(ModRenderCtx *ctx) {
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_near");
     if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_chunk_casc[0].texture);
+      SetShaderValueTexture(pass->sh.handle, loc, near_rt->texture);
     }
   }
   {
     int loc = GetShaderLocation(pass->sh.handle, "tex_far");
     if (loc >= 0) {
-      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_chunk_casc[1].texture);
+      SetShaderValueTexture(pass->sh.handle, loc, far_tex);
     }
   }
   DrawRectangle(0, 0, dest->texture.width, dest->texture.height, WHITE);
@@ -2682,7 +2692,7 @@ static void mod_render_chunk_encode_page(ModRenderCtx *ctx, int page) {
       SetShaderValueTexture(pass->sh.handle, loc, atlas);
     }
   }
-  DrawRectangle(page * 8, 0, 8, 64, WHITE);
+  DrawRectangle(page * 8, 0, 8, 256, WHITE);
   EndShaderMode();
   EndTextureMode();
   rlEnableColorBlend();
@@ -2698,7 +2708,8 @@ static void mod_render_chunk_fill_page(ModRenderCtx *ctx, int page) {
     mod_render_chunk_fill_casc(ctx, c, bmin);
   }
   if (ctx->rc_ws_chunk_merge.ready) {
-    mod_render_chunk_merge_c0(ctx);
+    mod_render_chunk_merge_to(ctx, 1, ctx->rt_chunk_casc[2].texture, &ctx->rt_chunk_merge_c1);
+    mod_render_chunk_merge_to(ctx, 0, ctx->rt_chunk_merge_c1.texture, &ctx->rt_chunk_merge);
   }
   mod_render_chunk_encode_page(ctx, page);
 }
@@ -2752,6 +2763,9 @@ static void mod_render_chunk_gi_resolve(ModRenderCtx *ctx) {
                  SHADER_UNIFORM_FLOAT);
   if (pass->loc_tex_depth >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
+  }
+  if (pass->loc_tex_normal >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_normal, ctx->rt_normal.texture);
   }
   // agent: grok-4.6 | 2026-08-21 | bind hash cap two fills | 522970
   {
@@ -4100,7 +4114,12 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
         } else if (ctx->debug_pass == NG_RENDER_PASS_ATLAS && rc_ready) {
           ClearBackground(BLACK);
           if (ctx->chunk_gi_ready) {
-            mod_render_blit_rt(&ctx->rt_page_irr);
+            const Texture2D t = ctx->rt_page_irr.texture;
+            const float dw = (float)GetRenderWidth();
+            const float dh = (float)GetRenderHeight();
+            const Rectangle src = {0.0f, 0.0f, (float)t.width, -64.0f};
+            DrawTexturePro(t, src, (Rectangle){0.0f, 0.0f, dw, dh}, (Vector2){0.0f, 0.0f}, 0.0f,
+                           WHITE);
           }
         } else if (ctx->debug_pass == NG_RENDER_PASS_CULLING && rc_ready) {
           // agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
@@ -4645,3 +4664,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: grok-4.6 | 2026-08-21 | merge ping matches c0 atlas | b8c8b2
 // agent: grok-4.6 | 2026-08-21 | fill prim carrier no merge wipe | b8bc5a
 // agent: grok-4.6 | 2026-08-21 | bind hash cap two fills | 522970
+// agent: grok-4.6 | 2026-08-21 | full merge C1 ping SH atlas | 57ccd6

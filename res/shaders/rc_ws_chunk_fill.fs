@@ -1,4 +1,5 @@
 // agent: grok-4.6 | 2026-08-21 | fill loop 32 chunk overlap | 154831
+// agent: grok-4.6 | 2026-08-21 | fill sky last cascade only | d35194
 /* Atlas W=dirs H=cells(n^3). Probe at chunk cascade grid; SDF tex_prim. */
 in vec2 fragTexCoord;
 
@@ -12,6 +13,7 @@ uniform int ng_prim_count;
 uniform float ng_t0;
 uniform float ng_t1;
 uniform vec3 ng_sky;
+uniform float ng_sky_on;
 
 out vec4 finalColor;
 
@@ -159,6 +161,8 @@ void main() {
     }
     t += clamp(dist, dt_min, dt_max);
   }
-  finalColor = vec4(ng_sky * 0.08, 0.0);
+  vec3 sky = ng_sky_on > 0.5 ? ng_sky : vec3(0.0);
+  finalColor = vec4(sky, 0.0);
 }
 // agent: grok-4.6 | 2026-08-21 | fill loop 32 chunk overlap | 154831
+// agent: grok-4.6 | 2026-08-21 | fill sky last cascade only | d35194

@@ -50,7 +50,8 @@ global.describe("scene", "view", {
 See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (`render: "rc"`).
 
 <!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
-**Render (`render`):** omit / `"simple"` (default forward), `"gbuffer"` (debug G-buffer), `"rc"` (G-buffer + chunked world-grid Radiance Cascades; [north star](radiance-cascades-3d.md)).
+<!-- agent: grok-4.6 | 2026-08-21 | scenes RC emit sky compose | 22e772 -->
+**Render (`render`):** omit / `"simple"` (default forward), `"gbuffer"` (debug G-buffer), `"rc"` (G-buffer + chunked world-grid RC: emit+sky GI, optional direct; [north star](radiance-cascades-3d.md)).
 
 ## Body / shape (physics)
 
@@ -243,3 +244,4 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-09 | scenes Phase3 SS note | 29f238 -->
 <!-- agent: composer-2.5 | 2026-08-10 | scenes Phase4 WS volume note | 99a031 -->
 <!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
+<!-- agent: grok-4.6 | 2026-08-21 | scenes RC emit sky compose | 22e772 -->

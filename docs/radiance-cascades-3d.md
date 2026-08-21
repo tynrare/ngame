@@ -1,4 +1,5 @@
 <!-- agent: grok-4.6 | 2026-08-21 | north star chunked static RC | 32d3bc -->
+<!-- agent: grok-4.6 | 2026-08-21 | north star lights shadows | ed07d5 -->
 # Radiance Cascades (3D) — North Star
 
 Goal: **dynamic, deterministic GI** (WebGL2/GLES3). Quality = **cost only**.
@@ -24,11 +25,45 @@ stays CPU BVH → inst bitset.
 
 **GI:** per visible chunk, run **hierarchical interpolated RC**: fill
 intervals, **T-merge** with **trilinear** parent probe interpolation, then
-SH/resolve to gbuf.
+SH/resolve to gbuf. **Lights** = prim emit + sky on the last cascade.
+**Soft shadows** = interval opacity + merge (penumbra), not a shadow map.
 
 Gateway (to retarget): `src/client/render_rc_ws.c` (`Flow id: rc-ws`).
 
 Digest: [`docs/article_rc_gpu_probes.md`](article_rc_gpu_probes.md).
+
+## Sources (Sannikov)
+
+RC stores **radiance intervals** on a probe hierarchy so the field stays
+linearly interpolable (Nyquist / **penumbra**): near field needs **dense
+probes, few dirs**; far field needs **sparse probes, many dirs**. Merge
+builds long rays from short ones via interpolated parents.
+
+Emissive surfaces and environment are the RC light sources. Sky belongs on
+the **coarsest** cascade. Soft contact shadows **are** that field (hit α +
+`T = 1 - a_near`). A hard sun is optional **direct** in compose; it does
+not replace RC.
+
+Refs: [radiance.wiki](https://radiance.wiki/papers/sannikov-original)
+(Sannikov preprint), Osborne & Sannikov bilinear/parallax fix,
+[GM Shaders RC](https://mini.gmshaders.com/p/radiance-cascades).
+
+## Lights
+
+- **RC:** prim `emit` / glow on SDF hit; albedo bounce; **sky only on the
+  last cascade** (inner misses stay dark until merge).
+- **Direct (optional compose):** analytic sun/point × gbuf `N`, unshadowed
+  or a cheap map for hard contact. `kd * E_rc + kd * E_direct`.
+- Not a product light: hardcoded unshadowed dual keys in compose.
+
+## Shadows
+
+- **GI / penumbra:** fill opacity + **full** `C_n ← … ← C0` T-merge +
+  **world** parent taps (not an 8 m cube cap) + bilinear/parallax fix.
+- **Resolve:** world-cell 8-tap (neighbor chunks); irradiance **× gbuf N**
+  (L1 SH or cosine-weighted dirs). Average RGB is not self-shadowing.
+- **Hard contact:** only with a real direct term. RC does not use a
+  shadow map as GI.
 
 ## What ships / target
 
@@ -38,11 +73,15 @@ Digest: [`docs/article_rc_gpu_probes.md`](article_rc_gpu_probes.md).
 | World grid | Static; `CELL` = 1 m. Chunk = 8×8×8 cells = **8 m cube** |
 | Cell ID | Perfect hash from chunk-local UVW → atlas texel `h` |
 | Chunk cull | Chunk AABB vs camera frustum (+ prim overlap) |
-| Cascades | Classic RC: spacing ×2, interval ×2, dirs ×4 per level |
-| Merge | Hierarchical T-merge; interpolate parent (not nearest-only) |
+| Cascades | spacing ×2, interval ×2, **dirs ×4**; merge **every** level |
+| Parent | trilinear + bilinear/parallax fix; **world** parents |
+| Sky | last cascade only |
+| Encode | L1 SH (or dir cosine) per cell |
+| Resolve | world-cell 8-tap, neighbor pages, **N · E** |
 | Geometry | SDF prims ≤2048; BVH on scene dirty |
 | Draw cull | CPU BVH frustum → inst bitset + `tex_prim_vis` |
-| Compose | Direct + RC irradiance (GI on) |
+| Compose | `kd * E_rc` (+ optional analytic direct) |
+| Cost | dirty pages amortized; ∝ vis chunks × N³ × dirs |
 | Debug | chunks / probes / cascade atlas |
 
 ## Pipeline
@@ -54,11 +93,12 @@ cold: scene dirty → prims + BVH
 → 3) for each visible chunk:
       pack 8³ cells by UVW hash h
       fill cascade 0..C (SDF march per probe×dir)
+      sky → last cascade only
       merge C-1 ← C … ← 0 with trilinear parent sample + T
       encode SH / write chunk cache
 → 4) gbuf
-→ 5) resolve: trilinear sample nearest cascades at shading point
-→ compose
+→ 5) resolve: world-cell 8-tap (+ neighbor pages), N · E
+→ compose kd * E_rc [+ optional direct]
 ```
 
 ## Static grid → chunks
@@ -76,14 +116,16 @@ lattice. Probe identity is the chunk UVW hash; prim accel is optional later.
 
 ## Hierarchical interpolated RC
 
-Per visible chunk (and optionally coarser world cascades that span many chunks):
+Per visible chunk, plus **coarser world cascades that span many chunks**
+(chunk C2 is not infinity):
 
 1. **Fill** cascade `c`: probes on the grid with spacing `CELL * 2^c`;
    each probe traces `dirs(c)` cones on interval `[t0(c), t1(c)]`.
 2. **Merge** `c` with parent `c+1`: leftover transmittance `T = 1 - a_near`
-   multiplies **interpolated** parent radiance (8-tap 3D).
-3. **Resolve** at a surface: interpolate probes of the finest cascade that
-   covers the point; fall back to coarser if needed.
+   multiplies **interpolated** parent radiance (8-tap 3D; bilinear/parallax
+   fix). Parent probes are **world-addressed**.
+3. **Resolve** at a surface: world-cell trilinear (neighbor chunks); SH /
+   cosine with gbuf normal.
 
 Classic RC (Sannikov): hierarchy + interpolation. Screen-space cascade
 atlases are not the GI volume.
@@ -92,8 +134,12 @@ atlases are not the GI volume.
 
 Sparse surface octree, persistent slot pool, cover/split/steal/relax,
 clip always-cover, look-at GI cube, KD free cubes, GI-offline compose as
-the product path. Code still has leftovers; this doc is the replacement
-target, not a description of that code.
+the product path. Shadow maps as GI. Screen-space RC as the volume. Fake
+compose key lights. Per-pixel path tracing.
+
+Code still has leftovers; this doc is the replacement target, not a
+description of that code.
 
 <!-- agent: grok-4.6 | 2026-08-21 | north star chunked static RC | 32d3bc -->
+<!-- agent: grok-4.6 | 2026-08-21 | north star lights shadows | ed07d5 -->
 <!-- agent: grok-4.6 | 2026-08-21 | docs cell 1m chunk 8m | 061f06 -->
