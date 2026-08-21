@@ -216,6 +216,9 @@ typedef struct ModRenderCtx {
   int gbuf_h;
   NgShader gbuf_shader;
   bool gbuf_shader_ready;
+  // agent: grok-4.6 | 2026-08-21 | gbuf debug blit rgb shader | e51d4f
+  NgShader blit_rgb;
+  bool blit_rgb_ready;
   RenderTexture2D rt_cascade[NG_RC_CASCADES_MAX];
   RenderTexture2D rt_merge;
   RenderTexture2D rt_ss_irr;
@@ -256,6 +259,16 @@ typedef struct ModRenderCtx {
   NgRcPassShader rc_ws_sh_encode;
   NgRcPassShader rc_ws_resolve;
   NgRcPassShader rc_ws_view;
+  // agent: grok-4.6 | 2026-08-21 | chunk GI tick compose | 0d697a
+  NgRcPassShader rc_ws_chunk_fill;
+  NgRcPassShader rc_ws_chunk_merge;
+  NgRcPassShader rc_ws_chunk_encode;
+  NgRcPassShader rc_ws_chunk_resolve;
+  RenderTexture2D rt_chunk_casc[NG_RC_CASCADES_MAX];
+  RenderTexture2D rt_chunk_merge;
+  RenderTexture2D rt_page_irr; /* PAGE_CAP*8 × 64 RGB cache */
+  bool chunk_gi_ready;
+  uint32_t chunk_gi_scene_hash;
   // agent: composer-2.5 | 2026-08-10 | debug probes grid atlas wire | 49402d
   NgRcPassShader rc_ws_debug;
   NgRcPassShader rc_ws_id;
@@ -776,6 +789,10 @@ static void mod_render_unload_gbuf(ModRenderCtx *ctx) {
     ng_shader_unload(&ctx->gbuf_shader);
     ctx->gbuf_shader_ready = false;
   }
+  if (ctx->blit_rgb_ready) {
+    ng_shader_unload(&ctx->blit_rgb);
+    ctx->blit_rgb_ready = false;
+  }
 }
 
 static void mod_render_unload_rc(ModRenderCtx *ctx) {
@@ -805,6 +822,14 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
     ctx->ws_rt_ready = false;
     ctx->ws_probe_n = 0;
     ctx->ws_dirs = 0;
+  }
+  if (ctx->chunk_gi_ready) {
+    for (int i = 0; i < NG_RC_CASCADES_MAX; i++) {
+      UnloadRenderTexture(ctx->rt_chunk_casc[i]);
+    }
+    UnloadRenderTexture(ctx->rt_chunk_merge);
+    UnloadRenderTexture(ctx->rt_page_irr);
+    ctx->chunk_gi_ready = false;
   }
   if (ctx->vox_rt_ready) {
     UnloadRenderTexture(ctx->rt_vox);
@@ -846,6 +871,22 @@ static void mod_render_unload_rc(ModRenderCtx *ctx) {
   if (ctx->rc_ws_resolve.ready) {
     ng_shader_unload(&ctx->rc_ws_resolve.sh);
     ctx->rc_ws_resolve.ready = false;
+  }
+  if (ctx->rc_ws_chunk_fill.ready) {
+    ng_shader_unload(&ctx->rc_ws_chunk_fill.sh);
+    ctx->rc_ws_chunk_fill.ready = false;
+  }
+  if (ctx->rc_ws_chunk_merge.ready) {
+    ng_shader_unload(&ctx->rc_ws_chunk_merge.sh);
+    ctx->rc_ws_chunk_merge.ready = false;
+  }
+  if (ctx->rc_ws_chunk_encode.ready) {
+    ng_shader_unload(&ctx->rc_ws_chunk_encode.sh);
+    ctx->rc_ws_chunk_encode.ready = false;
+  }
+  if (ctx->rc_ws_chunk_resolve.ready) {
+    ng_shader_unload(&ctx->rc_ws_chunk_resolve.sh);
+    ctx->rc_ws_chunk_resolve.ready = false;
   }
   if (ctx->rc_ws_vox_stamp.ready) {
     ng_shader_unload(&ctx->rc_ws_vox_stamp.sh);
@@ -984,7 +1025,10 @@ static void mod_render_present_to_screen(ModRenderCtx *ctx) {
   const Rectangle src = {0.0f, 0.0f, (float)ctx->rt_present.texture.width,
                          -(float)ctx->rt_present.texture.height};
   const Rectangle dst = {0.0f, 0.0f, (float)GetScreenWidth(), (float)GetScreenHeight()};
+  // agent: grok-4.6 | 2026-08-21 | opaque blit gbuf debug | 48f37a
+  rlDisableColorBlend();
   DrawTexturePro(ctx->rt_present.texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+  rlEnableColorBlend();
 }
 
 static bool mod_render_load_rc_pass(NgRcPassShader *pass, const char *fs) {
@@ -1127,6 +1171,24 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
   }
   if (!ctx->rc_ws_resolve.ready &&
       !mod_render_load_rc_pass(&ctx->rc_ws_resolve, NG_RES_ROOT "shaders/rc_ws_resolve.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_chunk_fill.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_chunk_fill, NG_RES_ROOT "shaders/rc_ws_chunk_fill.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_chunk_merge.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_chunk_merge, NG_RES_ROOT "shaders/rc_ws_chunk_merge.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_chunk_encode.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_chunk_encode,
+                               NG_RES_ROOT "shaders/rc_ws_chunk_encode.fs")) {
+    return false;
+  }
+  if (!ctx->rc_ws_chunk_resolve.ready &&
+      !mod_render_load_rc_pass(&ctx->rc_ws_chunk_resolve,
+                               NG_RES_ROOT "shaders/rc_ws_chunk_resolve.fs")) {
     return false;
   }
   /* rc_ws_vox_stamp demoted with dense vox (6.2.4). */
@@ -1287,7 +1349,7 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
 
   const int ws_ok = ctx->ws_rt_ready && ctx->ws_probe_n == probe_n && ctx->ws_dirs == ws_dirs &&
                     ctx->ws_irr_w == w && ctx->ws_irr_h == h;
-  if (!need_rebuild && ws_ok) {
+  if (!need_rebuild && ws_ok && ctx->chunk_gi_ready) {
     return true;
   }
   if (need_rebuild && ctx->rc_rt_ready) {
@@ -1401,6 +1463,27 @@ static bool mod_render_ensure_rc(ModRenderCtx *ctx) {
     ctx->ws_ping = 0;
     ctx->ws_rt_ready = true;
     ctx->ws_vox_scene_hash = 0;
+  }
+  if (!ctx->chunk_gi_ready) {
+    static const int k_dirs[NG_RC_CASCADES_MAX] = {6, 24, 24};
+    static const int k_cells[NG_RC_CASCADES_MAX] = {512, 64, 8};
+    for (int c = 0; c < NG_RC_CASCADES_MAX; c++) {
+      ctx->rt_chunk_casc[c] = mod_render_load_rt_rgba32f(k_dirs[c], k_cells[c]);
+      if (ctx->rt_chunk_casc[c].id == 0) {
+        return false;
+      }
+    }
+    // agent: grok-4.6 | 2026-08-21 | merge ping matches c0 atlas | b8c8b2
+    ctx->rt_chunk_merge = mod_render_load_rt_rgba32f(6, 512);
+    ctx->rt_page_irr = mod_render_load_rt_rgba32f(NG_RC_WS_PAGE_CAP * 8, 64);
+    if (ctx->rt_chunk_merge.id == 0 || ctx->rt_page_irr.id == 0) {
+      return false;
+    }
+    BeginTextureMode(ctx->rt_page_irr);
+    ClearBackground(BLACK);
+    EndTextureMode();
+    ctx->chunk_gi_ready = true;
+    ctx->chunk_gi_scene_hash = 0;
   }
   return true;
 }
@@ -1591,11 +1674,7 @@ static void mod_render_rc_resolve(ModRenderCtx *ctx) {
 /** Compose Direct + gi*(ws·WS + ss·SS)*albedo + glow. */
 static void mod_render_rc_compose(ModRenderCtx *ctx) {
   NgRcPassShader *pass = &ctx->rc_compose;
-#if NG_RC_WS_GI_OFFLINE
-  const float gi = 0.0f; /* foundation: ambient + direct only */
-#else
   const float gi = ctx->gi_strength;
-#endif
   const float ws_w = ctx->ws_weight;
   const float ss_w = ctx->ss_weight;
   const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
@@ -2040,13 +2119,54 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
       SetShaderValue(pass->sh.handle, loc, &mode, SHADER_UNIFORM_INT);
     }
   }
+  // agent: grok-4.6 | 2026-08-21 | debug bind visible chunks | 82bbfc
+  {
+    const float ext = ng_rc_ws_chunk_extent();
+    int loc = GetShaderLocation(pass->sh.handle, "ng_chunk_extent");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &ext, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  {
+    const int n = ctx->ws_cpu.chunk_vis_n;
+    int locn = GetShaderLocation(pass->sh.handle, "ng_chunk_count");
+    if (locn >= 0) {
+      SetShaderValue(pass->sh.handle, locn, &n, SHADER_UNIFORM_INT);
+    }
+  }
+  // agent: grok-4.6 | 2026-08-21 | bind chunk vis texture debug | 8b501b
   /* Flush slot table; bind EVERY sampler2D (GLES unbound units poison fetches). */
   // agent: composer-2.5 | 2026-08-11 | culling debug bind all samplers | 6e7512
   rlDrawRenderBatchActive();
   if (pass->loc_tex_depth >= 0) {
     SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
   }
-  if (mode == 3) {
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_chunks");
+    if (loc >= 0 && ctx->ws_cpu.chunk_vis_tex_ready) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_chunk_vis);
+    } else if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_depth.texture);
+    }
+  }
+  // agent: grok-4.6 | 2026-08-21 | bind tex_pages probes debug | 9920e2
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_pages");
+    if (loc >= 0 && ctx->ws_cpu.pages_tex_ready) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_pages);
+    } else if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_depth.texture);
+    }
+  }
+  {
+    const float world_cell = NG_RC_WS_CELL;
+    int loc = GetShaderLocation(pass->sh.handle, "ng_world_cell");
+    if (loc >= 0) {
+      SetShaderValue(pass->sh.handle, loc, &world_cell, SHADER_UNIFORM_FLOAT);
+    }
+  }
+  // agent: grok-4.6 | 2026-08-21 | uvw grid fs_draw chunks[0] | 4a930b
+  if (mode == 0 || mode == 1 || mode == 2 || mode == 3 || mode == 4) {
     const float bvh_count = (float)(ctx->ws_cpu.bvh_count > 0 ? ctx->ws_cpu.bvh_count : 0);
     const float bvh_root = (float)ctx->ws_cpu.bvh_root;
     const float prim_count = (float)(ctx->ws_cpu.prim_count > 0 ? ctx->ws_cpu.prim_count : 0);
@@ -2113,6 +2233,14 @@ static void mod_render_rc_ws_debug(ModRenderCtx *ctx, int mode) {
       int loc = GetShaderLocation(pass->sh.handle, "tex_prim_id");
       if (loc >= 0) {
         SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_prim_id.texture);
+      }
+    }
+    {
+      int loc = GetShaderLocation(pass->sh.handle, "tex_chunks");
+      if (loc >= 0 && ctx->ws_cpu.chunk_vis_tex_ready) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_chunk_vis);
+      } else if (loc >= 0) {
+        SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_depth.texture);
       }
     }
     /* Same carrier path as compose — FragCoord UV aligns with gbuf RTs. */
@@ -2321,7 +2449,7 @@ static bool mod_render_rc_ws_vox_dirty(ModRenderCtx *ctx) {
 
 /** Inward frustum planes from camera basis (BeginMode3D look/fov). */
 static void mod_render_frustum_planes(const Camera3D *cam, float aspect, Vector4 out[6]) {
-  // agent: composer-2.5 | 2026-08-12 | camera-basis inward frustum planes | 8e0518
+  // agent: grok-4.6 | 2026-08-21 | restore camera-basis frustum planes | 75af91
   Vector3 eye = cam->position;
   Vector3 f = Vector3Normalize(Vector3Subtract(cam->target, cam->position));
   Vector3 r = Vector3Normalize(Vector3CrossProduct(f, cam->up));
@@ -2334,7 +2462,6 @@ static void mod_render_frustum_planes(const Camera3D *cam, float aspect, Vector4
   Vector3 nc = Vector3Add(eye, Vector3Scale(f, znear));
   Vector3 fc = Vector3Add(eye, Vector3Scale(f, zfar));
 
-  /* near / far — normals point inward. */
   out[4].x = f.x;
   out[4].y = f.y;
   out[4].z = f.z;
@@ -2344,7 +2471,6 @@ static void mod_render_frustum_planes(const Camera3D *cam, float aspect, Vector4
   out[5].z = -f.z;
   out[5].w = Vector3DotProduct(f, fc);
 
-  /* Side planes through eye; n = u × edge (inward). */
   {
     Vector3 left_dir = Vector3Normalize(Vector3Subtract(f, Vector3Scale(r, hh)));
     Vector3 n = Vector3Normalize(Vector3CrossProduct(u, left_dir));
@@ -2378,8 +2504,6 @@ static void mod_render_frustum_planes(const Camera3D *cam, float aspect, Vector4
     out[3].w = -Vector3DotProduct(n, eye);
   }
 
-  /* Orient each plane so look-at is inside (sides may need flip; near/far usually ok). */
-  // agent: composer-2.5 | 2026-08-12 | frustum per-plane target orient | 8a11d4
   {
     Vector3 t = cam->target;
     for (int i = 0; i < 6; i++) {
@@ -2415,11 +2539,13 @@ static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
   ctx->ws_frustum_valid = false;
   if (!ctx->ws_cull_ready || !ctx->ws_cpu.prim_tex_ready || !ctx->ws_cpu.bvh_tex_ready) {
     ctx->ws_cpu.cull_valid = false;
+    ctx->ws_cpu.chunk_vis_n = 0;
     return;
   }
   if (ctx->ws_cpu.prim_count <= 0) {
     ctx->ws_cpu.cull_valid = false;
     ctx->ws_cpu.cull_vis_n = 0;
+    ctx->ws_cpu.chunk_vis_n = 0;
     return;
   }
 
@@ -2441,7 +2567,209 @@ static void mod_render_rc_ws_cull(ModRenderCtx *ctx) {
   ctx->ws_frustum_valid = true;
 
   (void)ng_rc_ws_cull_traverse(&ctx->ws_cpu, planes, NULL, 0);
+  // agent: grok-4.6 | 2026-08-21 | chunk cull after BVH | dad173
+  ng_rc_ws_chunk_cull(&ctx->ws_cpu, planes);
   ng_rc_ws_upload_prim_vis(&ctx->ws_cpu, ctx->rt_prim_vis.texture);
+}
+
+static const int k_chunk_dirs[NG_RC_CASCADES_MAX] = {6, 24, 24};
+static const int k_chunk_side[NG_RC_CASCADES_MAX] = {8, 4, 2};
+static const float k_chunk_cell[NG_RC_CASCADES_MAX] = {1.0f, 2.0f, 4.0f};
+static const float k_chunk_t0[NG_RC_CASCADES_MAX] = {0.05f, 1.0f, 3.0f};
+static const float k_chunk_t1[NG_RC_CASCADES_MAX] = {1.0f, 3.0f, 8.0f};
+
+static void mod_render_chunk_fill_casc(ModRenderCtx *ctx, int c, const float origin[3]) {
+  // agent: grok-4.6 | 2026-08-21 | fill prim carrier no merge wipe | b8bc5a
+  NgRcPassShader *pass = &ctx->rc_ws_chunk_fill;
+  RenderTexture2D *dest = &ctx->rt_chunk_casc[c];
+  const int nd = k_chunk_dirs[c];
+  const int nside = k_chunk_side[c];
+  const float cell = k_chunk_cell[c];
+  const int steps = 24;
+  const int pc = ctx->ws_cpu.prim_count;
+  const float sky[3] = {NG_RC_SKY.x, NG_RC_SKY.y, NG_RC_SKY.z};
+  rlDisableColorBlend();
+  BeginTextureMode(*dest);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_chunk_origin"), origin,
+                 SHADER_UNIFORM_VEC3);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_cell"), &cell,
+                 SHADER_UNIFORM_FLOAT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_n_side"), &nside,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_dir_count"), &nd,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_max_steps"), &steps,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_prim_count"), &pc,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_t0"), &k_chunk_t0[c],
+                 SHADER_UNIFORM_FLOAT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_t1"), &k_chunk_t1[c],
+                 SHADER_UNIFORM_FLOAT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_sky"), sky,
+                 SHADER_UNIFORM_VEC3);
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_prim");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_prim);
+    }
+  }
+  mod_render_ws_fs_draw(ctx->ws_cpu.tex_prim, dest->texture.width, dest->texture.height);
+  EndShaderMode();
+  EndTextureMode();
+  rlEnableColorBlend();
+}
+
+/** C0 T-merge into same-size ping; encode samples the ping. */
+static void mod_render_chunk_merge_c0(ModRenderCtx *ctx) {
+  // agent: grok-4.6 | 2026-08-21 | merge ping matches c0 atlas | b8c8b2
+  NgRcPassShader *pass = &ctx->rc_ws_chunk_merge;
+  RenderTexture2D *dest = &ctx->rt_chunk_merge;
+  const int nd = k_chunk_dirs[0];
+  const int ndp = k_chunk_dirs[1];
+  const int nside = k_chunk_side[0];
+  const int nside_p = k_chunk_side[1];
+  rlDisableColorBlend();
+  BeginTextureMode(*dest);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_n_side"), &nside,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_n_side_p"), &nside_p,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_dir_count"), &nd,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_dir_count_p"), &ndp,
+                 SHADER_UNIFORM_INT);
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_near");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_chunk_casc[0].texture);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_far");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_chunk_casc[1].texture);
+    }
+  }
+  DrawRectangle(0, 0, dest->texture.width, dest->texture.height, WHITE);
+  EndShaderMode();
+  EndTextureMode();
+  rlEnableColorBlend();
+}
+
+static void mod_render_chunk_encode_page(ModRenderCtx *ctx, int page) {
+  NgRcPassShader *pass = &ctx->rc_ws_chunk_encode;
+  const int nd = k_chunk_dirs[0];
+  const Texture2D atlas =
+      ctx->rc_ws_chunk_merge.ready ? ctx->rt_chunk_merge.texture : ctx->rt_chunk_casc[0].texture;
+  rlDisableColorBlend();
+  BeginTextureMode(ctx->rt_page_irr);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_dir_count"), &nd,
+                 SHADER_UNIFORM_INT);
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_page"), &page,
+                 SHADER_UNIFORM_INT);
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_atlas");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, atlas);
+    }
+  }
+  DrawRectangle(page * 8, 0, 8, 64, WHITE);
+  EndShaderMode();
+  EndTextureMode();
+  rlEnableColorBlend();
+}
+
+static void mod_render_chunk_fill_page(ModRenderCtx *ctx, int page) {
+  const NgRcWsPage *p = &ctx->ws_cpu.pages[page];
+  float bmin[3];
+  float bmax[3];
+  ng_rc_ws_chunk_aabb(p->cx, p->cy, p->cz, bmin, bmax);
+  (void)bmax;
+  for (int c = NG_RC_CASCADES_MAX - 1; c >= 0; c--) {
+    mod_render_chunk_fill_casc(ctx, c, bmin);
+  }
+  if (ctx->rc_ws_chunk_merge.ready) {
+    mod_render_chunk_merge_c0(ctx);
+  }
+  mod_render_chunk_encode_page(ctx, page);
+}
+
+/** Fill dirty vis pages (cap per frame). */
+static void mod_render_chunk_gi_fill(ModRenderCtx *ctx) {
+  // agent: grok-4.6 | 2026-08-21 | chunk GI tick compose | 0d697a
+  if (!ctx->chunk_gi_ready || !ctx->rc_ws_chunk_fill.ready || !ctx->ws_cpu.prim_tex_ready) {
+    return;
+  }
+  const uint32_t h = ng_rc_ws_scene_hash();
+  if (h != ctx->chunk_gi_scene_hash) {
+    ng_rc_ws_pages_mark_dirty(&ctx->ws_cpu);
+    ctx->chunk_gi_scene_hash = h;
+  }
+  int nfill = 0;
+  for (int i = 0; i < NG_RC_WS_PAGE_CAP && nfill < NG_RC_WS_PAGE_FILL_MAX; i++) {
+    NgRcWsPage *p = &ctx->ws_cpu.pages[i];
+    if (!p->occupied || !p->dirty) {
+      continue;
+    }
+    if (p->last_use != ctx->ws_cpu.page_tick) {
+      continue;
+    }
+    mod_render_chunk_fill_page(ctx, i);
+    p->dirty = 0;
+    nfill++;
+  }
+}
+
+static void mod_render_chunk_gi_resolve(ModRenderCtx *ctx) {
+  if (!ctx->chunk_gi_ready || !ctx->rc_ws_chunk_resolve.ready || !ctx->gbuf_ready) {
+    return;
+  }
+  NgRcPassShader *pass = &ctx->rc_ws_chunk_resolve;
+  const int ping = ctx->ws_ping & 1;
+  int pw = 0;
+  int ph = 0;
+  mod_render_internal_size(ctx, &pw, &ph);
+  const float res[2] = {(float)pw, (float)ph};
+  const float ext = ng_rc_ws_chunk_extent();
+  rlDisableColorBlend();
+  BeginTextureMode(ctx->rt_ws[ping]);
+  ClearBackground(BLACK);
+  BeginShaderMode(pass->sh.handle);
+  ng_shader_set_common(&pass->sh, (float)GetTime());
+  if (pass->sh.loc_resolution >= 0) {
+    SetShaderValue(pass->sh.handle, pass->sh.loc_resolution, res, SHADER_UNIFORM_VEC2);
+  }
+  SetShaderValue(pass->sh.handle, GetShaderLocation(pass->sh.handle, "ng_chunk_extent"), &ext,
+                 SHADER_UNIFORM_FLOAT);
+  if (pass->loc_tex_depth >= 0) {
+    SetShaderValueTexture(pass->sh.handle, pass->loc_tex_depth, ctx->rt_depth.texture);
+  }
+  // agent: grok-4.6 | 2026-08-21 | bind hash cap two fills | 522970
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_page_hash");
+    if (loc >= 0 && ctx->ws_cpu.page_hash_tex_ready) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->ws_cpu.tex_page_hash);
+    }
+  }
+  {
+    int loc = GetShaderLocation(pass->sh.handle, "tex_atlas");
+    if (loc >= 0) {
+      SetShaderValueTexture(pass->sh.handle, loc, ctx->rt_page_irr.texture);
+    }
+  }
+  mod_render_fs_draw(ctx->rt_depth.texture, pw, ph);
+  EndShaderMode();
+  EndTextureMode();
+  rlEnableColorBlend();
 }
 
 /** GPU keep: work + prim + prim_vis → rt_probe_keep (coarse AABB / fine shell). */
@@ -3305,6 +3633,7 @@ static void mod_render_rc_gpu_tick(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-12 | VS cull double-buffer vis | aac081
   (void)ctx->ws_prio_gpu_ready;
   mod_render_rc_ws_cull(ctx);
+  mod_render_chunk_gi_fill(ctx);
   return;
 #else
   NgRcWsClip *far = &ctx->ws_clip[NG_RC_WS_CLIP_FAR];
@@ -3419,6 +3748,15 @@ static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
     }
     ctx->gbuf_shader_ready = true;
   }
+  if (!ctx->blit_rgb_ready) {
+    // agent: grok-4.6 | 2026-08-21 | gbuf debug blit rgb shader | e51d4f
+    ctx->blit_rgb =
+        ng_shader_load(NG_RES_ROOT "shaders/fullscreen.vs", NG_RES_ROOT "shaders/blit_rgb.fs");
+    if (ctx->blit_rgb.handle.id == 0) {
+      return false;
+    }
+    ctx->blit_rgb_ready = true;
+  }
   if (ctx->gbuf_ready && ctx->gbuf_w == w && ctx->gbuf_h == h) {
     return true;
   }
@@ -3482,7 +3820,12 @@ static void mod_render_collect_graph_batches(ModRenderCtx *ctx) {
   mod_scene_graph_expire_live_draw(GetTime());
   const int n = mod_scene_graph_inst_count();
   const NgRcWsCtx *ws = &ctx->ws_cpu;
-  const int skip_cull_filter = ctx->debug_pass == NG_RENDER_PASS_CULLING;
+  // agent: grok-4.6 | 2026-08-21 | grid debug skip cull filter | 590e0e
+  const int skip_cull_filter = ctx->debug_pass == NG_RENDER_PASS_CULLING ||
+                               ctx->debug_pass == NG_RENDER_PASS_GRID ||
+                               ctx->debug_pass == NG_RENDER_PASS_UVW ||
+                               ctx->debug_pass == NG_RENDER_PASS_PROBES ||
+                               ctx->debug_pass == NG_RENDER_PASS_PROBES_LOD;
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
     if (!inst || !inst->model[0]) {
@@ -3563,6 +3906,20 @@ static void mod_render_blit_rt(const RenderTexture2D *rt) {
   const Rectangle src = {0.0f, 0.0f, (float)rt->texture.width, -(float)rt->texture.height};
   const Rectangle dst = {0.0f, 0.0f, dw, dh};
   DrawTexturePro(rt->texture, src, dst, (Vector2){0.0f, 0.0f}, 0.0f, WHITE);
+}
+
+/** Blit gbuf RGB; shader drops packed metal/rough so A cannot fake-light. */
+static void mod_render_blit_rt_opaque(ModRenderCtx *ctx, const RenderTexture2D *rt) {
+  // agent: grok-4.6 | 2026-08-21 | gbuf debug blit rgb shader | e51d4f
+  if (ctx && ctx->blit_rgb_ready) {
+    BeginShaderMode(ctx->blit_rgb.handle);
+    mod_render_blit_rt(rt);
+    EndShaderMode();
+    return;
+  }
+  rlDisableColorBlend();
+  mod_render_blit_rt(rt);
+  rlEnableColorBlend();
 }
 
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
@@ -3692,15 +4049,6 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
         rc_ready = ctx->rc_rt_ready && ctx->ws_rt_ready && ctx->rc_compose.ready &&
                    ctx->ws_cpu.prim_tex_ready && ctx->ws_cpu.bvh_tex_ready && ctx->ws_cull_ready;
       }
-      if (rc_ready) {
-        mod_render_rc_ws_probe_tick(ctx);
-        if (ctx->ws_rt_ready) {
-          const int ping = ctx->ws_ping & 1;
-          BeginTextureMode(ctx->rt_ws[ping]);
-          ClearBackground(BLACK);
-          EndTextureMode();
-        }
-      }
       mod_render_collect_graph_batches(ctx);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_albedo, 0);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_normal, 1);
@@ -3711,16 +4059,17 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
       if (rc_ready) {
         mod_render_rc_ws_id_tick(ctx);
         mod_render_rc_ws_vis_swap(ctx);
+        mod_render_chunk_gi_resolve(ctx);
       }
 
       if (ctx->debug_pass != NG_RENDER_PASS_FINAL || want_rc) {
         BeginTextureMode(ctx->rt_present);
         if (ctx->debug_pass == NG_RENDER_PASS_ALBEDO) {
           ClearBackground(BLACK);
-          mod_render_blit_rt(&ctx->rt_albedo);
+          mod_render_blit_rt_opaque(ctx, &ctx->rt_albedo);
         } else if (ctx->debug_pass == NG_RENDER_PASS_NORMAL) {
           ClearBackground(BLACK);
-          mod_render_blit_rt(&ctx->rt_normal);
+          mod_render_blit_rt_opaque(ctx, &ctx->rt_normal);
         } else if (ctx->debug_pass == NG_RENDER_PASS_GLOW) {
           ClearBackground(BLACK);
           mod_render_blit_rt(&ctx->rt_glow);
@@ -3729,7 +4078,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
           mod_render_blit_rt(&ctx->rt_depth);
         } else if (ctx->debug_pass == NG_RENDER_PASS_IRRADIANCE && rc_ready) {
           ClearBackground(BLACK);
-          mod_render_rc_ws_view(ctx);
+          mod_render_blit_rt_opaque(ctx, &ctx->rt_ws[ctx->ws_ping & 1]);
         // agent: composer-2.5 | 2026-08-10 | debug probes grid atlas wire | 49402d
         } else if (ctx->debug_pass == NG_RENDER_PASS_UVW) {
           ClearBackground(BLACK);
@@ -3750,7 +4099,9 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
           mod_render_rc_ws_debug(ctx, 2);
         } else if (ctx->debug_pass == NG_RENDER_PASS_ATLAS && rc_ready) {
           ClearBackground(BLACK);
-          mod_render_blit_rt(&ctx->ws_clip[NG_RC_WS_CLIP_NEAR].casc[0]);
+          if (ctx->chunk_gi_ready) {
+            mod_render_blit_rt(&ctx->rt_page_irr);
+          }
         } else if (ctx->debug_pass == NG_RENDER_PASS_CULLING && rc_ready) {
           // agent: composer-2.5 | 2026-08-11 | BVH frustum cull foundation wire | 868ee4
           ClearBackground(BLACK);
@@ -4279,3 +4630,18 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: composer-2.5 | 2026-08-12 | GPU cover after relax pass | ad8ebb
 // agent: composer-2.5 | 2026-08-13 | CPU cull tick upload vis | 4d378d
 // agent: composer-2.5 | 2026-08-13 | gbuf no VS vis cull | c3f8a1
+// agent: grok-4.6 | 2026-08-21 | unhook sparse probe tick | 7ddeb3
+// agent: grok-4.6 | 2026-08-21 | chunk cull after BVH | dad173
+// agent: grok-4.6 | 2026-08-21 | debug bind visible chunks | 82bbfc
+// agent: grok-4.6 | 2026-08-21 | grid debug fs_draw Y flip | 5de069
+// agent: grok-4.6 | 2026-08-21 | uvw grid fs_draw chunks[0] | 4a930b
+// agent: grok-4.6 | 2026-08-21 | restore camera-basis frustum planes | 75af91
+// agent: grok-4.6 | 2026-08-21 | grid debug skip cull filter | 590e0e
+// agent: grok-4.6 | 2026-08-21 | bind chunk vis texture debug | 8b501b
+// agent: grok-4.6 | 2026-08-21 | opaque blit gbuf debug | 48f37a
+// agent: grok-4.6 | 2026-08-21 | gbuf debug blit rgb shader | e51d4f
+// agent: grok-4.6 | 2026-08-21 | bind tex_pages probes debug | 9920e2
+// agent: grok-4.6 | 2026-08-21 | chunk GI tick compose | 0d697a
+// agent: grok-4.6 | 2026-08-21 | merge ping matches c0 atlas | b8c8b2
+// agent: grok-4.6 | 2026-08-21 | fill prim carrier no merge wipe | b8bc5a
+// agent: grok-4.6 | 2026-08-21 | bind hash cap two fills | 522970

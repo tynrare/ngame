@@ -18,7 +18,10 @@
 // agent: composer-2.5 | 2026-08-12 | remove probe checkerboard debug | 09bf7e
 // agent: composer-2.5 | 2026-08-12 | probe debug color from probe id texture | fb8b05
 // agent: composer-2.5 | 2026-08-12 | probes-lod from probe id texture | 5c276e
-/* WS RC debug: 0=probe id, 1=world frac, 2=grid, 3=culling, 4=probes-lod. */
+// agent: grok-4.6 | 2026-08-21 | debug chunk AABB overlay | d95420
+// agent: grok-4.6 | 2026-08-21 | debug cell grid in vis chunks | b51df9
+// agent: grok-4.6 | 2026-08-21 | debug world UVW and fragTexCoord | 54422d
+/* WS RC debug: 0=probe id, 1=world frac, 2=vis-chunk cell grid, 3=culling, 4=probes-lod. */
 in vec2 fragTexCoord;
 
 uniform sampler2D tex_depth;
@@ -30,6 +33,8 @@ uniform sampler2D tex_prim;
 uniform sampler2D tex_prim_vis;
 uniform sampler2D tex_prim_id;
 uniform sampler2D tex_probe_id;
+uniform sampler2D tex_chunks;
+uniform sampler2D tex_pages;
 uniform vec3 ng_ws_origin;
 uniform vec3 ng_ws_size;
 uniform vec3 ng_eye;
@@ -42,6 +47,8 @@ uniform float ng_bvh_root;
 uniform float ng_prim_count;
 uniform int ng_debug_mode;
 uniform vec2 ng_resolution;
+uniform int ng_chunk_count;
+uniform float ng_chunk_extent;
 
 out vec4 finalColor;
 
@@ -205,9 +212,10 @@ vec3 id_hash_color(float idf) {
 }
 
 void main() {
-  /* Match rc_compose.fs — FragCoord UV; depth RGB = world XYZ (float RT). */
-  // agent: composer-2.5 | 2026-08-11 | debug cam-relative world | 455296
-  vec2 uv = gl_FragCoord.xy / max(ng_resolution, vec2(1.0));
+  /* Carrier fs_draw Y-flips; sample with fragTexCoord (not FragCoord).
+   * tex_depth RGB = world XYZ (float gbuf). */
+  // agent: grok-4.6 | 2026-08-21 | debug world UVW and fragTexCoord | 54422d
+  vec2 uv = fragTexCoord;
   vec4 depth_pack = texture(tex_depth, uv);
   if (depth_pack.a < 0.5) {
     finalColor = vec4(0.0);
@@ -217,27 +225,77 @@ void main() {
   vec3 world = depth_pack.rgb;
   int mode = ng_debug_mode;
 
+  if (mode == 0) {
+    // agent: grok-4.6 | 2026-08-21 | probes debug world cell ids | f74f52
+    float e = max(ng_chunk_extent, 0.001);
+    float cell = max(ng_world_cell, 0.001);
+    vec3 cc = floor(world / e);
+    vec3 local = floor(world / cell) - cc * 8.0;
+    local = clamp(local, vec3(0.0), vec3(7.0));
+    float h = local.x + 8.0 * (local.y + 8.0 * local.z);
+    vec3 col = id_hash_color(cc.x * 19.0 + cc.y * 47.0 + cc.z * 101.0 + h * 13.0 + 1.0);
+    int page = -1;
+    for (int i = 0; i < 64; i++) {
+      vec4 q = texelFetch(tex_pages, ivec2(0, i), 0);
+      if (q.a < 0.5) {
+        continue;
+      }
+      if (all(lessThan(abs(q.xyz - cc), vec3(0.5)))) {
+        page = i;
+        break;
+      }
+    }
+    if (page < 0) {
+      col *= 0.35;
+    } else {
+      vec3 uvw = fract(world / cell);
+      float edge = min(min(uvw.x, uvw.y), uvw.z);
+      if (edge < 0.08) {
+        col = mix(col, vec3(float(page) / 63.0), 0.35);
+      }
+    }
+    finalColor = vec4(col, 1.0);
+    return;
+  }
+
   if (mode == 1) {
-    /* Cam-relative frac — no look-at clip cube. */
-    finalColor = vec4(fract((world - ng_eye) * 0.05 + 0.5), 1.0);
+    /* World-stable cell UVW (not cam-relative). */
+    float cell = max(ng_world_cell, 0.001);
+    finalColor = vec4(fract(world / cell), 1.0);
     return;
   }
 
   if (mode == 2) {
-    float gr = max(ng_grid_res, 1.0);
-    vec3 uvw = (world - ng_ws_origin) / max(ng_ws_size, vec3(0.001));
-    ivec3 ic = ivec3(clamp(floor(uvw * gr), vec3(0.0), vec3(gr - 1.0)));
-    int gx = int(gr);
-    vec4 slots = texelFetch(tex_grid, ivec2(ic.x, ic.y + ic.z * gx), 0) * 255.0;
-    float filled = 0.0;
-    filled += step(slots.r, 254.5);
-    filled += step(slots.g, 254.5);
-    filled += step(slots.b, 254.5);
-    filled += step(slots.a, 254.5);
-    float t = filled / 4.0;
-    vec3 heat = mix(vec3(0.05, 0.08, 0.12), vec3(0.15, 0.85, 0.35), clamp(t, 0.0, 1.0));
-    heat = mix(heat, vec3(0.95, 0.55, 0.1), step(3.5, filled));
-    finalColor = vec4(heat, 1.0);
+    // agent: grok-4.6 | 2026-08-21 | grid always draw world cells | 74a821
+    float e = max(ng_chunk_extent, 0.001);
+    float cell = max(ng_world_cell, 0.001);
+    vec3 cc = floor(world / e);
+    vec3 col = id_hash_color(cc.x * 19.0 + cc.y * 47.0 + cc.z * 101.0 + 1.0);
+    int hit = 0;
+    int nch = clamp(ng_chunk_count, 0, 64);
+    for (int i = 0; i < 64; i++) {
+      if (i >= nch) {
+        break;
+      }
+      vec4 q = texelFetch(tex_chunks, ivec2(0, i), 0);
+      if (q.a < 0.5) {
+        continue;
+      }
+      if (all(lessThan(abs(q.xyz - cc), vec3(0.5)))) {
+        hit = 1;
+        break;
+      }
+    }
+    if (hit == 0) {
+      col *= 0.45;
+    }
+    vec3 uvw = fract(world / cell);
+    float edge = min(min(min(uvw.x, uvw.y), uvw.z), min(min(1.0 - uvw.x, 1.0 - uvw.y), 1.0 - uvw.z));
+    col = mix(vec3(1.0), col, smoothstep(0.0, 0.08, edge));
+    vec3 cu = fract(world / e);
+    float ch_e = min(min(min(cu.x, cu.y), cu.z), min(min(1.0 - cu.x, 1.0 - cu.y), 1.0 - cu.z));
+    col = mix(vec3(1.0, 0.85, 0.2), col, smoothstep(0.0, 0.03, ch_e));
+    finalColor = vec4(col, 1.0);
     return;
   }
 
@@ -261,15 +319,7 @@ void main() {
   vec4 pid = texture(tex_probe_id, uv);
   float slot = pid.r - 1.0;
   if (mode == 4) {
-    int lod = int(round(pid.g));
-    vec3 base = lod < 0 ? vec3(0.35) : LOD_COL[clamp(lod, 0, 7)];
-    if (slot < 0.0) {
-      base = vec3(0.35);
-    } else {
-      float parity = step(0.5, pid.b);
-      base = mix(base, base * 0.7, parity);
-    }
-    finalColor = vec4(base, 1.0);
+    finalColor = vec4(0.28, 0.28, 0.3, 1.0);
     return;
   }
   if (slot < 0.0) {
@@ -278,6 +328,11 @@ void main() {
   }
   finalColor = vec4(id_hash_color(slot + 1.0), 1.0);
 }
+// agent: grok-4.6 | 2026-08-21 | debug world UVW and fragTexCoord | 54422d
+// agent: grok-4.6 | 2026-08-21 | probes debug world cell ids | f74f52
+// agent: grok-4.6 | 2026-08-21 | grid always draw world cells | 74a821
+// agent: grok-4.6 | 2026-08-21 | debug cell grid in vis chunks | b51df9
+// agent: grok-4.6 | 2026-08-21 | debug chunk AABB overlay | d95420
 // agent: composer-2.5 | 2026-08-10 | B4 debug lod colors | 3cf97d
 // agent: composer-2.5 | 2026-08-10 | rename packed GLSL keyword | dff788
 // agent: composer-2.5 | 2026-08-11 | B5 debug covering leaf no rings | 2a65b1

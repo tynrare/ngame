@@ -202,8 +202,9 @@ if(NOT EMSCRIPTEN)
   target_compile_definitions(ng_phys_save_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_phys_save_smoke PRIVATE m box3d)
 
+  # agent: grok-4.6 | 2026-08-21 | link rc_ws on latency bins | 0838e0
   add_executable(ng_cmd_loopback_latency EXCLUDE_FROM_ALL tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
-                 src/client/input.c src/net/mod_net.c src/client/render.c
+                 src/client/input.c src/net/mod_net.c src/client/render.c src/client/render_rc_ws.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
                  src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
@@ -240,3 +241,4 @@ endif()
 # agent: composer-2.5 | 2026-08-10 | cmake link render_rc_ws | 0c74f6
 # agent: composer-2.5 | 2026-08-10 | raise raylib shader tex units | 4a43ea
 # agent: grok-4.6 | 2026-08-12 | cmake rc_ws probe smoke | 133e31
+# agent: grok-4.6 | 2026-08-21 | link rc_ws on latency bins | 0838e0

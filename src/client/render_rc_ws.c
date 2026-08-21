@@ -2,26 +2,25 @@
  * World-space RC geometry + quality. North star: docs/radiance-cascades-3d.md
  *
  * Gateway role: pattern | Scope id: render-rc | Flow id: rc-ws
- * Related: src/client/render.c (CPU cull, prim_vis upload, GPU probes, gbuf)
- * Downstream: res/shaders/rc_ws_probe*.fs, rc_gbuf.vs, rc_ws_debug.fs
- * Debug: set debug.render.pass culling|probes|probes-lod|…
+ * Related: src/client/render.c (CPU cull, chunk cull, gbuf)
+ * Downstream: res/shaders/rc_ws_debug.fs, rc_gbuf.vs
+ * Debug: set debug.render.pass culling|grid|…
  *
- * rc-ws flow (GPU incremental residency):
- * 1) ensure → tex_prim + tex_bvh + probe RTs (slots/meta/hash/union)
- * 2) scene dirty → prims + inst_i + CPU BVH → upload; GPU clear probe RTs (cold)
+ * rc-ws flow (chunked static grid):
+ * 1) ensure → tex_prim + tex_bvh
+ * 2) scene dirty → prims + inst_i + CPU BVH
  * 3) CPU BVH frustum cull → inst bitset + UploadTexture tex_prim_vis
- * 4) probes (GPU only): vis-union → release → cover → unmet → relax → cover → split → steal
- *    (collapse only if unmet at budget) → steal excess → stats → meta/hash
- * CPU oracle: ng_rc_ws_probe_lazy_tick + tools/rc_ws_probe_smoke (tests/rc_ws)
- * Persist keys; cover-first; no view-move shuffle.
- * 5) gbuf draw: CPU batch filter from cull_vis_bits
- * 6) swap vis prev←curr; compose/debug sample tex_prim_vis
+ * 4) vis chunks from vis-prim AABBs, cap VIS_MAX
+ * 5) bind vis chunks → GPU pages (LRU recycle)
+ * 6) dirty pages: fill casc 2..0, T-merge, encode 8³ cache
+ * 7) gbuf; resolve atlas → rt_ws; compose GI
  *
  * Branches / invariants:
- * - Absolute world keys (lod,ix,iy,iz); no look-at clip; no KD free cubes.
- * - No mesh-owner; release via union AABB + shell empty; budget 50% slot_cap.
- * - No hot-path CPU / LoadImageFromTexture / residency UpdateTexture.
+ * - World-fixed chunks; UVW perfect hash h; no look-at clip; no sparse slots.
+ * - Page identity is (cx,cy,cz); probe id is (cx,cy,cz,h). Page index is not id.
+ * - Chunk work only for vis-bound pages.
  */
+// agent: grok-4.6 | 2026-08-21 | playbook fill merge resolve | 5fd1c9
 // agent: composer-2.5 | 2026-08-12 | playbook incremental residency | 0f5a93
 // agent: grok-4.6 | 2026-08-12 | playbook even split steal | 175820
 // agent: grok-4.6 | 2026-08-12 | playbook lazy persistent cover | b407ea
@@ -96,6 +95,8 @@ void ng_rc_ws_init(NgRcWsCtx *ws) {
   ws->forward[2] = 1.0f;
   ws->tan_half_fov = 0.414f;
   ws->aspect = 1.0f;
+  ws->chunk_vis_n = 0;
+  ws->page_tick = 0;
 }
 
 void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
@@ -118,6 +119,18 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
     UnloadTexture(ws->tex_inst_prim);
     ws->inst_prim_tex_ready = false;
   }
+  if (ws->chunk_vis_tex_ready) {
+    UnloadTexture(ws->tex_chunk_vis);
+    ws->chunk_vis_tex_ready = false;
+  }
+  if (ws->pages_tex_ready) {
+    UnloadTexture(ws->tex_pages);
+    ws->pages_tex_ready = false;
+  }
+  if (ws->page_hash_tex_ready) {
+    UnloadTexture(ws->tex_page_hash);
+    ws->page_hash_tex_ready = false;
+  }
   free(ws->prim_rgba);
   ws->prim_rgba = NULL;
   free(ws->grid_rgba);
@@ -128,6 +141,12 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
   ws->inst_prim_rgba = NULL;
   free(ws->prim_vis_rgba);
   ws->prim_vis_rgba = NULL;
+  free(ws->chunk_vis_rgba);
+  ws->chunk_vis_rgba = NULL;
+  free(ws->pages_rgba);
+  ws->pages_rgba = NULL;
+  free(ws->page_hash_rgba);
+  ws->page_hash_rgba = NULL;
   if (ws->sparse_tex_ready) {
     UnloadTexture(ws->tex_meta);
     UnloadTexture(ws->tex_hash);
@@ -153,7 +172,9 @@ void ng_rc_ws_shutdown(NgRcWsCtx *ws) {
 static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
   // agent: composer-2.5 | 2026-08-13 | BVH scale cull 2048 | c4e91a
   if (ws->ready && ws->prim_tex_ready && ws->prim_rgba && ws->grid_tex_ready && ws->grid_rgba &&
-      ws->bvh_tex_ready && ws->bvh_rgba && ws->inst_prim_tex_ready && ws->inst_prim_rgba) {
+      ws->bvh_tex_ready && ws->bvh_rgba && ws->inst_prim_tex_ready && ws->inst_prim_rgba &&
+      ws->chunk_vis_rgba && ws->chunk_vis_tex_ready && ws->pages_rgba && ws->pages_tex_ready &&
+      ws->page_hash_rgba && ws->page_hash_tex_ready) {
     return true;
   }
   if (!ws->prim_rgba) {
@@ -171,8 +192,18 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
   if (!ws->prim_vis_rgba) {
     ws->prim_vis_rgba = (unsigned char *)calloc((size_t)NG_RC_WS_PRIM_VIS_BYTES, 1);
   }
+  if (!ws->chunk_vis_rgba) {
+    ws->chunk_vis_rgba =
+        (float *)calloc((size_t)NG_RC_WS_CHUNK_VIS_MAX * 4u, sizeof(float));
+  }
+  if (!ws->pages_rgba) {
+    ws->pages_rgba = (float *)calloc((size_t)NG_RC_WS_PAGE_CAP * 4u, sizeof(float));
+  }
+  if (!ws->page_hash_rgba) {
+    ws->page_hash_rgba = (float *)calloc((size_t)NG_RC_WS_PAGE_HASH * 4u, sizeof(float));
+  }
   if (!ws->prim_rgba || !ws->grid_rgba || !ws->bvh_rgba || !ws->inst_prim_rgba ||
-      !ws->prim_vis_rgba) {
+      !ws->prim_vis_rgba || !ws->chunk_vis_rgba || !ws->pages_rgba || !ws->page_hash_rgba) {
     ng_rc_ws_shutdown(ws);
     return false;
   }
@@ -248,6 +279,76 @@ static bool ng_rc_ws_alloc(NgRcWsCtx *ws) {
     SetTextureFilter(ws->tex_inst_prim, TEXTURE_FILTER_POINT);
     SetTextureWrap(ws->tex_inst_prim, TEXTURE_WRAP_CLAMP);
     ws->inst_prim_tex_ready = true;
+  }
+  // agent: grok-4.6 | 2026-08-21 | chunk vis tex no extra frustum | 00a346
+  if (!ws->chunk_vis_tex_ready) {
+#if defined(NG_RC_WS_CPU_ONLY)
+    ws->chunk_vis_tex_ready = true;
+#else
+    Image cimg = {0};
+    // agent: grok-4.6 | 2026-08-21 | chunk vis tex 1x64 layout | f01649
+    cimg.data = ws->chunk_vis_rgba;
+    cimg.width = 1;
+    cimg.height = NG_RC_WS_CHUNK_VIS_MAX;
+    cimg.mipmaps = 1;
+    cimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+    ws->tex_chunk_vis = LoadTextureFromImage(cimg);
+    cimg.data = NULL;
+    UnloadImage(cimg);
+    if (ws->tex_chunk_vis.id == 0) {
+      ng_rc_ws_shutdown(ws);
+      return false;
+    }
+    SetTextureFilter(ws->tex_chunk_vis, TEXTURE_FILTER_POINT);
+    SetTextureWrap(ws->tex_chunk_vis, TEXTURE_WRAP_CLAMP);
+    ws->chunk_vis_tex_ready = true;
+#endif
+  }
+  // agent: grok-4.6 | 2026-08-21 | chunk page pool LRU bind | 815dfe
+  if (!ws->pages_tex_ready) {
+#if defined(NG_RC_WS_CPU_ONLY)
+    ws->pages_tex_ready = true;
+#else
+    Image pimg = {0};
+    pimg.data = ws->pages_rgba;
+    pimg.width = 1;
+    pimg.height = NG_RC_WS_PAGE_CAP;
+    pimg.mipmaps = 1;
+    pimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+    ws->tex_pages = LoadTextureFromImage(pimg);
+    pimg.data = NULL;
+    UnloadImage(pimg);
+    if (ws->tex_pages.id == 0) {
+      ng_rc_ws_shutdown(ws);
+      return false;
+    }
+    SetTextureFilter(ws->tex_pages, TEXTURE_FILTER_POINT);
+    SetTextureWrap(ws->tex_pages, TEXTURE_WRAP_CLAMP);
+    ws->pages_tex_ready = true;
+#endif
+  }
+  // agent: grok-4.6 | 2026-08-21 | page hash table upload | 704884
+  if (!ws->page_hash_tex_ready) {
+#if defined(NG_RC_WS_CPU_ONLY)
+    ws->page_hash_tex_ready = true;
+#else
+    Image himg = {0};
+    himg.data = ws->page_hash_rgba;
+    himg.width = NG_RC_WS_PAGE_HASH;
+    himg.height = 1;
+    himg.mipmaps = 1;
+    himg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+    ws->tex_page_hash = LoadTextureFromImage(himg);
+    himg.data = NULL;
+    UnloadImage(himg);
+    if (ws->tex_page_hash.id == 0) {
+      ng_rc_ws_shutdown(ws);
+      return false;
+    }
+    SetTextureFilter(ws->tex_page_hash, TEXTURE_FILTER_POINT);
+    SetTextureWrap(ws->tex_page_hash, TEXTURE_WRAP_CLAMP);
+    ws->page_hash_tex_ready = true;
+#endif
   }
   ws->ready = true;
   return true;
@@ -2896,6 +2997,321 @@ bool ng_rc_ws_inst_visible(const NgRcWsCtx *ws, int inst_i) {
   }
   return (ws->cull_vis_bits[inst_i >> 5] >> (inst_i & 31)) & 1u;
 }
+
+// agent: grok-4.6 | 2026-08-21 | chunk lattice helpers | 7079c7
+float ng_rc_ws_chunk_extent(void) {
+  return NG_RC_WS_CELL * (float)NG_RC_WS_CHUNK_N;
+}
+
+void ng_rc_ws_world_to_chunk(const float p[3], int32_t *cx, int32_t *cy, int32_t *cz) {
+  const float e = ng_rc_ws_chunk_extent();
+  if (!p || e < 1e-8f) {
+    if (cx) {
+      *cx = 0;
+    }
+    if (cy) {
+      *cy = 0;
+    }
+    if (cz) {
+      *cz = 0;
+    }
+    return;
+  }
+  if (cx) {
+    *cx = (int32_t)floorf(p[0] / e);
+  }
+  if (cy) {
+    *cy = (int32_t)floorf(p[1] / e);
+  }
+  if (cz) {
+    *cz = (int32_t)floorf(p[2] / e);
+  }
+}
+
+int ng_rc_ws_chunk_h(int ix, int iy, int iz) {
+  const int n = NG_RC_WS_CHUNK_N;
+  if (ix < 0) {
+    ix = 0;
+  } else if (ix >= n) {
+    ix = n - 1;
+  }
+  if (iy < 0) {
+    iy = 0;
+  } else if (iy >= n) {
+    iy = n - 1;
+  }
+  if (iz < 0) {
+    iz = 0;
+  } else if (iz >= n) {
+    iz = n - 1;
+  }
+  return ix + n * (iy + n * iz);
+}
+
+void ng_rc_ws_h_to_ijk(int h, int *ix, int *iy, int *iz) {
+  const int n = NG_RC_WS_CHUNK_N;
+  const int cells = NG_RC_WS_CHUNK_CELLS;
+  if (h < 0) {
+    h = 0;
+  } else if (h >= cells) {
+    h = cells - 1;
+  }
+  if (ix) {
+    *ix = h % n;
+  }
+  if (iy) {
+    *iy = (h / n) % n;
+  }
+  if (iz) {
+    *iz = h / (n * n);
+  }
+}
+
+void ng_rc_ws_chunk_aabb(int32_t cx, int32_t cy, int32_t cz, float bmin[3], float bmax[3]) {
+  const float e = ng_rc_ws_chunk_extent();
+  if (!bmin || !bmax) {
+    return;
+  }
+  bmin[0] = (float)cx * e;
+  bmin[1] = (float)cy * e;
+  bmin[2] = (float)cz * e;
+  bmax[0] = bmin[0] + e;
+  bmax[1] = bmin[1] + e;
+  bmax[2] = bmin[2] + e;
+}
+
+void ng_rc_ws_cell_center(int32_t cx, int32_t cy, int32_t cz, int h, float out[3]) {
+  int ix = 0;
+  int iy = 0;
+  int iz = 0;
+  const float cell = NG_RC_WS_CELL;
+  if (!out) {
+    return;
+  }
+  ng_rc_ws_h_to_ijk(h, &ix, &iy, &iz);
+  float bmin[3];
+  float bmax[3];
+  ng_rc_ws_chunk_aabb(cx, cy, cz, bmin, bmax);
+  out[0] = bmin[0] + ((float)ix + 0.5f) * cell;
+  out[1] = bmin[1] + ((float)iy + 0.5f) * cell;
+  out[2] = bmin[2] + ((float)iz + 0.5f) * cell;
+}
+
+static int ng_rc_ws_chunk_find(const NgRcWsCtx *ws, int32_t cx, int32_t cy, int32_t cz) {
+  const int n = ws->chunk_vis_n;
+  for (int i = 0; i < n; i++) {
+    const NgRcWsChunkId *c = &ws->chunk_vis[i];
+    if (c->cx == cx && c->cy == cy && c->cz == cz) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static int ng_rc_ws_aabb_overlap(const float amin[3], const float amax[3], const float bmin[3],
+                                 const float bmax[3]) {
+  return amin[0] <= bmax[0] && amax[0] >= bmin[0] && amin[1] <= bmax[1] && amax[1] >= bmin[1] &&
+         amin[2] <= bmax[2] && amax[2] >= bmin[2];
+}
+
+static void ng_rc_ws_upload_chunk_vis(NgRcWsCtx *ws) {
+  if (!ws || !ws->chunk_vis_rgba) {
+    return;
+  }
+  memset(ws->chunk_vis_rgba, 0, (size_t)NG_RC_WS_CHUNK_VIS_MAX * 4u * sizeof(float));
+  const int n = ws->chunk_vis_n < NG_RC_WS_CHUNK_VIS_MAX ? ws->chunk_vis_n : NG_RC_WS_CHUNK_VIS_MAX;
+  for (int i = 0; i < n; i++) {
+    ws->chunk_vis_rgba[i * 4 + 0] = (float)ws->chunk_vis[i].cx;
+    ws->chunk_vis_rgba[i * 4 + 1] = (float)ws->chunk_vis[i].cy;
+    ws->chunk_vis_rgba[i * 4 + 2] = (float)ws->chunk_vis[i].cz;
+    ws->chunk_vis_rgba[i * 4 + 3] = 1.0f;
+  }
+  if (ws->chunk_vis_tex_ready) {
+    UpdateTexture(ws->tex_chunk_vis, ws->chunk_vis_rgba);
+  }
+}
+
+static void ng_rc_ws_upload_pages(NgRcWsCtx *ws) {
+  if (!ws || !ws->pages_rgba) {
+    return;
+  }
+  memset(ws->pages_rgba, 0, (size_t)NG_RC_WS_PAGE_CAP * 4u * sizeof(float));
+  for (int i = 0; i < NG_RC_WS_PAGE_CAP; i++) {
+    if (!ws->pages[i].occupied) {
+      continue;
+    }
+    ws->pages_rgba[i * 4 + 0] = (float)ws->pages[i].cx;
+    ws->pages_rgba[i * 4 + 1] = (float)ws->pages[i].cy;
+    ws->pages_rgba[i * 4 + 2] = (float)ws->pages[i].cz;
+    ws->pages_rgba[i * 4 + 3] = 1.0f;
+  }
+  if (ws->pages_tex_ready) {
+    UpdateTexture(ws->tex_pages, ws->pages_rgba);
+  }
+  // agent: grok-4.6 | 2026-08-21 | page hash table upload | 704884
+  if (ws->page_hash_rgba) {
+    memset(ws->page_hash_rgba, 0, (size_t)NG_RC_WS_PAGE_HASH * 4u * sizeof(float));
+    for (int i = 0; i < NG_RC_WS_PAGE_CAP; i++) {
+      if (!ws->pages[i].occupied) {
+        continue;
+      }
+      const uint32_t hx = (uint32_t)ws->pages[i].cx * 73856093u;
+      const uint32_t hy = (uint32_t)ws->pages[i].cy * 19349663u;
+      const uint32_t hz = (uint32_t)ws->pages[i].cz * 83492791u;
+      const uint32_t h0 = hx ^ hy ^ hz;
+      int placed = 0;
+      for (int p = 0; p < NG_RC_WS_PAGE_HASH_PROBE; p++) {
+        const int slot = (int)((h0 + (uint32_t)p) & (uint32_t)(NG_RC_WS_PAGE_HASH - 1));
+        float *row = ws->page_hash_rgba + slot * 4;
+        if (row[3] < 0.5f) {
+          row[0] = (float)ws->pages[i].cx;
+          row[1] = (float)ws->pages[i].cy;
+          row[2] = (float)ws->pages[i].cz;
+          row[3] = (float)(i + 1);
+          placed = 1;
+          break;
+        }
+      }
+      (void)placed;
+    }
+    if (ws->page_hash_tex_ready) {
+      UpdateTexture(ws->tex_page_hash, ws->page_hash_rgba);
+    }
+  }
+}
+
+static int ng_rc_ws_page_find(const NgRcWsCtx *ws, int32_t cx, int32_t cy, int32_t cz) {
+  for (int i = 0; i < NG_RC_WS_PAGE_CAP; i++) {
+    if (ws->pages[i].occupied && ws->pages[i].cx == cx && ws->pages[i].cy == cy &&
+        ws->pages[i].cz == cz) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static int ng_rc_ws_page_evict(NgRcWsCtx *ws) {
+  int victim = -1;
+  uint32_t oldest = 0xffffffffu;
+  for (int i = 0; i < NG_RC_WS_PAGE_CAP; i++) {
+    if (!ws->pages[i].occupied) {
+      return i;
+    }
+    if (ng_rc_ws_chunk_find(ws, ws->pages[i].cx, ws->pages[i].cy, ws->pages[i].cz) >= 0) {
+      continue;
+    }
+    if (ws->pages[i].last_use <= oldest) {
+      oldest = ws->pages[i].last_use;
+      victim = i;
+    }
+  }
+  if (victim >= 0) {
+    return victim;
+  }
+  oldest = 0xffffffffu;
+  for (int i = 0; i < NG_RC_WS_PAGE_CAP; i++) {
+    if (ws->pages[i].last_use <= oldest) {
+      oldest = ws->pages[i].last_use;
+      victim = i;
+    }
+  }
+  return victim;
+}
+
+void ng_rc_ws_page_bind(NgRcWsCtx *ws) {
+  // agent: grok-4.6 | 2026-08-21 | chunk page pool LRU bind | 815dfe
+  if (!ws) {
+    return;
+  }
+  ws->page_tick++;
+  const int n = ws->chunk_vis_n < NG_RC_WS_CHUNK_VIS_MAX ? ws->chunk_vis_n : NG_RC_WS_CHUNK_VIS_MAX;
+  for (int i = 0; i < n; i++) {
+    const NgRcWsChunkId *c = &ws->chunk_vis[i];
+    int pi = ng_rc_ws_page_find(ws, c->cx, c->cy, c->cz);
+    if (pi < 0) {
+      pi = ng_rc_ws_page_evict(ws);
+      if (pi < 0) {
+        continue;
+      }
+      ws->pages[pi].cx = c->cx;
+      ws->pages[pi].cy = c->cy;
+      ws->pages[pi].cz = c->cz;
+      ws->pages[pi].occupied = 1;
+      ws->pages[pi].dirty = 1;
+    }
+    ws->pages[pi].last_use = ws->page_tick;
+  }
+  ng_rc_ws_upload_pages(ws);
+}
+
+void ng_rc_ws_pages_mark_dirty(NgRcWsCtx *ws) {
+  // agent: grok-4.6 | 2026-08-21 | page dirty on rebind | ad6ff0
+  if (!ws) {
+    return;
+  }
+  for (int i = 0; i < NG_RC_WS_PAGE_CAP; i++) {
+    if (ws->pages[i].occupied) {
+      ws->pages[i].dirty = 1;
+    }
+  }
+}
+
+/** Visible chunks from vis-prim AABBs (no extra frustum — prims already culled). */
+void ng_rc_ws_chunk_cull(NgRcWsCtx *ws, const Vector4 planes[6]) {
+  // agent: grok-4.6 | 2026-08-21 | chunk vis tex no extra frustum | 00a346
+  (void)planes;
+  if (!ws) {
+    return;
+  }
+  ws->chunk_vis_n = 0;
+  if (ws->prim_count <= 0) {
+    ng_rc_ws_upload_chunk_vis(ws);
+    ng_rc_ws_page_bind(ws);
+    return;
+  }
+  const float e = ng_rc_ws_chunk_extent();
+  if (e < 1e-8f) {
+    ng_rc_ws_upload_chunk_vis(ws);
+    ng_rc_ws_page_bind(ws);
+    return;
+  }
+  const int pc = ws->prim_count < NG_RC_WS_PRIM_MAX ? ws->prim_count : NG_RC_WS_PRIM_MAX;
+  for (int pi = 0; pi < pc && ws->chunk_vis_n < NG_RC_WS_CHUNK_VIS_MAX; pi++) {
+    if (!ws->cull_prim_vis[pi]) {
+      continue;
+    }
+    float pmin[3];
+    float pmax[3];
+    ng_rc_ws_prim_aabb(&ws->prims[pi], pmin, pmax);
+    const int32_t cx0 = (int32_t)floorf(pmin[0] / e);
+    const int32_t cy0 = (int32_t)floorf(pmin[1] / e);
+    const int32_t cz0 = (int32_t)floorf(pmin[2] / e);
+    const int32_t cx1 = (int32_t)floorf(pmax[0] / e);
+    const int32_t cy1 = (int32_t)floorf(pmax[1] / e);
+    const int32_t cz1 = (int32_t)floorf(pmax[2] / e);
+    for (int32_t cz = cz0; cz <= cz1 && ws->chunk_vis_n < NG_RC_WS_CHUNK_VIS_MAX; cz++) {
+      for (int32_t cy = cy0; cy <= cy1 && ws->chunk_vis_n < NG_RC_WS_CHUNK_VIS_MAX; cy++) {
+        for (int32_t cx = cx0; cx <= cx1 && ws->chunk_vis_n < NG_RC_WS_CHUNK_VIS_MAX; cx++) {
+          if (ng_rc_ws_chunk_find(ws, cx, cy, cz) >= 0) {
+            continue;
+          }
+          float bmin[3];
+          float bmax[3];
+          ng_rc_ws_chunk_aabb(cx, cy, cz, bmin, bmax);
+          if (!ng_rc_ws_aabb_overlap(bmin, bmax, pmin, pmax)) {
+            continue;
+          }
+          NgRcWsChunkId *dst = &ws->chunk_vis[ws->chunk_vis_n++];
+          dst->cx = cx;
+          dst->cy = cy;
+          dst->cz = cz;
+        }
+      }
+    }
+  }
+  ng_rc_ws_upload_chunk_vis(ws);
+  ng_rc_ws_page_bind(ws);
+}
 // agent: composer-2.5 | 2026-08-13 | CPU BVH traverse prim vis | 7fc2f1
 // agent: composer-2.5 | 2026-08-13 | BVH scale cull 2048 | c4e91a
 // agent: composer-2.5 | 2026-08-11 | B66 want-have balanced depth score | 4f6d2d
@@ -2924,3 +3340,13 @@ bool ng_rc_ws_inst_visible(const NgRcWsCtx *ws, int inst_i) {
 // agent: grok-4.6 | 2026-08-12 | cover-pressure steal oracle | f7fae3
 // agent: grok-4.6 | 2026-08-12 | cover unmet helper API | 5f4345
 // agent: grok-4.6 | 2026-08-12 | persist cover-first relax | 052e50
+// agent: grok-4.6 | 2026-08-21 | playbook chunk AABB cull | 1101c2
+// agent: grok-4.6 | 2026-08-21 | chunk lattice helpers | 7079c7
+// agent: grok-4.6 | 2026-08-21 | chunk AABB frustum cull | eb4abe
+// agent: grok-4.6 | 2026-08-21 | chunk vis tex no extra frustum | 00a346
+// agent: grok-4.6 | 2026-08-21 | chunk vis tex 1x64 layout | f01649
+// agent: grok-4.6 | 2026-08-21 | playbook cull then bind pages | 98e741
+// agent: grok-4.6 | 2026-08-21 | chunk page pool LRU bind | 815dfe
+// agent: grok-4.6 | 2026-08-21 | playbook fill merge resolve | 5fd1c9
+// agent: grok-4.6 | 2026-08-21 | page dirty on rebind | ad6ff0
+// agent: grok-4.6 | 2026-08-21 | page hash table upload | 704884

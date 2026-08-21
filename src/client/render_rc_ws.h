@@ -22,11 +22,12 @@
 #define NG_RC_WS_PROBE_MAX 16
 #define NG_RC_WS_GI_NEAR 0.25f
 #define NG_RC_WS_GI_FAR 28.0f
-/** Finest world meters (LOD 0). cell(L) = CELL * 2^L. */
-#define NG_RC_WS_CELL 0.4f
+// agent: grok-4.6 | 2026-08-21 | cell 1m chunk 8m cube | 8b1ce2
+/** Finest world meters (LOD 0). cell(L) = CELL * 2^L. Chunk = N³ × CELL (8 m). */
+#define NG_RC_WS_CELL 1.0f
 /** Legacy enter-table / offline GI LOD count (0 = finest … LOD_MAX-1). */
 #define NG_RC_WS_LOD_MAX 8
-/** Soft ceiling for cell_size / surface root (uint8 slot lod; 0.4*2^24 ≈ huge). */
+/** Soft ceiling for cell_size / surface root (uint8 slot lod; 1*2^24 ≈ huge). */
 #define NG_RC_WS_LOD_SOFT_MAX 24
 /** Clip cube extent = CELL × this (fixed; never cam/frustum stretch). */
 #define NG_RC_WS_VOX_RES 32
@@ -43,6 +44,17 @@
 #define NG_RC_WS_CULL_VIS_THRESH 128
 /** tex_prim columns: center+type, half, quat, emit+rough, albedo+metal, lit+inst, leaf+pad. */
 #define NG_RC_WS_PRIM_COLS 7
+// agent: grok-4.6 | 2026-08-21 | chunk lattice API header | 1e1376
+/** World-fixed chunk lattice (probe identity). N³ cells; h from UVW. */
+#define NG_RC_WS_CHUNK_N 8
+#define NG_RC_WS_CHUNK_CELLS (NG_RC_WS_CHUNK_N * NG_RC_WS_CHUNK_N * NG_RC_WS_CHUNK_N)
+#define NG_RC_WS_CHUNK_VIS_MAX 64
+// agent: grok-4.6 | 2026-08-21 | chunk page pool LRU bind | c17fbe
+#define NG_RC_WS_PAGE_CAP NG_RC_WS_CHUNK_VIS_MAX
+// agent: grok-4.6 | 2026-08-21 | page hash API fill cap | 3eb32f
+#define NG_RC_WS_PAGE_HASH 128
+#define NG_RC_WS_PAGE_HASH_PROBE 8
+#define NG_RC_WS_PAGE_FILL_MAX 2
 /** Uniform candidate grid resolution per clip axis. */
 #define NG_RC_WS_GRID_RES 8
 /** Prim index slots per grid cell (RGBA8 channels). 255 = empty. */
@@ -92,6 +104,24 @@ typedef struct NgRcWsSlot {
   uint8_t dirty; /* 1 = needs cascade fill this frame */
   uint8_t pad; /* 1 = face-pad (retain while neighbor seed lives) */
 } NgRcWsSlot;
+
+/** World-fixed chunk index (cx,cy,cz). */
+typedef struct NgRcWsChunkId {
+  int32_t cx;
+  int32_t cy;
+  int32_t cz;
+} NgRcWsChunkId;
+
+/** GPU page = future 8³ atlas; keyed by world chunk. */
+typedef struct NgRcWsPage {
+  int32_t cx;
+  int32_t cy;
+  int32_t cz;
+  uint8_t occupied;
+  // agent: grok-4.6 | 2026-08-21 | page cache dirty bind | bc41a2
+  uint8_t dirty;
+  uint32_t last_use;
+} NgRcWsPage;
 
 /** CPU BVH node: leaf has prim>=0; internal has left/right child indices. */
 typedef struct NgRcWsBvhNode {
@@ -157,6 +187,23 @@ typedef struct NgRcWsCtx {
   // agent: composer-2.5 | 2026-08-13 | CPU BVH cull traverse API | 93b212
   uint8_t cull_prim_vis[NG_RC_WS_PRIM_MAX];
   unsigned char *prim_vis_rgba;
+  // agent: grok-4.6 | 2026-08-21 | chunk lattice API header | 1e1376
+  NgRcWsChunkId chunk_vis[NG_RC_WS_CHUNK_VIS_MAX];
+  int chunk_vis_n;
+  // agent: grok-4.6 | 2026-08-21 | chunk vis tex API header | c253d3
+  Texture2D tex_chunk_vis; /* 1 × VIS_MAX RGBA32F cx,cy,cz,used */
+  float *chunk_vis_rgba;
+  bool chunk_vis_tex_ready;
+  // agent: grok-4.6 | 2026-08-21 | chunk page pool LRU bind | c17fbe
+  NgRcWsPage pages[NG_RC_WS_PAGE_CAP];
+  uint32_t page_tick;
+  Texture2D tex_pages; /* 1 × PAGE_CAP RGBA32F cx,cy,cz,used */
+  float *pages_rgba;
+  bool pages_tex_ready;
+  // agent: grok-4.6 | 2026-08-21 | page hash API fill cap | 3eb32f
+  Texture2D tex_page_hash; /* HASH × 1 RGBA32F cx,cy,cz,page+1 */
+  float *page_hash_rgba;
+  bool page_hash_tex_ready;
 } NgRcWsCtx;
 
 /** cell(L) = CELL * 2^L */
@@ -190,6 +237,27 @@ int ng_rc_ws_cull_traverse(NgRcWsCtx *ws, const Vector4 planes[6], int *vis_inst
 void ng_rc_ws_upload_prim_vis(NgRcWsCtx *ws, Texture2D tex);
 /** True if inst passed last CPU cull traverse (default true if stale). */
 bool ng_rc_ws_inst_visible(const NgRcWsCtx *ws, int inst_i);
+// agent: grok-4.6 | 2026-08-21 | chunk lattice API header | 1e1376
+/** Chunk cube extent in meters (N * CELL). */
+float ng_rc_ws_chunk_extent(void);
+/** World-fixed chunk index containing p. */
+void ng_rc_ws_world_to_chunk(const float p[3], int32_t *cx, int32_t *cy, int32_t *cz);
+/** Perfect hash h = ix + N*(iy + N*iz) in [0, N³). */
+int ng_rc_ws_chunk_h(int ix, int iy, int iz);
+/** Decode h → local ix,iy,iz. */
+void ng_rc_ws_h_to_ijk(int h, int *ix, int *iy, int *iz);
+/** World AABB of chunk (cx,cy,cz). */
+void ng_rc_ws_chunk_aabb(int32_t cx, int32_t cy, int32_t cz, float bmin[3], float bmax[3]);
+/** Cell center from chunk + local h. */
+void ng_rc_ws_cell_center(int32_t cx, int32_t cy, int32_t cz, int h, float out[3]);
+/**
+ * Visible chunks from vis-prim AABBs, cap VIS_MAX; then page_bind.
+ */
+void ng_rc_ws_chunk_cull(NgRcWsCtx *ws, const Vector4 planes[6]);
+/** Bind vis chunks to GPU pages (keep map; LRU-evict non-vis when full). */
+void ng_rc_ws_page_bind(NgRcWsCtx *ws);
+/** Mark every occupied page dirty (scene change). */
+void ng_rc_ws_pages_mark_dirty(NgRcWsCtx *ws);
 
 /** Clear all probe slots (GPU probe tick). */
 void ng_rc_ws_probe_clear(NgRcWsCtx *ws);
@@ -275,3 +343,9 @@ void ng_rc_ws_sparse_clear_dirty(NgRcWsCtx *ws);
 // agent: composer-2.5 | 2026-08-13 | CPU BVH cull traverse API | 93b212
 // agent: composer-2.5 | 2026-08-13 | GPU readback inst vis bitset | a8e3f1
 // agent: composer-2.5 | 2026-08-13 | BVH scale cull 2048 caps | f8b2d1
+// agent: grok-4.6 | 2026-08-21 | chunk lattice API header | 1e1376
+// agent: grok-4.6 | 2026-08-21 | chunk vis tex API header | c253d3
+// agent: grok-4.6 | 2026-08-21 | cell 1m chunk 8m cube | 8b1ce2
+// agent: grok-4.6 | 2026-08-21 | chunk page pool LRU bind | c17fbe
+// agent: grok-4.6 | 2026-08-21 | page cache dirty bind | bc41a2
+// agent: grok-4.6 | 2026-08-21 | page hash API fill cap | 3eb32f

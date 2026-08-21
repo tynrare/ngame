@@ -20,7 +20,8 @@ Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**,
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
-Tab console: `? set`, `? set render`, `? set render.rc`, `? set debug.render`. Settings: `set render.scale …`, `set render.rc.quality|gi_strength …`, `set debug.render.pass …` (RC Phase 4: WS 3D volume + SS polish — [north star](radiance-cascades-3d.md)).
+<!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
+Tab console: `? set`, `? set render`, `? set render.rc`, `? set debug.render`. Settings: `set render.scale …`, `set render.rc.quality|gi_strength …`, `set debug.render.pass …` (chunked world-grid RC — [north star](radiance-cascades-3d.md)).
 
 
 <!-- agent: composer-2.5 | 2026-08-01 | docs module register wire | e2e90f -->
@@ -48,7 +49,8 @@ global.describe("scene", "view", {
 
 See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (`render: "rc"`).
 
-**Render (`render`):** omit / `"simple"` (default forward), `"gbuffer"` (debug G-buffer), `"rc"` (G-buffer + world-space GI cache + screen-space polish; [north star](radiance-cascades-3d.md)).
+<!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
+**Render (`render`):** omit / `"simple"` (default forward), `"gbuffer"` (debug G-buffer), `"rc"` (G-buffer + chunked world-grid Radiance Cascades; [north star](radiance-cascades-3d.md)).
 
 ## Body / shape (physics)
 
@@ -240,3 +242,4 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: composer-2.5 | 2026-08-09 | scenes RC radial note | 228ff4 -->
 <!-- agent: composer-2.5 | 2026-08-09 | scenes Phase3 SS note | 29f238 -->
 <!-- agent: composer-2.5 | 2026-08-10 | scenes Phase4 WS volume note | 99a031 -->
+<!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
