@@ -211,21 +211,18 @@ if(NOT EMSCRIPTEN)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m box3d)
 
+  # agent: grok-4.6 | 2026-08-21 | remove probe smoke cmake target | 5f8a09
   add_executable(ng_embed_smoke EXCLUDE_FROM_ALL tools/embed_smoke.c ${NG_CORE_SOURCES}
-                 src/client/input.c src/net/mod_net.c src/client/render.c ${NG_SCENE_SOURCES}
+                 src/client/input.c src/net/mod_net.c src/client/render.c src/client/render_rc_ws.c
+                 ${NG_SCENE_SOURCES}
                  src/ng_shader.c src/ng_viewport.c src/server/script.c
                  src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
   target_include_directories(ng_embed_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_embed_smoke PRIVATE raylib m box3d)
-
-  # agent: grok-4.6 | 2026-08-12 | cmake rc_ws probe smoke | 133e31
-  add_executable(ng_rc_ws_probe_smoke EXCLUDE_FROM_ALL tools/rc_ws_probe_smoke.c
-                 tools/rc_ws_probe_smoke_stubs.c src/client/render_rc_ws.c)
-  target_include_directories(ng_rc_ws_probe_smoke PRIVATE src src/vendor)
-  target_compile_definitions(ng_rc_ws_probe_smoke PRIVATE NG_RC_WS_CPU_ONLY NG_RES_ROOT=\"res/\")
-  target_link_libraries(ng_rc_ws_probe_smoke PRIVATE raylib m)
 endif()
+
+# agent: grok-4.6 | 2026-08-21 | remove probe smoke cmake target | 5f8a09
 
 # agent: composer-2.5 | 2026-07-28 | src layout engine scene client | d2e3f4
 # agent: composer-2.5 | 2026-07-29 | link local box3d library | 32efd8
@@ -240,5 +237,5 @@ endif()
 # agent: composer-2.5 | 2026-08-09 | add render_rc_ws to cmake | b34752
 # agent: composer-2.5 | 2026-08-10 | cmake link render_rc_ws | 0c74f6
 # agent: composer-2.5 | 2026-08-10 | raise raylib shader tex units | 4a43ea
-# agent: grok-4.6 | 2026-08-12 | cmake rc_ws probe smoke | 133e31
 # agent: grok-4.6 | 2026-08-21 | link rc_ws on latency bins | 0838e0
+# agent: grok-4.6 | 2026-08-21 | remove probe smoke cmake target | 5f8a09
