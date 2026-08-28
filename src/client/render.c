@@ -48,6 +48,7 @@
 // agent: grok-4.6 | 2026-08-21 | strip dead clip SS probe paths | 36a296
 #include "render.h"
 #include "render_rc_ws.h"
+#include "font_msdf.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
 #include "client/input.h"
@@ -1720,12 +1721,28 @@ static void mod_render_blit_rt_opaque(ModRenderCtx *ctx, const RenderTexture2D *
   rlEnableColorBlend();
 }
 
+/** True when the view scene is the MSDF fonts demo. */
+static bool mod_render_fonts_scene(const ModRenderCtx *ctx) {
+  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
+  mod_scene_runtime_use_view();
+  const char *vid = mod_scene_view_current_id();
+  if (vid && vid[0] && strcmp(vid, "fonts") == 0) {
+    return true;
+  }
+  return ctx && ctx->scene_label[0] && strcmp(ctx->scene_label, "fonts") == 0;
+}
+
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
   mod_scene_runtime_use_view();
   mod_render_collect_graph_batches(ctx);
   BeginMode3D(ctx->camera);
   mod_render_flush_batches(ctx);
+  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
+  // font-msdf step 5
+  if (mod_render_fonts_scene(ctx)) {
+    mod_font_msdf_draw_demo_world(&ctx->camera);
+  }
   EndMode3D();
 }
 
@@ -1930,6 +1947,11 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
   DrawText(TextFormat("scale=%.2f %dx%d", ctx->render_scale, ctx->present_w, ctx->present_h), 10,
            34, 18, LIME);
+  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
+  // font-msdf step 5
+  if (mod_render_fonts_scene(ctx)) {
+    mod_font_msdf_draw_demo_overlay();
+  }
 }
 // agent: composer-2.5 | 2026-07-26 | session bootstrap render state | d8e9f0
 void mod_render_apply_session(const NgSessionState *session) {
@@ -2039,6 +2061,8 @@ static void mod_render_shutdown(void *vctx) {
   mod_render_unload_gbuf(ctx);
   mod_render_unload_rc(ctx);
   mod_render_unload_present(ctx);
+  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
+  mod_font_msdf_shutdown();
 }
 
 // agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 220dba
@@ -2344,3 +2368,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: grok-4.6 | 2026-08-21 | C2 t1 64 more steps | 04531e
 // agent: grok-4.6 | 2026-08-21 | strip dead clip SS probe paths | 36a296
 // agent: grok-4.6 | 2026-08-21 | bind prev SH atlas fill | ad6dd7
+// agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056

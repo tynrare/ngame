@@ -85,9 +85,11 @@ set(NG_CLIENT_SOURCES
   ${NG_SCENE_SOURCES}
   src/client/render.c
   src/client/render_rc_ws.c
+  src/client/font_msdf.c
   src/ng_viewport.c
   src/ng_shader.c
 )
+# agent: grok-4.6 | 2026-08-28 | link font_msdf client | 23a97d
 # agent: composer-2.5 | 2026-08-10 | cmake link render_rc_ws | 0c74f6
 set(NG_SERVER_SOURCES
   src/server/main_server.c
@@ -122,7 +124,9 @@ endif()
 
 add_executable(ngame ${NG_CORE_SOURCES} ${NG_CLIENT_SOURCES})
 target_link_libraries(ngame PRIVATE raylib m box3d)
-target_include_directories(ngame PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
+# agent: grok-4.6 | 2026-08-28 | link font_msdf client | 23a97d
+target_include_directories(ngame PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include
+                           ${RAYLIB_DIR}/src/external)
 target_compile_definitions(ngame PRIVATE ${NG_RES_ROOT_DEF} ${NG_NET_DEFS} ${NG_ENET_DEFS})
 
 if(EMSCRIPTEN)
@@ -239,3 +243,4 @@ endif()
 # agent: composer-2.5 | 2026-08-10 | raise raylib shader tex units | 4a43ea
 # agent: grok-4.6 | 2026-08-21 | link rc_ws on latency bins | 0838e0
 # agent: grok-4.6 | 2026-08-21 | remove probe smoke cmake target | 5f8a09
+# agent: grok-4.6 | 2026-08-28 | link font_msdf client | 23a97d

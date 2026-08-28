@@ -16,7 +16,8 @@
 <!-- agent: composer-2.5 | 2026-08-09 | scenes RC radial note | 228ff4 -->
 <!-- agent: composer-2.5 | 2026-08-09 | scenes Phase3 SS note | 29f238 -->
 <!-- agent: composer-2.5 | 2026-08-10 | scenes Phase4 WS volume note | 99a031 -->
-Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, or **`example`** (helpers demo).
+<!-- agent: grok-4.6 | 2026-08-28 | list fonts scene id | fa75d3 -->
+Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, **`example`** (helpers demo), or **`fonts`** (MSDF overlay + world label).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
@@ -246,3 +247,4 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: grok-4.6 | 2026-08-21 | scenes RC interval GI not compose | 38bb58 -->
 <!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
 <!-- agent: grok-4.6 | 2026-08-21 | scenes RC emit sky compose | 22e772 -->
+<!-- agent: grok-4.6 | 2026-08-28 | list fonts scene id | fa75d3 -->
