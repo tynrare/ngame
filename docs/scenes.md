@@ -52,16 +52,24 @@ global.describe("scene", "view", {
 See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (`render: "rc"`).
 
 <!-- agent: grok-4.6 | 2026-08-30 | docs JS font label entities | 9d21d9 -->
+<!-- agent: grok-4.6 | 2026-08-30 | docs named scopes | e3e033 -->
 ## Font / label (aliases)
 
 `describe("font", …)` is `describe("model")` with `{ src, draw: "msdf" }`. `describe("label", …)` is `describe("entity")`. Entity fields `font` and `model` are the same slot.
 
 ```javascript
 global.describe("font", "sans", { src: "fonts/LiberationSans-Regular.ttf", draw: "msdf" });
+global.describe("scope", "world", {
+  render: "simple",
+  bg: { r, g, b },
+  camera: { mode: "fixed", position: {...}, target: {...}, fovy: 45 },
+});
+global.describe("scope", "screen", { camera: { mode: "ortho" } });
+global.describe("scene", "view", { scopes: ["world", "screen"] });
 global.describe("label", "clock_e", { font: "sans", func: Clock, sync: "shared" });
 global.spawn("clock_e", {
   key: "clock",
-  space: "screen", // or "world"; also 0/1. Default world. Applies to mesh entities too.
+  scope: "screen", // named scope; omit → first listed. No-op on legacy scene describe.
   text: "t=0.00",
   size: 22,
   outline: 0.12,
@@ -70,6 +78,8 @@ global.spawn("clock_e", {
 });
 global.set_text(handle, "t=1.23");
 ```
+
+Scopes own camera + render. `camera.mode: "ortho"` is a pixel overlay after present. Scene `sim` / `gravity` stay on `describe("scene")`. Legacy `describe("scene", "view", { camera, render, bg })` is one implicit view (no overlay; spawn `scope` ignored).
 
 See `res/scenes/fonts.js`.
 
@@ -280,3 +290,4 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: grok-4.6 | 2026-08-28 | list fonts scene id | fa75d3 -->
 <!-- agent: grok-4.6 | 2026-08-30 | docs JS font label entities | 9d21d9 -->
 <!-- agent: grok-4.6 | 2026-08-30 | list syncstats scene | 634428 -->
+<!-- agent: grok-4.6 | 2026-08-30 | docs named scopes | e3e033 -->

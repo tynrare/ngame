@@ -229,26 +229,23 @@ static bool mod_scene_read_opt_vec3(duk_context *ctx, int obj_idx, const char *k
   return true;
 }
 
-static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
-  NgSceneViewMeta view = {0};
-  view.valid = true;
-  view.bg_r = 0;
-  view.bg_g = 0;
-  view.bg_b = 0;
-  view.camera_mode = NG_SCENE_CAM_FIXED;
-  view.cam_fovy = 45.0f;
-  view.orbit_radius = 6.0f;
-  view.orbit_speed = 0.6f;
-  view.orbit_height = 2.0f;
-  view.cam_pos[2] = 6.0f;
-  view.cam_target[0] = view.cam_target[1] = view.cam_target[2] = 0.0f;
+// agent: grok-4.6 | 2026-08-30 | describe bind scene scopes | 12f647
+static void mod_scene_fill_view_meta(duk_context *ctx, int obj_idx, NgSceneViewMeta *view) {
+  memset(view, 0, sizeof(*view));
+  view->valid = true;
+  view->camera_mode = NG_SCENE_CAM_FIXED;
+  view->cam_fovy = 45.0f;
+  view->orbit_radius = 6.0f;
+  view->orbit_speed = 0.6f;
+  view->orbit_height = 2.0f;
+  view->cam_pos[2] = 6.0f;
 
   duk_get_prop_string(ctx, obj_idx, "bg");
   if (duk_is_object(ctx, -1)) {
     const int bg_idx = duk_get_top_index(ctx);
-    view.bg_r = (uint8_t)mod_scene_read_opt_number(ctx, bg_idx, "r", 0.0f);
-    view.bg_g = (uint8_t)mod_scene_read_opt_number(ctx, bg_idx, "g", 0.0f);
-    view.bg_b = (uint8_t)mod_scene_read_opt_number(ctx, bg_idx, "b", 0.0f);
+    view->bg_r = (uint8_t)mod_scene_read_opt_number(ctx, bg_idx, "r", 0.0f);
+    view->bg_g = (uint8_t)mod_scene_read_opt_number(ctx, bg_idx, "g", 0.0f);
+    view->bg_b = (uint8_t)mod_scene_read_opt_number(ctx, bg_idx, "b", 0.0f);
   }
   duk_pop(ctx);
 
@@ -256,23 +253,42 @@ static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
   if (duk_is_object(ctx, -1)) {
     const int cam_idx = duk_get_top_index(ctx);
     duk_get_prop_string(ctx, cam_idx, "mode");
-    if (duk_is_string(ctx, -1) && strcmp(duk_get_string(ctx, -1), "orbit") == 0) {
-      view.camera_mode = NG_SCENE_CAM_ORBIT;
+    if (duk_is_string(ctx, -1)) {
+      const char *mode = duk_get_string(ctx, -1);
+      if (mode && strcmp(mode, "orbit") == 0) {
+        view->camera_mode = NG_SCENE_CAM_ORBIT;
+      } else if (mode && strcmp(mode, "ortho") == 0) {
+        view->camera_mode = NG_SCENE_CAM_ORTHO;
+      }
     }
     duk_pop(ctx);
-    (void)mod_scene_read_opt_vec3(ctx, cam_idx, "position", view.cam_pos);
-    (void)mod_scene_read_opt_vec3(ctx, cam_idx, "target", view.cam_target);
-    view.cam_fovy = mod_scene_read_opt_number(ctx, cam_idx, "fovy", view.cam_fovy);
+    (void)mod_scene_read_opt_vec3(ctx, cam_idx, "position", view->cam_pos);
+    (void)mod_scene_read_opt_vec3(ctx, cam_idx, "target", view->cam_target);
+    view->cam_fovy = mod_scene_read_opt_number(ctx, cam_idx, "fovy", view->cam_fovy);
     duk_get_prop_string(ctx, cam_idx, "orbit");
     if (duk_is_object(ctx, -1)) {
       const int orb_idx = duk_get_top_index(ctx);
-      view.orbit_radius = mod_scene_read_opt_number(ctx, orb_idx, "radius", view.orbit_radius);
-      view.orbit_speed = mod_scene_read_opt_number(ctx, orb_idx, "speed", view.orbit_speed);
-      view.orbit_height = mod_scene_read_opt_number(ctx, orb_idx, "height", view.orbit_height);
+      view->orbit_radius = mod_scene_read_opt_number(ctx, orb_idx, "radius", view->orbit_radius);
+      view->orbit_speed = mod_scene_read_opt_number(ctx, orb_idx, "speed", view->orbit_speed);
+      view->orbit_height = mod_scene_read_opt_number(ctx, orb_idx, "height", view->orbit_height);
     }
     duk_pop(ctx);
   }
   duk_pop(ctx);
+  view->render_mode = NG_SCENE_RENDER_SIMPLE;
+  duk_get_prop_string(ctx, obj_idx, "render");
+  if (duk_is_string(ctx, -1)) {
+    const char *rm = duk_get_string(ctx, -1);
+    if (strcmp(rm, "gbuffer") == 0) {
+      view->render_mode = NG_SCENE_RENDER_GBUFFER;
+    } else if (strcmp(rm, "rc") == 0) {
+      view->render_mode = NG_SCENE_RENDER_RC;
+    }
+  }
+  duk_pop(ctx);
+}
+
+static void mod_scene_parse_scene_sim_gravity(duk_context *ctx, int obj_idx) {
   // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
   // agent: composer-2.5 | 2026-08-01 | hybrid sim js parse | 7b3cfd
   duk_get_prop_string(ctx, obj_idx, "sim");
@@ -282,18 +298,6 @@ static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
       mod_scene_physics_set_sim_mode(NG_PHYS_SIM_LOCKSTEP);
     } else if (strcmp(sim, "hybrid") == 0) {
       mod_scene_physics_set_sim_mode(NG_PHYS_SIM_HYBRID);
-    }
-  }
-  duk_pop(ctx);
-  // agent: composer-2.5 | 2026-08-09 | parse scene render mode | 9251e7
-  view.render_mode = NG_SCENE_RENDER_SIMPLE;
-  duk_get_prop_string(ctx, obj_idx, "render");
-  if (duk_is_string(ctx, -1)) {
-    const char *rm = duk_get_string(ctx, -1);
-    if (strcmp(rm, "gbuffer") == 0) {
-      view.render_mode = NG_SCENE_RENDER_GBUFFER;
-    } else if (strcmp(rm, "rc") == 0) {
-      view.render_mode = NG_SCENE_RENDER_RC;
     }
   }
   duk_pop(ctx);
@@ -319,6 +323,33 @@ static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
     mod_scene_physics_set_gravity(g[0], g[1], g[2]);
   }
   duk_pop(ctx);
+}
+
+static bool mod_scene_parse_scene_scopes(duk_context *ctx, int arr_idx) {
+  char names[NG_SCENE_ASSET_MAX][32];
+  const char *ptrs[NG_SCENE_ASSET_MAX];
+  const duk_uarridx_t n = (duk_uarridx_t)duk_get_length(ctx, arr_idx);
+  int count = 0;
+  for (duk_uarridx_t i = 0; i < n && count < NG_SCENE_ASSET_MAX; i++) {
+    duk_get_prop_index(ctx, arr_idx, i);
+    if (duk_is_string(ctx, -1)) {
+      const char *s = duk_get_string(ctx, -1);
+      if (s && s[0]) {
+        strncpy(names[count], s, sizeof(names[count]) - 1);
+        names[count][sizeof(names[count]) - 1] = '\0';
+        ptrs[count] = names[count];
+        count++;
+      }
+    }
+    duk_pop(ctx);
+  }
+  return mod_scene_assets_bind_scene_scopes(ptrs, count);
+}
+
+static bool mod_scene_parse_view_describe(duk_context *ctx, int obj_idx) {
+  NgSceneViewMeta view;
+  mod_scene_fill_view_meta(ctx, obj_idx, &view);
+  mod_scene_parse_scene_sim_gravity(ctx, obj_idx);
   return mod_scene_assets_describe_view(&view);
 }
 
@@ -579,8 +610,19 @@ static duk_ret_t bind_describe(duk_context *ctx) {
       }
       duk_pop(ctx);
     } else if (strcmp(kind, "scene") == 0) {
-      // agent: composer-2.5 | 2026-07-28 | js scene view bg camera meta | e2f3a4
-      mod_scene_parse_view_describe(ctx, 2);
+      // agent: grok-4.6 | 2026-08-30 | describe bind scene scopes | 12f647
+      duk_get_prop_string(ctx, 2, "scopes");
+      if (duk_is_array(ctx, -1)) {
+        mod_scene_parse_scene_scopes(ctx, duk_get_top_index(ctx));
+        mod_scene_parse_scene_sim_gravity(ctx, 2);
+      } else {
+        mod_scene_parse_view_describe(ctx, 2);
+      }
+      duk_pop(ctx);
+    } else if (strcmp(kind, "scope") == 0) {
+      NgSceneViewMeta view;
+      mod_scene_fill_view_meta(ctx, 2, &view);
+      mod_scene_assets_describe_scope(name, &view);
     }
   }
 
@@ -592,7 +634,8 @@ static duk_ret_t bind_describe(duk_context *ctx) {
     mod_scene_graph_describe(kind, name, sync, model, body, func_idx);
   } else if (strcmp(kind, "mesh") == 0 || strcmp(kind, "shader") == 0 ||
              strcmp(kind, "model") == 0 || strcmp(kind, "scene") == 0 ||
-             strcmp(kind, "shape") == 0 || strcmp(kind, "body") == 0) {
+             strcmp(kind, "scope") == 0 || strcmp(kind, "shape") == 0 ||
+             strcmp(kind, "body") == 0) {
     mod_scene_graph_describe(kind, name, sync, model, body, func_idx);
   }
   duk_push_int(ctx, 1);
@@ -636,9 +679,9 @@ typedef struct ModSceneSpawnOpts {
   bool have_pos;
   bool have_rot;
   bool have_scale;
-  // agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
-  uint8_t space;
-  bool have_space;
+  // agent: grok-4.6 | 2026-08-30 | describe bind scene scopes | 12f647
+  uint8_t scope_id;
+  bool have_scope;
   char text[NG_SCENE_TEXT_MAX];
   bool have_text;
   float text_size;
@@ -696,19 +739,15 @@ static void mod_scene_read_spawn_opts(duk_context *ctx, int idx, ModSceneSpawnOp
     opts->have_scale = true;
   }
   duk_pop(ctx);
-  // agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
-  duk_get_prop_string(ctx, idx, "space");
-  if (duk_is_string(ctx, -1)) {
+  // agent: grok-4.6 | 2026-08-30 | describe bind scene scopes | 12f647
+  duk_get_prop_string(ctx, idx, "scope");
+  if (duk_is_string(ctx, -1) && !mod_scene_assets_legacy_scopes()) {
     const char *sp = duk_get_string(ctx, -1);
-    if (sp && (strcmp(sp, "screen") == 0 || strcmp(sp, "1") == 0)) {
-      opts->space = NG_SCENE_SPACE_SCREEN;
-    } else {
-      opts->space = NG_SCENE_SPACE_WORLD;
+    const int id = mod_scene_assets_lookup_scope(sp);
+    if (id >= 0) {
+      opts->scope_id = (uint8_t)id;
+      opts->have_scope = true;
     }
-    opts->have_space = true;
-  } else if (duk_is_number(ctx, -1)) {
-    opts->space = duk_get_int(ctx, -1) != 0 ? NG_SCENE_SPACE_SCREEN : NG_SCENE_SPACE_WORLD;
-    opts->have_space = true;
   }
   duk_pop(ctx);
   duk_get_prop_string(ctx, idx, "text");
@@ -764,8 +803,11 @@ static void mod_scene_inst_apply_spawn_extras(NgSceneInst *inst, const ModSceneS
   if (!inst || !opts) {
     return;
   }
-  if (opts->have_space) {
-    inst->space = opts->space;
+  if (!mod_scene_assets_legacy_scopes()) {
+    inst->scope_id = opts->have_scope ? opts->scope_id
+                                     : (uint8_t)mod_scene_assets_default_scope_id();
+  } else {
+    inst->scope_id = 0;
   }
   if (opts->have_text) {
     strncpy(inst->text, opts->text, sizeof(inst->text) - 1);
@@ -4133,3 +4175,4 @@ bool mod_scene_smoke_test(void) {
 // agent: grok-4.6 | 2026-08-30 | set_text dirty server_time | c91687
 // agent: grok-4.6 | 2026-08-30 | server_time one host clock | 4b7ff1
 // agent: grok-4.6 | 2026-08-30 | now server_time same wall | e1038b
+// agent: grok-4.6 | 2026-08-30 | describe bind scene scopes | 12f647

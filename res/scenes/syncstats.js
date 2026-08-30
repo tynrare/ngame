@@ -1,4 +1,5 @@
 // agent: grok-4.6 | 2026-08-30 | syncstats eight labels | 553a45
+// agent: grok-4.6 | 2026-08-30 | syncstats world screen scopes | 1b0f12
 function statFunc(kind, mode) {
   function F() {}
   F.prototype.init = function () {};
@@ -25,7 +26,7 @@ function Scene() {}
 
 Scene.prototype.init = function () {
   global.describe("font", "sans", { src: "fonts/LiberationSans-Regular.ttf", draw: "msdf" });
-  global.describe("scene", "view", {
+  global.describe("scope", "world", {
     render: "simple",
     bg: { r: 12, g: 14, b: 22 },
     camera: {
@@ -35,6 +36,8 @@ Scene.prototype.init = function () {
       fovy: 45,
     },
   });
+  global.describe("scope", "screen", { camera: { mode: "ortho" } });
+  global.describe("scene", "view", { scopes: ["world", "screen"] });
   global.describe("label", "l_server_e", { font: "sans", func: Lserver, sync: "server" });
   global.describe("label", "l_shared_e", { font: "sans", func: Lshared, sync: "shared" });
   global.describe("label", "l_owner_e", { font: "sans", func: Lowner, sync: "owner" });
@@ -53,14 +56,14 @@ Scene.prototype.start = function () {
     var y = y0 + i * 36;
     this["l_" + m] = global.spawn("l_" + m + "_e", {
       key: "l_" + m,
-      space: "screen",
+      scope: "screen",
       text: "L " + m + " 0.0",
       size: 22,
       position: { x: 24, y: y, z: 0 },
     });
     this["s_" + m] = global.spawn("s_" + m + "_e", {
       key: "s_" + m,
-      space: "screen",
+      scope: "screen",
       text: "S " + m + " 0.0",
       size: 22,
       position: { x: 420, y: y, z: 0 },
@@ -91,7 +94,10 @@ Scene.prototype.dispose = function () {
     global.dispose("label", "s_" + modes[i] + "_e");
   }
   global.dispose("font", "sans");
+  global.dispose("scope", "world");
+  global.dispose("scope", "screen");
 };
 
 global.module(Scene);
 // agent: grok-4.6 | 2026-08-30 | syncstats eight labels | 553a45
+// agent: grok-4.6 | 2026-08-30 | syncstats world screen scopes | 1b0f12

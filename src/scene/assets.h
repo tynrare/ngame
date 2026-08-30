@@ -19,6 +19,8 @@ typedef enum NgSceneMeshKind {
 typedef enum NgSceneCameraMode {
   NG_SCENE_CAM_FIXED = 0,
   NG_SCENE_CAM_ORBIT = 1,
+  // agent: grok-4.6 | 2026-08-30 | named scope table APIs | 870861
+  NG_SCENE_CAM_ORTHO = 2,
 } NgSceneCameraMode;
 
 typedef enum NgSceneRenderMode {
@@ -85,6 +87,13 @@ typedef struct NgSceneViewMeta {
   float orbit_height;
 } NgSceneViewMeta;
 
+// agent: grok-4.6 | 2026-08-30 | named scope table APIs | 870861
+typedef struct NgSceneScopeDesc {
+  bool alive;
+  char name[32];
+  NgSceneViewMeta meta;
+} NgSceneScopeDesc;
+
 typedef struct NgSceneResolvedModel {
   bool ok;
   NgSceneMeshKind mesh_kind;
@@ -120,6 +129,16 @@ const NgSceneModelDesc *mod_scene_assets_get_model(const char *name);
 /** First MSDF font src, or NULL. */
 const char *mod_scene_assets_first_font_src(void);
 bool mod_scene_assets_describe_view(const NgSceneViewMeta *view);
+/** Register a named camera/render scope. */
+bool mod_scene_assets_describe_scope(const char *name, const NgSceneViewMeta *view);
+/** Bind scene to named scopes (non-legacy). */
+bool mod_scene_assets_bind_scene_scopes(const char *const *names, int n);
+bool mod_scene_assets_legacy_scopes(void);
+int mod_scene_assets_lookup_scope(const char *name);
+int mod_scene_assets_default_scope_id(void);
+int mod_scene_assets_world_scope_id(void);
+bool mod_scene_assets_ortho_scope_id(uint8_t *out_id);
+const NgSceneScopeDesc *mod_scene_assets_scope_at(int id);
 /** Update view camera pos/target (NULL skips). Forces fixed mode. */
 bool mod_scene_assets_set_view_camera(const float *pos, const float *target);
 bool mod_scene_assets_dispose(const char *kind, const char *name);
@@ -135,3 +154,4 @@ NgEntityType mod_scene_assets_entity_type_for_kind(NgSceneMeshKind kind);
 // agent: composer-2.5 | 2026-08-09 | scene render mode enum | d6a4aa
 // agent: composer-2.5 | 2026-08-09 | set view camera assets | 10114b
 // agent: grok-4.6 | 2026-08-30 | font model draw src fields | 8b11df
+// agent: grok-4.6 | 2026-08-30 | named scope table APIs | 870861

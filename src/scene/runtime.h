@@ -20,6 +20,12 @@ typedef struct ModSceneAssetsCtx {
   NgSceneModelDesc models[NG_SCENE_ASSET_MAX];
   int model_count;
   NgSceneViewMeta view;
+  // agent: grok-4.6 | 2026-08-30 | scopes in assets ctx | 667845
+  NgSceneScopeDesc scopes[NG_SCENE_ASSET_MAX];
+  int scope_count;
+  uint8_t scene_scope_ids[NG_SCENE_ASSET_MAX];
+  int scene_scope_count;
+  bool legacy_scopes;
 } ModSceneAssetsCtx;
 
 typedef struct ModSceneCtx {
@@ -61,3 +67,4 @@ ModScenePhysicsCtx *mod_scene_runtime_physics(void);
 // agent: composer-2.5 | 2026-07-29 | deferred js scene route support | 149fdb
 // agent: composer-2.5 | 2026-07-29 | physics runtime ctx | d535f0
 // agent: composer-2.5 | 2026-08-01 | wired module instance slots | 44dab2
+// agent: grok-4.6 | 2026-08-30 | scopes in assets ctx | 667845

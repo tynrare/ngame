@@ -818,7 +818,7 @@ static bool msdf_inst_is_font(const NgSceneInst *inst) {
   return m && m->draw == NG_SCENE_DRAW_MSDF;
 }
 
-void mod_font_msdf_draw_world(const Camera3D *cam) {
+void mod_font_msdf_draw_world(const Camera3D *cam, uint8_t scope_id) {
   // font-msdf step 6
   if (!cam || !mod_font_msdf_ensure()) {
     return;
@@ -830,7 +830,8 @@ void mod_font_msdf_draw_world(const Camera3D *cam) {
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (!inst || inst->space != NG_SCENE_SPACE_WORLD || !msdf_inst_is_font(inst) || !inst->text[0]) {
+    // agent: grok-4.6 | 2026-08-30 | draw MSDF by scope_id | 19de26
+    if (!inst || inst->scope_id != scope_id || !msdf_inst_is_font(inst) || !inst->text[0]) {
       continue;
     }
     msdf_fill_from_inst(&g_scratch, inst);
@@ -845,7 +846,7 @@ void mod_font_msdf_draw_world(const Camera3D *cam) {
   }
 }
 
-void mod_font_msdf_draw_screen(void) {
+void mod_font_msdf_draw_screen(uint8_t scope_id) {
   // font-msdf step 6
   if (!mod_font_msdf_ensure()) {
     return;
@@ -854,7 +855,8 @@ void mod_font_msdf_draw_screen(void) {
   const int n = mod_scene_graph_inst_count();
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (!inst || inst->space != NG_SCENE_SPACE_SCREEN || !msdf_inst_is_font(inst) || !inst->text[0]) {
+    // agent: grok-4.6 | 2026-08-30 | draw MSDF by scope_id | 19de26
+    if (!inst || inst->scope_id != scope_id || !msdf_inst_is_font(inst) || !inst->text[0]) {
       continue;
     }
     msdf_fill_from_inst(&g_scratch, inst);
@@ -874,4 +876,5 @@ void mod_font_msdf_draw_screen(void) {
 // agent: grok-4.6 | 2026-08-30 | disable cull on overlay pass | 389ef2
 // agent: grok-4.6 | 2026-08-30 | graph MSDF screen entity draw | 4a12c8
 // agent: grok-4.6 | 2026-08-30 | graph MSDF screen entity draw | 4a12c8
+// agent: grok-4.6 | 2026-08-30 | draw MSDF by scope_id | 19de26
 

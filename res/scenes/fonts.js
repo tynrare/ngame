@@ -1,4 +1,5 @@
 // agent: grok-4.6 | 2026-08-30 | fonts JS labels and clock | 1f1153
+// agent: grok-4.6 | 2026-08-30 | fonts world screen scopes | ed2e92
 function Cube() {}
 Cube.prototype.init = function () {};
 Cube.prototype.start = function () {};
@@ -36,7 +37,7 @@ Scene.prototype.init = function () {
   });
   global.describe("model", "fonts_mo", { mesh: "fonts_m", shader: "fonts_s" });
   global.describe("font", "sans", { src: "fonts/LiberationSans-Regular.ttf", draw: "msdf" });
-  global.describe("scene", "view", {
+  global.describe("scope", "world", {
     render: "simple",
     bg: { r: 12, g: 14, b: 22 },
     camera: {
@@ -46,6 +47,8 @@ Scene.prototype.init = function () {
       fovy: 45,
     },
   });
+  global.describe("scope", "screen", { camera: { mode: "ortho" } });
+  global.describe("scene", "view", { scopes: ["world", "screen"] });
   global.describe("entity", "fonts_e", {
     model: "fonts_mo",
     func: Cube,
@@ -62,19 +65,20 @@ Scene.prototype.init = function () {
 Scene.prototype.start = function (session) {
   this.cube = global.spawn("fonts_e", {
     key: "main",
+    scope: "world",
     position: { x: 0, y: 0, z: 0 },
     scale: 1,
   });
   this.pangram = global.spawn("pangram_e", {
     key: "pangram",
-    space: "screen",
+    scope: "screen",
     text: "The quick brown fox 12.5",
     size: 22,
     position: { x: 24, y: 72, z: 0 },
   });
   this.small = global.spawn("small_e", {
     key: "small",
-    space: "screen",
+    scope: "screen",
     text: "small 14px",
     size: 14,
     tint: { r: 180, g: 220, b: 255 },
@@ -82,7 +86,7 @@ Scene.prototype.start = function (session) {
   });
   this.large = global.spawn("large_e", {
     key: "large",
-    space: "screen",
+    scope: "screen",
     text: "large 48px",
     size: 48,
     tint: { r: 255, g: 210, b: 120 },
@@ -90,7 +94,7 @@ Scene.prototype.start = function (session) {
   });
   this.outlined = global.spawn("outline_e", {
     key: "outline",
-    space: "screen",
+    scope: "screen",
     text: "outlined",
     size: 28,
     outline: 0.12,
@@ -99,14 +103,14 @@ Scene.prototype.start = function (session) {
   });
   this.clock = global.spawn("clock_e", {
     key: "clock",
-    space: "screen",
+    scope: "screen",
     text: "t=0.00",
     size: 22,
     position: { x: 24, y: 260, z: 0 },
   });
   this.world = global.spawn("world_e", {
     key: "msdf",
-    space: "world",
+    scope: "world",
     text: "MSDF",
     size: 0.45,
     position: { x: 0, y: 1.4, z: 0 },
@@ -138,7 +142,10 @@ Scene.prototype.dispose = function () {
   global.dispose("label", "outline_e");
   global.dispose("label", "world_e");
   global.dispose("label", "clock_e");
+  global.dispose("scope", "world");
+  global.dispose("scope", "screen");
 };
 
 global.module(Scene);
 // agent: grok-4.6 | 2026-08-30 | fonts JS labels and clock | 1f1153
+// agent: grok-4.6 | 2026-08-30 | fonts world screen scopes | ed2e92

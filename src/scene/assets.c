@@ -239,31 +239,181 @@ const char *mod_scene_assets_first_font_src(void) {
   return NULL;
 }
 
+// agent: grok-4.6 | 2026-08-30 | named scope table APIs | 6605bc
+static NgSceneScopeDesc *mod_scene_assets_find_scope(const char *name) {
+  if (!name) {
+    return NULL;
+  }
+  for (int i = 0; i < GASSETS().scope_count; i++) {
+    NgSceneScopeDesc *s = &GASSETS().scopes[i];
+    if (s->alive && strcmp(s->name, name) == 0) {
+      return s;
+    }
+  }
+  return NULL;
+}
+
+static void mod_scene_assets_sync_view(void) {
+  for (int i = 0; i < GASSETS().scene_scope_count; i++) {
+    const int id = GASSETS().scene_scope_ids[i];
+    if (id < 0 || id >= GASSETS().scope_count) {
+      continue;
+    }
+    NgSceneScopeDesc *s = &GASSETS().scopes[id];
+    if (s->alive && s->meta.camera_mode != NG_SCENE_CAM_ORTHO) {
+      GASSETS().view = s->meta;
+      GASSETS().view.valid = true;
+      return;
+    }
+  }
+}
+
+static int mod_scene_assets_scope_index(const NgSceneScopeDesc *s) {
+  if (!s) {
+    return -1;
+  }
+  return (int)(s - GASSETS().scopes);
+}
+
 bool mod_scene_assets_describe_view(const NgSceneViewMeta *view) {
   if (!view) {
     return false;
   }
   GASSETS().view = *view;
   GASSETS().view.valid = true;
+  GASSETS().legacy_scopes = true;
+  NgSceneScopeDesc *s = mod_scene_assets_find_scope("");
+  if (!s) {
+    if (GASSETS().scope_count >= NG_SCENE_ASSET_MAX) {
+      return true;
+    }
+    s = &GASSETS().scopes[GASSETS().scope_count++];
+    memset(s, 0, sizeof(*s));
+    s->alive = true;
+  }
+  s->meta = *view;
+  s->meta.valid = true;
+  GASSETS().scene_scope_ids[0] = (uint8_t)mod_scene_assets_scope_index(s);
+  GASSETS().scene_scope_count = 1;
   return true;
+}
+
+bool mod_scene_assets_describe_scope(const char *name, const NgSceneViewMeta *view) {
+  if (!name || !name[0] || !view) {
+    return false;
+  }
+  NgSceneScopeDesc *s = mod_scene_assets_find_scope(name);
+  if (!s) {
+    if (GASSETS().scope_count >= NG_SCENE_ASSET_MAX) {
+      return false;
+    }
+    s = &GASSETS().scopes[GASSETS().scope_count++];
+    memset(s, 0, sizeof(*s));
+    s->alive = true;
+    strncpy(s->name, name, sizeof(s->name) - 1);
+  }
+  s->meta = *view;
+  s->meta.valid = true;
+  return true;
+}
+
+bool mod_scene_assets_bind_scene_scopes(const char *const *names, int n) {
+  GASSETS().legacy_scopes = false;
+  GASSETS().scene_scope_count = 0;
+  if (!names || n <= 0) {
+    return false;
+  }
+  for (int i = 0; i < n && GASSETS().scene_scope_count < NG_SCENE_ASSET_MAX; i++) {
+    const int id = mod_scene_assets_lookup_scope(names[i]);
+    if (id < 0) {
+      continue;
+    }
+    GASSETS().scene_scope_ids[GASSETS().scene_scope_count++] = (uint8_t)id;
+  }
+  mod_scene_assets_sync_view();
+  return GASSETS().scene_scope_count > 0;
+}
+
+bool mod_scene_assets_legacy_scopes(void) {
+  return GASSETS().legacy_scopes;
+}
+
+int mod_scene_assets_lookup_scope(const char *name) {
+  return mod_scene_assets_scope_index(mod_scene_assets_find_scope(name));
+}
+
+int mod_scene_assets_default_scope_id(void) {
+  if (GASSETS().scene_scope_count > 0) {
+    return GASSETS().scene_scope_ids[0];
+  }
+  return 0;
+}
+
+int mod_scene_assets_world_scope_id(void) {
+  for (int i = 0; i < GASSETS().scene_scope_count; i++) {
+    const int id = GASSETS().scene_scope_ids[i];
+    const NgSceneScopeDesc *s = mod_scene_assets_scope_at(id);
+    if (s && s->alive && s->meta.camera_mode != NG_SCENE_CAM_ORTHO) {
+      return id;
+    }
+  }
+  return mod_scene_assets_default_scope_id();
+}
+
+bool mod_scene_assets_ortho_scope_id(uint8_t *out_id) {
+  if (GASSETS().legacy_scopes) {
+    return false;
+  }
+  for (int i = 0; i < GASSETS().scene_scope_count; i++) {
+    const int id = GASSETS().scene_scope_ids[i];
+    const NgSceneScopeDesc *s = mod_scene_assets_scope_at(id);
+    if (s && s->alive && s->meta.camera_mode == NG_SCENE_CAM_ORTHO) {
+      if (out_id) {
+        *out_id = (uint8_t)id;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+const NgSceneScopeDesc *mod_scene_assets_scope_at(int id) {
+  if (id < 0 || id >= GASSETS().scope_count) {
+    return NULL;
+  }
+  return &GASSETS().scopes[id];
 }
 
 // agent: composer-2.5 | 2026-08-09 | set view camera assets | d004a6
 bool mod_scene_assets_set_view_camera(const float *pos, const float *target) {
-  if (!GASSETS().view.valid) {
-    return false;
+  NgSceneViewMeta *meta = NULL;
+  for (int i = 0; i < GASSETS().scene_scope_count; i++) {
+    const int id = GASSETS().scene_scope_ids[i];
+    NgSceneScopeDesc *s = (NgSceneScopeDesc *)mod_scene_assets_scope_at(id);
+    if (s && s->alive && s->meta.camera_mode != NG_SCENE_CAM_ORTHO) {
+      meta = &s->meta;
+      break;
+    }
+  }
+  if (!meta) {
+    if (!GASSETS().view.valid) {
+      return false;
+    }
+    meta = &GASSETS().view;
   }
   if (pos) {
-    GASSETS().view.cam_pos[0] = pos[0];
-    GASSETS().view.cam_pos[1] = pos[1];
-    GASSETS().view.cam_pos[2] = pos[2];
+    meta->cam_pos[0] = pos[0];
+    meta->cam_pos[1] = pos[1];
+    meta->cam_pos[2] = pos[2];
   }
   if (target) {
-    GASSETS().view.cam_target[0] = target[0];
-    GASSETS().view.cam_target[1] = target[1];
-    GASSETS().view.cam_target[2] = target[2];
+    meta->cam_target[0] = target[0];
+    meta->cam_target[1] = target[1];
+    meta->cam_target[2] = target[2];
   }
-  GASSETS().view.camera_mode = NG_SCENE_CAM_FIXED;
+  meta->camera_mode = NG_SCENE_CAM_FIXED;
+  GASSETS().view = *meta;
+  GASSETS().view.valid = true;
   return true;
 }
 
@@ -291,6 +441,13 @@ bool mod_scene_assets_dispose(const char *kind, const char *name) {
     NgSceneModelDesc *m = mod_scene_assets_find_model(name);
     if (m) {
       m->alive = false;
+      return true;
+    }
+  } else if (strcmp(kind, "scope") == 0) {
+    // agent: grok-4.6 | 2026-08-30 | named scope table APIs | 6605bc
+    NgSceneScopeDesc *s = mod_scene_assets_find_scope(name);
+    if (s) {
+      s->alive = false;
       return true;
     }
   }
@@ -358,3 +515,4 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | c86521
 // agent: composer-2.5 | 2026-08-09 | set view camera assets | d004a6
 // agent: grok-4.6 | 2026-08-30 | describe font without mesh | 3b5e0c
+// agent: grok-4.6 | 2026-08-30 | named scope table APIs | 6605bc
