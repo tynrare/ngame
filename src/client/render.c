@@ -1612,7 +1612,7 @@ static void mod_render_draw_batch_gbuf(ModRenderCtx *ctx, const RenderAsset *a, 
   DrawMeshInstanced(a->model.meshes[0], mat, b->mats, b->count);
 }
 
-static void mod_render_collect_graph_batches(ModRenderCtx *ctx) {
+static void mod_render_collect_graph_batches(ModRenderCtx *ctx, uint8_t space) {
   mod_render_batches_reset_counts(ctx);
   // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5
   // agent: composer-2.5 | 2026-08-13 | CPU batch filter from traverse | 4d378d
@@ -1627,7 +1627,12 @@ static void mod_render_collect_graph_batches(ModRenderCtx *ctx) {
                                ctx->debug_pass == NG_RENDER_PASS_PROBES_LOD;
   for (int i = 0; i < n; i++) {
     const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (!inst || !inst->model[0]) {
+    if (!inst || !inst->model[0] || inst->space != space) {
+      continue;
+    }
+    // agent: grok-4.6 | 2026-08-30 | drop fonts scene C branch | 347d96
+    const NgSceneModelDesc *md = mod_scene_assets_get_model(inst->model);
+    if (md && md->draw == NG_SCENE_DRAW_MSDF) {
       continue;
     }
     if (!mod_render_asset_for_model(ctx, inst->model)) {
@@ -1721,28 +1726,15 @@ static void mod_render_blit_rt_opaque(ModRenderCtx *ctx, const RenderTexture2D *
   rlEnableColorBlend();
 }
 
-/** True when the view scene is the MSDF fonts demo. */
-static bool mod_render_fonts_scene(const ModRenderCtx *ctx) {
-  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
-  mod_scene_runtime_use_view();
-  const char *vid = mod_scene_view_current_id();
-  if (vid && vid[0] && strcmp(vid, "fonts") == 0) {
-    return true;
-  }
-  return ctx && ctx->scene_label[0] && strcmp(ctx->scene_label, "fonts") == 0;
-}
-
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
   mod_scene_runtime_use_view();
-  mod_render_collect_graph_batches(ctx);
+  mod_render_collect_graph_batches(ctx, NG_SCENE_SPACE_WORLD);
   BeginMode3D(ctx->camera);
   mod_render_flush_batches(ctx);
-  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
-  // font-msdf step 5
-  if (mod_render_fonts_scene(ctx)) {
-    mod_font_msdf_draw_demo_world(&ctx->camera);
-  }
+  // agent: grok-4.6 | 2026-08-30 | drop fonts scene C branch | 347d96
+  // font-msdf step 8
+  mod_font_msdf_draw_world(&ctx->camera);
   EndMode3D();
 }
 
@@ -1854,7 +1846,7 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
         rc_ready = ctx->ws_rt_ready && ctx->chunk_gi_ready && ctx->rc_compose.ready &&
                    ctx->ws_cpu.prim_tex_ready && ctx->ws_cpu.bvh_tex_ready && ctx->ws_cull_ready;
       }
-      mod_render_collect_graph_batches(ctx);
+      mod_render_collect_graph_batches(ctx, NG_SCENE_SPACE_WORLD);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_albedo, 0);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_normal, 1);
       mod_render_fill_gbuf_graph(ctx, &ctx->rt_glow, 2);
@@ -1947,11 +1939,18 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
   DrawText(TextFormat("scale=%.2f %dx%d", ctx->render_scale, ctx->present_w, ctx->present_h), 10,
            34, 18, LIME);
-  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
-  // font-msdf step 5
-  if (mod_render_fonts_scene(ctx)) {
-    mod_font_msdf_draw_demo_overlay();
-  }
+  // agent: grok-4.6 | 2026-08-30 | drop fonts scene C branch | 347d96
+  // font-msdf step 8
+  rlDisableDepthTest();
+  rlDisableBackfaceCulling();
+  rlSetMatrixProjection(MatrixOrtho(0.0, (double)GetScreenWidth(), (double)GetScreenHeight(), 0.0,
+                                    -1.0, 1.0));
+  rlSetMatrixModelview(MatrixIdentity());
+  mod_render_collect_graph_batches(ctx, NG_SCENE_SPACE_SCREEN);
+  mod_render_flush_batches(ctx);
+  mod_font_msdf_draw_screen();
+  rlEnableBackfaceCulling();
+  rlEnableDepthTest();
 }
 // agent: composer-2.5 | 2026-07-26 | session bootstrap render state | d8e9f0
 void mod_render_apply_session(const NgSessionState *session) {
@@ -2061,7 +2060,7 @@ static void mod_render_shutdown(void *vctx) {
   mod_render_unload_gbuf(ctx);
   mod_render_unload_rc(ctx);
   mod_render_unload_present(ctx);
-  // agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
+  // agent: grok-4.6 | 2026-08-30 | drop fonts scene C branch | 347d96
   mod_font_msdf_shutdown();
 }
 
@@ -2368,4 +2367,4 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: grok-4.6 | 2026-08-21 | C2 t1 64 more steps | 04531e
 // agent: grok-4.6 | 2026-08-21 | strip dead clip SS probe paths | 36a296
 // agent: grok-4.6 | 2026-08-21 | bind prev SH atlas fill | ad6dd7
-// agent: grok-4.6 | 2026-08-28 | MSDF demo draw hooks | 335056
+// agent: grok-4.6 | 2026-08-30 | drop fonts scene C branch | 347d96

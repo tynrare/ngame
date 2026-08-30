@@ -177,6 +177,8 @@ bool mod_scene_assets_describe_model(const char *name, const char *mesh, const c
       strncpy(existing->shader, shader, sizeof(existing->shader) - 1);
     }
     existing->mesh_kind = md->kind;
+    existing->draw = NG_SCENE_DRAW_MESH;
+    existing->font_src[0] = '\0';
     return true;
   }
   if (GASSETS().model_count >= NG_SCENE_ASSET_MAX) {
@@ -191,7 +193,50 @@ bool mod_scene_assets_describe_model(const char *name, const char *mesh, const c
     strncpy(m->shader, shader, sizeof(m->shader) - 1);
   }
   m->mesh_kind = md->kind;
+  m->draw = NG_SCENE_DRAW_MESH;
   return true;
+}
+
+// agent: grok-4.6 | 2026-08-30 | describe font without mesh | 3b5e0c
+bool mod_scene_assets_describe_font(const char *name, const char *src) {
+  if (!name) {
+    return false;
+  }
+  if (!src || src[0] == '\0') {
+    src = "fonts/LiberationSans-Regular.ttf";
+  }
+  NgSceneModelDesc *existing = mod_scene_assets_find_model(name);
+  if (existing) {
+    existing->draw = NG_SCENE_DRAW_MSDF;
+    existing->mesh[0] = '\0';
+    existing->shader[0] = '\0';
+    strncpy(existing->font_src, src, sizeof(existing->font_src) - 1);
+    return true;
+  }
+  if (GASSETS().model_count >= NG_SCENE_ASSET_MAX) {
+    return false;
+  }
+  NgSceneModelDesc *m = &GASSETS().models[GASSETS().model_count++];
+  memset(m, 0, sizeof(*m));
+  m->alive = true;
+  strncpy(m->name, name, sizeof(m->name) - 1);
+  m->draw = NG_SCENE_DRAW_MSDF;
+  strncpy(m->font_src, src, sizeof(m->font_src) - 1);
+  return true;
+}
+
+const NgSceneModelDesc *mod_scene_assets_get_model(const char *name) {
+  return mod_scene_assets_find_model(name);
+}
+
+const char *mod_scene_assets_first_font_src(void) {
+  for (int i = 0; i < GASSETS().model_count; i++) {
+    const NgSceneModelDesc *m = &GASSETS().models[i];
+    if (m->alive && m->draw == NG_SCENE_DRAW_MSDF && m->font_src[0]) {
+      return m->font_src;
+    }
+  }
+  return NULL;
 }
 
 bool mod_scene_assets_describe_view(const NgSceneViewMeta *view) {
@@ -253,6 +298,9 @@ bool mod_scene_assets_dispose(const char *kind, const char *name) {
 }
 
 static bool mod_scene_assets_fill_resolved(const NgSceneModelDesc *model, NgSceneResolvedModel *out) {
+  if (!model || model->draw == NG_SCENE_DRAW_MSDF) {
+    return false;
+  }
   const NgSceneMeshDesc *mesh = mod_scene_assets_find_mesh(model->mesh);
   const NgSceneShaderDesc *shader =
       model->shader[0] != '\0' ? mod_scene_assets_find_shader(model->shader) : NULL;
@@ -297,7 +345,7 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
   }
   for (int i = 0; i < GASSETS().model_count; i++) {
     NgSceneModelDesc *model = &GASSETS().models[i];
-    if (!model->alive || model->mesh_kind != kind) {
+    if (!model->alive || model->draw == NG_SCENE_DRAW_MSDF || model->mesh_kind != kind) {
       continue;
     }
     return mod_scene_assets_fill_resolved(model, out);
@@ -309,3 +357,4 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
 // agent: composer-2.5 | 2026-07-28 | parse mesh shape from js field | a4b5c6
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | c86521
 // agent: composer-2.5 | 2026-08-09 | set view camera assets | d004a6
+// agent: grok-4.6 | 2026-08-30 | describe font without mesh | 3b5e0c

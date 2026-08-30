@@ -17,7 +17,8 @@
 <!-- agent: composer-2.5 | 2026-08-09 | scenes Phase3 SS note | 29f238 -->
 <!-- agent: composer-2.5 | 2026-08-10 | scenes Phase4 WS volume note | 99a031 -->
 <!-- agent: grok-4.6 | 2026-08-28 | list fonts scene id | fa75d3 -->
-Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, **`example`** (helpers demo), or **`fonts`** (MSDF overlay + world label).
+<!-- agent: grok-4.6 | 2026-08-30 | list syncstats scene | 634428 -->
+Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, **`example`** (helpers demo), **`fonts`** (MSDF labels as graph entities), or **`syncstats`** (text sync + host clock).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
@@ -49,6 +50,35 @@ global.describe("scene", "view", {
 ```
 
 See `res/scenes/cube.js`, `res/scenes/sphere.js`, and `res/scenes/rc.js` (`render: "rc"`).
+
+<!-- agent: grok-4.6 | 2026-08-30 | docs JS font label entities | 9d21d9 -->
+## Font / label (aliases)
+
+`describe("font", …)` is `describe("model")` with `{ src, draw: "msdf" }`. `describe("label", …)` is `describe("entity")`. Entity fields `font` and `model` are the same slot.
+
+```javascript
+global.describe("font", "sans", { src: "fonts/LiberationSans-Regular.ttf", draw: "msdf" });
+global.describe("label", "clock_e", { font: "sans", func: Clock, sync: "shared" });
+global.spawn("clock_e", {
+  key: "clock",
+  space: "screen", // or "world"; also 0/1. Default world. Applies to mesh entities too.
+  text: "t=0.00",
+  size: 22,
+  outline: 0.12,
+  tint: { r, g, b },
+  position: { x: 24, y: 260, z: 0 },
+});
+global.set_text(handle, "t=1.23");
+```
+
+See `res/scenes/fonts.js`.
+
+<!-- agent: grok-4.6 | 2026-08-30 | list syncstats scene | 634428 -->
+## syncstats
+
+Eight screen labels (L/S × server/shared/owner/local). L uses `global.now()` on the stepping heap; S uses `global.server_time()` (host `GetTime()` on each state packet). Text rides proto v15 `NG_COMP_TEXT`.
+
+See `res/scenes/syncstats.js`.
 
 <!-- agent: grok-4.6 | 2026-08-21 | scenes RC interval GI not compose | 38bb58 -->
 <!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
@@ -148,7 +178,7 @@ Agent: `lockstep_hash` returns the current physics transform checksum and tick.
 Omit `sim`, or use non-input-sim (implicit `server`): host runs Box3D for bodies according to entity sync (`server` on host, `shared`/`local` on views, `owner` on controller).
 
 <!-- agent: composer-2.5 | 2026-08-09 | state rot mrad euler docs | 1118bb -->
-Live replication uses unreliable `STATE_UPDATE` with quantized **pose + lin/ang vel** (cm / mrad) and **signed mrad euler** orientation (proto v14; yaw in `rot[1]` is not asin-clamped). At-rest omits vel. For `sync: "server"` only: per-peer ACK **delta** (`NG_COMP_FLAGS`) with absolute keyframes ~every 30 sends; **shared / multi-author stay absolute**. Flush prioritizes |velocity| × interest (R≈40, skip beyond 2R; up to 24 per pass).
+Live replication uses unreliable `STATE_UPDATE` with quantized **pose + lin/ang vel** (cm / mrad) and **signed mrad euler** orientation (proto v14; yaw in `rot[1]` is not asin-clamped). Proto **v15** adds **u16** `comp_mask`, **`NG_COMP_TEXT`** (`u8` len + bytes), and **f32 host_time** on each state update/batch. At-rest omits vel. For `sync: "server"` only: per-peer ACK **delta** (`NG_COMP_FLAGS`) with absolute keyframes ~every 30 sends; **shared / multi-author stay absolute**. Text is always absolute (no ack baseline). Flush prioritizes |velocity| × interest (R≈40, skip beyond 2R; up to 24 per pass).
 
 Views keep a sample ring and **Hermite**-interpolate with adaptive delay (~3× arrival EMA, clamp 50–350 ms; `NG_STATE_INTERP_MS` override). Past the newest sample, **hold** (no naive extrapolate). For `sync: "server"` bodies, the view attaches a **kinematic Box3D proxy** driven by pose+vel. Controller `owner` bodies: local sim; skip applying absolute host updates when error is below ~5 cm / ~5°.
 
@@ -248,3 +278,5 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: grok-4.6 | 2026-08-21 | RC scenes point chunked grid | c330f0 -->
 <!-- agent: grok-4.6 | 2026-08-21 | scenes RC emit sky compose | 22e772 -->
 <!-- agent: grok-4.6 | 2026-08-28 | list fonts scene id | fa75d3 -->
+<!-- agent: grok-4.6 | 2026-08-30 | docs JS font label entities | 9d21d9 -->
+<!-- agent: grok-4.6 | 2026-08-30 | list syncstats scene | 634428 -->

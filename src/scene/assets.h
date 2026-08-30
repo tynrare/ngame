@@ -27,6 +27,12 @@ typedef enum NgSceneRenderMode {
   NG_SCENE_RENDER_RC = 2,
 } NgSceneRenderMode;
 
+// agent: grok-4.6 | 2026-08-30 | font model draw src fields | 8b11df
+typedef enum NgSceneModelDraw {
+  NG_SCENE_DRAW_MESH = 0,
+  NG_SCENE_DRAW_MSDF = 1,
+} NgSceneModelDraw;
+
 typedef struct NgSceneMeshDesc {
   bool alive;
   char name[32];
@@ -59,6 +65,9 @@ typedef struct NgSceneModelDesc {
   char mesh[32];
   char shader[32];
   NgSceneMeshKind mesh_kind;
+  // agent: grok-4.6 | 2026-08-30 | font model draw src fields | 8b11df
+  NgSceneModelDraw draw;
+  char font_src[64];
 } NgSceneModelDesc;
 
 typedef struct NgSceneViewMeta {
@@ -105,6 +114,11 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
                                       uint8_t glow_b, bool have_glow, float roughness,
                                       float metalness);
 bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader);
+/** Register an MSDF font as a model (no mesh). */
+bool mod_scene_assets_describe_font(const char *name, const char *src);
+const NgSceneModelDesc *mod_scene_assets_get_model(const char *name);
+/** First MSDF font src, or NULL. */
+const char *mod_scene_assets_first_font_src(void);
 bool mod_scene_assets_describe_view(const NgSceneViewMeta *view);
 /** Update view camera pos/target (NULL skips). Forces fixed mode. */
 bool mod_scene_assets_set_view_camera(const float *pos, const float *target);
@@ -120,3 +134,4 @@ NgEntityType mod_scene_assets_entity_type_for_kind(NgSceneMeshKind kind);
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 9bd320
 // agent: composer-2.5 | 2026-08-09 | scene render mode enum | d6a4aa
 // agent: composer-2.5 | 2026-08-09 | set view camera assets | 10114b
+// agent: grok-4.6 | 2026-08-30 | font model draw src fields | 8b11df

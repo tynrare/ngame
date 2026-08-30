@@ -15,7 +15,8 @@ struct NgActionResult;
 // agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
 // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
 // agent: composer-2.5 | 2026-08-09 | bump proto version 14 | 134f65
-#define NG_PROTO_VERSION 14
+// agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 35cd29
+#define NG_PROTO_VERSION 15
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -173,6 +174,16 @@ bool ng_proto_encode_session(NgProtoBuf *b, uint16_t seq, const NgSessionState *
 bool ng_proto_decode_session(NgProtoBuf *b, NgSessionState *session);
 bool ng_proto_encode_state_update(NgProtoBuf *b, uint16_t seq, const NgStateUpdate *update);
 bool ng_proto_decode_state_update(NgProtoBuf *b, NgStateUpdate *update);
+/** Stamp host GetTime() onto the next state encode and JS server_time cache. */
+void ng_proto_stamp_host_time(float t);
+// agent: grok-4.6 | 2026-08-30 | view cache host_time only | 4d3b54
+/** Apply decoded packet host_time to JS cache (views only). */
+void ng_proto_cache_rx_host_time(bool on);
+/** Last host_time (stamp or view packet; 0 until first). */
+float ng_proto_host_time(void);
+// agent: grok-4.6 | 2026-08-30 | elapsed wall host clock | f72906
+/** Seconds since process start (monotonic, same clock as state host_time). */
+float ng_proto_wall_seconds(void);
 bool ng_proto_encode_state_batch(NgProtoBuf *b, uint16_t seq, uint32_t tick,
                                  const NgStateUpdate *updates, int count);
 bool ng_proto_decode_state_batch(NgProtoBuf *b, NgStateUpdate *updates, int max_count, int *out_count);
@@ -210,3 +221,6 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
 // agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
 // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
 // agent: composer-2.5 | 2026-08-09 | bump proto version 14 | 134f65
+// agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 35cd29
+// agent: grok-4.6 | 2026-08-30 | view cache host_time only | 4d3b54
+// agent: grok-4.6 | 2026-08-30 | elapsed wall host clock | f72906

@@ -429,6 +429,11 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, const char 
   }
   inst->scale = scale > 0.0f ? scale : 1.0f;
   inst->script_inst_stash = -1;
+  // agent: grok-4.6 | 2026-08-30 | default label tint size | c8573b
+  inst->text_size = 16.0f;
+  inst->tint_r = 255;
+  inst->tint_g = 255;
+  inst->tint_b = 255;
   if (!mod_scene_graph_registry_add_instance(desc_name, key, inst->id, d->sync, inst->pos, inst->rot,
                                              inst->scale)) {
     NG_LOG_WARN("spawn: registry full — refuse %s", desc_name);
@@ -549,7 +554,8 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
     }
     const uint32_t wire_mask =
         inst->comp_dirty &
-        (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE | NG_COMP_LIN_VEL | NG_COMP_ANG_VEL);
+        (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE | NG_COMP_LIN_VEL | NG_COMP_ANG_VEL |
+         NG_COMP_TEXT);
     if (wire_mask == 0) {
       inst->comp_dirty = 0;
       continue;
@@ -557,8 +563,10 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
     out->entity_id = inst->id;
     out->seq = ++GGRAPH().next_seq;
     inst->last_sent_seq = out->seq;
-    out->comp_mask = (uint8_t)wire_mask;
+    // agent: grok-4.6 | 2026-08-30 | take dirty apply TEXT | de33e1
+    out->comp_mask = (uint16_t)wire_mask;
     out->tick = 0;
+    out->text[0] = '\0';
     if (wire_mask & NG_COMP_POS) {
       out->pos[0] = inst->pos[0];
       out->pos[1] = inst->pos[1];
@@ -581,6 +589,10 @@ bool mod_scene_graph_take_dirty(NgStateUpdate *out) {
       out->ang_vel[0] = inst->ang_vel[0];
       out->ang_vel[1] = inst->ang_vel[1];
       out->ang_vel[2] = inst->ang_vel[2];
+    }
+    if (wire_mask & NG_COMP_TEXT) {
+      strncpy(out->text, inst->text, NG_STATE_TEXT_MAX - 1);
+      out->text[NG_STATE_TEXT_MAX - 1] = '\0';
     }
     inst->comp_dirty &= ~wire_mask;
     return true;
@@ -664,6 +676,11 @@ void mod_scene_graph_apply_update(const NgStateUpdate *update) {
         inst->ang_vel[1] = update->ang_vel[1];
         inst->ang_vel[2] = update->ang_vel[2];
       }
+    }
+    // agent: grok-4.6 | 2026-08-30 | take dirty apply TEXT | de33e1
+    if (update->comp_mask & NG_COMP_TEXT) {
+      strncpy(inst->text, update->text, sizeof(inst->text) - 1);
+      inst->text[sizeof(inst->text) - 1] = '\0';
     }
   }
   float pos[3] = {0}, rot[3] = {0};
@@ -989,7 +1006,7 @@ static bool mod_scene_graph_float3_near(const float a[3], const float b[3], floa
   return fabsf(a[0] - b[0]) <= eps && fabsf(a[1] - b[1]) <= eps && fabsf(a[2] - b[2]) <= eps;
 }
 
-static void mod_scene_graph_fill_absolute(NgSceneInst *inst, NgStateUpdate *inout, uint8_t mask) {
+static void mod_scene_graph_fill_absolute(NgSceneInst *inst, NgStateUpdate *inout, uint16_t mask) {
   if (mask & NG_COMP_POS) {
     inout->pos[0] = inst->pos[0];
     inout->pos[1] = inst->pos[1];
@@ -1013,6 +1030,11 @@ static void mod_scene_graph_fill_absolute(NgSceneInst *inst, NgStateUpdate *inou
     inout->ang_vel[1] = inst->ang_vel[1];
     inout->ang_vel[2] = inst->ang_vel[2];
   }
+  // agent: grok-4.6 | 2026-08-30 | take dirty apply TEXT | de33e1
+  if (mask & NG_COMP_TEXT) {
+    strncpy(inout->text, inst->text, NG_STATE_TEXT_MAX - 1);
+    inout->text[NG_STATE_TEXT_MAX - 1] = '\0';
+  }
 }
 
 bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout,
@@ -1020,9 +1042,9 @@ bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout
   if (!inst || !inout) {
     return false;
   }
-  uint8_t mask = (uint8_t)(inout->comp_mask &
-                           (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE | NG_COMP_LIN_VEL |
-                            NG_COMP_ANG_VEL));
+  uint16_t mask = (uint16_t)(inout->comp_mask &
+                             (NG_COMP_POS | NG_COMP_ROT | NG_COMP_SCALE | NG_COMP_LIN_VEL |
+                              NG_COMP_ANG_VEL | NG_COMP_TEXT));
   float vel_mag = 0.0f;
   if (mask & NG_COMP_LIN_VEL) {
     vel_mag += fabsf(inout->lin_vel[0]) + fabsf(inout->lin_vel[1]) + fabsf(inout->lin_vel[2]);
@@ -1031,7 +1053,7 @@ bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout
     vel_mag += fabsf(inout->ang_vel[0]) + fabsf(inout->ang_vel[1]) + fabsf(inout->ang_vel[2]);
   }
   if (vel_mag < 0.02f) {
-    mask = (uint8_t)(mask & ~(NG_COMP_LIN_VEL | NG_COMP_ANG_VEL));
+    mask = (uint16_t)(mask & ~(NG_COMP_LIN_VEL | NG_COMP_ANG_VEL));
     inout->lin_vel[0] = inout->lin_vel[1] = inout->lin_vel[2] = 0.0f;
     inout->ang_vel[0] = inout->ang_vel[1] = inout->ang_vel[2] = 0.0f;
   }
@@ -1052,7 +1074,7 @@ bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout
     }
     return true;
   }
-  uint8_t out_mask = 0;
+  uint16_t out_mask = 0;
   bool force_absolute = false;
   if ((mask & NG_COMP_POS) && mod_scene_graph_float3_near(inout->pos, ack->pos, 0.005f)) {
     /* omit */
@@ -1134,7 +1156,10 @@ bool mod_scene_graph_prepare_wire_update(NgSceneInst *inst, NgStateUpdate *inout
     ack->sends_since_abs = 0;
     return true;
   }
-  if (out_mask != 0) {
+  if (mask & NG_COMP_TEXT) {
+    out_mask |= NG_COMP_TEXT;
+  }
+  if ((out_mask & ~NG_COMP_TEXT) != 0) {
     out_mask |= NG_COMP_FLAGS;
   }
   inout->comp_mask = out_mask;
@@ -1193,7 +1218,13 @@ float mod_scene_graph_flush_priority_at(const NgStateUpdate *u, const float orig
   if (u->comp_mask & (NG_COMP_POS | NG_COMP_ROT)) {
     score += 0.01f;
   }
+  if (u->comp_mask & NG_COMP_TEXT) {
+    score += 1.0f;
+  }
   if (!origin || interest_r <= 0.0f) {
+    return score;
+  }
+  if (u->comp_mask & NG_COMP_TEXT) {
     return score;
   }
   float pos[3];
@@ -1268,3 +1299,5 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-08-09 | euler wrap finite guard | da648a
 // agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | 99f736
 // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5
+// agent: grok-4.6 | 2026-08-30 | default label tint size | c8573b
+// agent: grok-4.6 | 2026-08-30 | take dirty apply TEXT | de33e1

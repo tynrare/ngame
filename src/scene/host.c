@@ -47,6 +47,23 @@ static double mod_scene_now(void) {
   return GetTime();
 #endif
 }
+
+/** Seconds since process start; shared with proto host_time stamps. */
+// agent: grok-4.6 | 2026-08-30 | now server_time same wall | e1038b
+static double mod_scene_wall_clock(void) {
+  return (double)ng_proto_wall_seconds();
+}
+
+/** True when this process is the sim host (dedicated or solo/embedded). */
+static bool mod_scene_owns_host_clock(void) {
+#if defined(NG_SERVER)
+  return true;
+#elif defined(NG_HAS_EMBEDDED)
+  return mod_net_is_authoritative();
+#else
+  return false;
+#endif
+}
 #define NG_SCENE_ACTIVE() (mod_scene_runtime_scene())
 
 static int g_jsmod_eval_depth;
@@ -338,6 +355,12 @@ static duk_ret_t bind_describe(duk_context *ctx) {
   const char *model = NULL;
   const char *body = NULL;
   int func_idx = -1;
+  // agent: grok-4.6 | 2026-08-30 | label font describe aliases | e2eeb1
+  if (strcmp(kind, "label") == 0) {
+    kind = "entity";
+  } else if (strcmp(kind, "font") == 0) {
+    kind = "model";
+  }
 
   if (duk_is_object(ctx, 2)) {
     duk_get_prop_string(ctx, 2, "sync");
@@ -438,6 +461,8 @@ static duk_ret_t bind_describe(duk_context *ctx) {
     } else if (strcmp(kind, "model") == 0) {
       const char *mesh = NULL;
       const char *shader = NULL;
+      const char *src = NULL;
+      const char *draw = NULL;
       duk_get_prop_string(ctx, 2, "mesh");
       if (duk_is_string(ctx, -1)) {
         mesh = duk_get_string(ctx, -1);
@@ -448,7 +473,22 @@ static duk_ret_t bind_describe(duk_context *ctx) {
         shader = duk_get_string(ctx, -1);
       }
       duk_pop(ctx);
-      mod_scene_assets_describe_model(name, mesh, shader);
+      duk_get_prop_string(ctx, 2, "src");
+      if (duk_is_string(ctx, -1)) {
+        src = duk_get_string(ctx, -1);
+      }
+      duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "draw");
+      if (duk_is_string(ctx, -1)) {
+        draw = duk_get_string(ctx, -1);
+      }
+      duk_pop(ctx);
+      // agent: grok-4.6 | 2026-08-30 | label font describe aliases | e2eeb1
+      if (src || (draw && strcmp(draw, "msdf") == 0)) {
+        mod_scene_assets_describe_font(name, src);
+      } else {
+        mod_scene_assets_describe_model(name, mesh, shader);
+      }
     } else if (strcmp(kind, "shape") == 0) {
       // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
       // agent: composer-2.5 | 2026-07-30 | gravity vel mass js api | f956eb
@@ -519,6 +559,14 @@ static duk_ret_t bind_describe(duk_context *ctx) {
         model = duk_get_string(ctx, -1);
       }
       duk_pop(ctx);
+      // agent: grok-4.6 | 2026-08-30 | label font describe aliases | e2eeb1
+      if (!model) {
+        duk_get_prop_string(ctx, 2, "font");
+        if (duk_is_string(ctx, -1)) {
+          model = duk_get_string(ctx, -1);
+        }
+        duk_pop(ctx);
+      }
       duk_get_prop_string(ctx, 2, "body");
       if (duk_is_string(ctx, -1)) {
         body = duk_get_string(ctx, -1);
@@ -588,6 +636,19 @@ typedef struct ModSceneSpawnOpts {
   bool have_pos;
   bool have_rot;
   bool have_scale;
+  // agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
+  uint8_t space;
+  bool have_space;
+  char text[NG_SCENE_TEXT_MAX];
+  bool have_text;
+  float text_size;
+  bool have_size;
+  float text_outline;
+  bool have_outline;
+  uint8_t tint_r;
+  uint8_t tint_g;
+  uint8_t tint_b;
+  bool have_tint;
 } ModSceneSpawnOpts;
 
 static void mod_scene_spawn_opts_default(ModSceneSpawnOpts *opts) {
@@ -635,6 +696,51 @@ static void mod_scene_read_spawn_opts(duk_context *ctx, int idx, ModSceneSpawnOp
     opts->have_scale = true;
   }
   duk_pop(ctx);
+  // agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
+  duk_get_prop_string(ctx, idx, "space");
+  if (duk_is_string(ctx, -1)) {
+    const char *sp = duk_get_string(ctx, -1);
+    if (sp && (strcmp(sp, "screen") == 0 || strcmp(sp, "1") == 0)) {
+      opts->space = NG_SCENE_SPACE_SCREEN;
+    } else {
+      opts->space = NG_SCENE_SPACE_WORLD;
+    }
+    opts->have_space = true;
+  } else if (duk_is_number(ctx, -1)) {
+    opts->space = duk_get_int(ctx, -1) != 0 ? NG_SCENE_SPACE_SCREEN : NG_SCENE_SPACE_WORLD;
+    opts->have_space = true;
+  }
+  duk_pop(ctx);
+  duk_get_prop_string(ctx, idx, "text");
+  if (duk_is_string(ctx, -1)) {
+    const char *t = duk_get_string(ctx, -1);
+    if (t) {
+      strncpy(opts->text, t, sizeof(opts->text) - 1);
+    }
+    opts->have_text = true;
+  }
+  duk_pop(ctx);
+  duk_get_prop_string(ctx, idx, "size");
+  if (duk_is_number(ctx, -1)) {
+    opts->text_size = (float)duk_get_number(ctx, -1);
+    opts->have_size = true;
+  }
+  duk_pop(ctx);
+  duk_get_prop_string(ctx, idx, "outline");
+  if (duk_is_number(ctx, -1)) {
+    opts->text_outline = (float)duk_get_number(ctx, -1);
+    opts->have_outline = true;
+  }
+  duk_pop(ctx);
+  duk_get_prop_string(ctx, idx, "tint");
+  if (duk_is_object(ctx, -1)) {
+    const int tidx = duk_get_top_index(ctx);
+    opts->tint_r = (uint8_t)mod_scene_read_opt_number(ctx, tidx, "r", 255.0f);
+    opts->tint_g = (uint8_t)mod_scene_read_opt_number(ctx, tidx, "g", 255.0f);
+    opts->tint_b = (uint8_t)mod_scene_read_opt_number(ctx, tidx, "b", 255.0f);
+    opts->have_tint = true;
+  }
+  duk_pop(ctx);
 }
 
 static bool mod_scene_spawn_should_materialize(NgSyncMode sync, bool on_server,
@@ -653,13 +759,41 @@ static bool mod_scene_spawn_should_materialize(NgSyncMode sync, bool on_server,
   return !on_server;
 }
 
+// agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
+static void mod_scene_inst_apply_spawn_extras(NgSceneInst *inst, const ModSceneSpawnOpts *opts) {
+  if (!inst || !opts) {
+    return;
+  }
+  if (opts->have_space) {
+    inst->space = opts->space;
+  }
+  if (opts->have_text) {
+    strncpy(inst->text, opts->text, sizeof(inst->text) - 1);
+    inst->text[sizeof(inst->text) - 1] = '\0';
+  }
+  if (opts->have_size) {
+    inst->text_size = opts->text_size;
+  }
+  if (opts->have_outline) {
+    inst->text_outline = opts->text_outline;
+  }
+  if (opts->have_tint) {
+    inst->tint_r = opts->tint_r;
+    inst->tint_g = opts->tint_g;
+    inst->tint_b = opts->tint_b;
+  }
+}
+
 static int mod_scene_finish_spawn(duk_context *ctx, ModSceneCtx *scene, const char *name,
                                   uint32_t entity_id, const char *key, const float pos[3],
-                                  const float rot[3], float scale, int func_idx) {
+                                  const float rot[3], float scale, int func_idx,
+                                  const ModSceneSpawnOpts *extras) {
   const int handle =
       mod_scene_graph_spawn(name, entity_id, key, pos, rot, scale, ctx, func_idx);
   NgSceneInst *inst = mod_scene_inst_from_handle(handle);
   if (inst) {
+    // agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
+    mod_scene_inst_apply_spawn_extras(inst, extras);
     // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
     if (inst->body[0] != '\0') {
       mod_scene_physics_attach(handle, inst->body, inst->sync, mod_scene_is_server(),
@@ -672,15 +806,17 @@ static int mod_scene_finish_spawn(duk_context *ctx, ModSceneCtx *scene, const ch
 }
 
 static int mod_scene_spawn_from_pending(duk_context *ctx, ModSceneCtx *scene, const char *name,
-                                        const NgSessionSpawn *pending, int func_idx) {
+                                        const NgSessionSpawn *pending, int func_idx,
+                                        const ModSceneSpawnOpts *extras) {
   const float scale = pending->scale > 0.0f ? pending->scale : 1.0f;
   return mod_scene_finish_spawn(ctx, scene, name, pending->entity_id, pending->key, pending->pos,
-                                pending->rot, scale, func_idx);
+                                pending->rot, scale, func_idx, extras);
 }
 
 static int mod_scene_spawn_refresh_existing(ModSceneCtx *scene, NgSceneInst *inst,
                                             const float *pos, const float *rot, float scale,
-                                            bool have_pos, bool have_rot, bool have_scale) {
+                                            bool have_pos, bool have_rot, bool have_scale,
+                                            const ModSceneSpawnOpts *extras) {
   if (!inst) {
     return 0;
   }
@@ -697,6 +833,7 @@ static int mod_scene_spawn_refresh_existing(ModSceneCtx *scene, NgSceneInst *ins
   if (have_scale && scale > 0.0f) {
     inst->scale = scale;
   }
+  mod_scene_inst_apply_spawn_extras(inst, extras);
   if (inst->body[0] != '\0') {
     if (inst->body_id_bits != 0 && have_pos) {
       mod_scene_physics_detach(inst->handle);
@@ -761,7 +898,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     if (by_id) {
       duk_push_int(ctx, mod_scene_spawn_refresh_existing(scene, by_id, pos, rot, scale,
                                                          opts.have_pos, opts.have_rot,
-                                                         opts.have_scale));
+                                                         opts.have_scale, &opts));
       return 1;
     }
     if (key) {
@@ -769,7 +906,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
       if (by_key) {
         duk_push_int(ctx, mod_scene_spawn_refresh_existing(scene, by_key, pos, rot, scale,
                                                            opts.have_pos, opts.have_rot,
-                                                           opts.have_scale));
+                                                           opts.have_scale, &opts));
         return 1;
       }
     }
@@ -780,7 +917,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
       return 1;
     }
     const int handle =
-        mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
+        mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx, &opts);
     // agent: composer-2.5 | 2026-08-02 | action spawn id observe | 3c17d5
     NG_LOG_INFO("spawn: sim id=%u desc=%s handle=%d ctx=%d", entity_id, name, handle,
                 (int)spawn_ctx);
@@ -794,7 +931,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     if (by_key) {
       duk_push_int(ctx, mod_scene_spawn_refresh_existing(scene, by_key, pos, rot, scale,
                                                          opts.have_pos, opts.have_rot,
-                                                         opts.have_scale));
+                                                         opts.have_scale, &opts));
       return 1;
     }
   }
@@ -803,7 +940,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
   if (pending) {
     if (mod_scene_spawn_creates_local(sync, on_server, scene->is_controller, lockstep_body) ||
         mod_scene_spawn_should_materialize(sync, on_server, lockstep_body)) {
-      const int handle = mod_scene_spawn_from_pending(ctx, scene, name, pending, func_idx);
+      const int handle = mod_scene_spawn_from_pending(ctx, scene, name, pending, func_idx, &opts);
       duk_push_int(ctx, handle);
       return 1;
     }
@@ -824,7 +961,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     mod_scene_graph_registry_add_instance(name, key, entity_id, sync, pos, rot, scale);
     if (mod_scene_spawn_should_materialize(sync, on_server, lockstep_body)) {
       const int handle =
-          mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
+          mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx, &opts);
       duk_push_int(ctx, handle);
       return 1;
     }
@@ -837,7 +974,7 @@ static duk_ret_t bind_spawn(duk_context *ctx) {
     entity_id = mod_scene_graph_alloc_local_id();
   }
   const int handle =
-      mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx);
+      mod_scene_finish_spawn(ctx, scene, name, entity_id, key, pos, rot, scale, func_idx, &opts);
   duk_push_int(ctx, handle);
   return 1;
 }
@@ -866,6 +1003,12 @@ static duk_ret_t bind_despawn(duk_context *ctx) {
 static duk_ret_t bind_dispose(duk_context *ctx) {
   const char *kind = duk_require_string(ctx, 0);
   const char *name = duk_require_string(ctx, 1);
+  // agent: grok-4.6 | 2026-08-30 | label font describe aliases | e2eeb1
+  if (strcmp(kind, "label") == 0) {
+    kind = "entity";
+  } else if (strcmp(kind, "font") == 0) {
+    kind = "model";
+  }
   mod_scene_assets_dispose(kind, name);
   mod_scene_physics_dispose(kind, name);
   mod_scene_graph_dispose_desc(kind, name);
@@ -1247,6 +1390,44 @@ static duk_ret_t bind_set_position(duk_context *ctx) {
     mod_scene_graph_mark_dirty(inst, NG_COMP_POS);
   }
   return 0;
+}
+
+// agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
+// agent: grok-4.6 | 2026-08-30 | set_text dirty server_time | c91687
+static duk_ret_t bind_set_text(duk_context *ctx) {
+  NgSceneInst *inst = mod_scene_inst_from_handle(duk_require_int(ctx, 0));
+  if (!inst) {
+    return 0;
+  }
+  const char *s = duk_require_string(ctx, 1);
+  char buf[NG_SCENE_TEXT_MAX];
+  strncpy(buf, s ? s : "", sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+  if (strcmp(inst->text, buf) == 0) {
+    return 0;
+  }
+  memcpy(inst->text, buf, sizeof(inst->text));
+  if (ng_sync_posts_wire(inst->sync)) {
+    mod_scene_graph_mark_dirty(inst, NG_COMP_TEXT);
+  }
+  return 0;
+}
+
+/** Local wall clock on the heap that is stepping. */
+static duk_ret_t bind_now(duk_context *ctx) {
+  duk_push_number(ctx, mod_scene_wall_clock());
+  return 1;
+}
+
+/** Cached host_time, or live wall clock when this process is the host. */
+// agent: grok-4.6 | 2026-08-30 | now server_time same wall | e1038b
+static duk_ret_t bind_server_time(duk_context *ctx) {
+  if (mod_scene_owns_host_clock()) {
+    duk_push_number(ctx, mod_scene_wall_clock());
+    return 1;
+  }
+  duk_push_number(ctx, (double)ng_proto_host_time());
+  return 1;
 }
 
 // agent: composer-2.5 | 2026-07-29 | js get_position binding | 9b4d7e
@@ -1715,6 +1896,12 @@ static void mod_scene_bind_global(duk_context *ctx) {
   // agent: composer-2.5 | 2026-08-09 | mouse left set_view_camera | 3e4dbc
   BIND("set_view_camera", bind_set_view_camera, 1);
   BIND("set_position", bind_set_position, 2);
+  // agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
+  BIND("set_text", bind_set_text, 2);
+  // agent: grok-4.6 | 2026-08-30 | set_text dirty server_time | c91687
+  BIND("now", bind_now, 0);
+  // agent: grok-4.6 | 2026-08-30 | now server_time same wall | e1038b
+  BIND("server_time", bind_server_time, 0);
   // agent: composer-2.5 | 2026-07-29 | js get_position binding | 9b4d7e
   BIND("get_position", bind_get_position, 1);
   BIND("set_rotation", bind_set_rotation, DUK_VARARGS);
@@ -2097,7 +2284,7 @@ static void mod_scene_materialize_pending_ud(const NgSessionSpawn *sp, void *ud)
   NG_LOG_WARN("spawn pending unmatched desc=%s key=%s id=%u", sp->desc_name, sp->key,
               sp->entity_id);
   const int func_idx = mod_scene_stash_func(ctx->ctx, sp->desc_name);
-  (void)mod_scene_spawn_from_pending(ctx->ctx, ctx, sp->desc_name, sp, func_idx);
+  (void)mod_scene_spawn_from_pending(ctx->ctx, ctx, sp->desc_name, sp, func_idx, NULL);
 }
 
 static void mod_scene_pull_entity_phase(ModSceneCtx *ctx, NgSceneInst *inst) {
@@ -3941,3 +4128,8 @@ bool mod_scene_smoke_test(void) {
 // agent: composer-2.5 | 2026-08-09 | clamp plane raycast range | ea77c0
 // agent: composer-2.5 | 2026-08-09 | mark prefer live on local set | 345979
 // agent: composer-2.5 | 2026-08-09 | skip remote while live author | 75269d
+// agent: grok-4.6 | 2026-08-30 | label font describe aliases | e2eeb1
+// agent: grok-4.6 | 2026-08-30 | spawn space text set_text | dcfb48
+// agent: grok-4.6 | 2026-08-30 | set_text dirty server_time | c91687
+// agent: grok-4.6 | 2026-08-30 | server_time one host clock | 4b7ff1
+// agent: grok-4.6 | 2026-08-30 | now server_time same wall | e1038b

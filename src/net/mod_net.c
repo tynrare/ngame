@@ -61,6 +61,12 @@ bool mod_net_is_dedicated_host(void) {
 #endif
 }
 
+// agent: grok-4.6 | 2026-08-30 | stamp host time encode | 5557cd
+static void mod_net_stamp_host_time(void) {
+  // agent: grok-4.6 | 2026-08-30 | stamp elapsed wall seconds | d08602
+  ng_proto_stamp_host_time(ng_proto_wall_seconds());
+}
+
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
 /* Host: drop % of unreliable LOCK_INPUT (env NG_LOCK_SIM_DROP or --loss). */
 // agent: composer-2.5 | 2026-07-31 | lock sim drop input hook | 6098a8
@@ -1703,6 +1709,7 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     // agent: composer-2.5 | 2026-07-29 | host assigns shared state seq | 5f8b3d
     update.seq = ++ctx->seq;
     mod_scene_apply_remote(&update);
+    mod_net_stamp_host_time();
     if (!ng_proto_encode_state_update(&ctx->tx_buf, update.seq, &update)) {
       return;
     }
@@ -1740,6 +1747,7 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     if (kept == 0) {
       return;
     }
+    mod_net_stamp_host_time();
     if (!ng_proto_encode_state_batch(&ctx->tx_buf, ++ctx->seq, h.tick, updates, kept)) {
       return;
     }
@@ -2092,9 +2100,13 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
   }
   case NG_PKT_STATE_UPDATE: {
     NgStateUpdate update = {.tick = h.tick};
+    // agent: grok-4.6 | 2026-08-30 | commit view host_time cache | d0595b
+    ng_proto_cache_rx_host_time(true);
     if (!ng_proto_decode_state_update(buf, &update)) {
+      ng_proto_cache_rx_host_time(false);
       return;
     }
+    ng_proto_cache_rx_host_time(false);
     mod_scene_view_apply_remote(&update);
     mod_net_send_state_ack(ctx, &update);
     break;
@@ -2102,9 +2114,12 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
   case NG_PKT_STATE_BATCH: {
     NgStateUpdate updates[16];
     int count = 0;
+    ng_proto_cache_rx_host_time(true);
     if (!ng_proto_decode_state_batch(buf, updates, 16, &count)) {
+      ng_proto_cache_rx_host_time(false);
       return;
     }
+    ng_proto_cache_rx_host_time(false);
     for (int i = 0; i < count; i++) {
       updates[i].tick = h.tick;
       mod_scene_view_apply_remote(&updates[i]);
@@ -3038,6 +3053,7 @@ static void mod_net_flush_state_peer(NgNet *net, NgNetPeer *peer, void *v) {
   if (kept == 0) {
     return;
   }
+  mod_net_stamp_host_time();
   const bool ok =
       (kept == 1)
           ? ng_proto_encode_state_update(&ctx->tx_buf, batch[0].seq, &batch[0])
@@ -3266,7 +3282,7 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
   /* Beyond-interest skips must not mark_dirty mid-pass — that re-queues the
    * same inst and spins forever (cube mouse teleport on unfocus). */
   uint32_t defer_id[64];
-  uint8_t defer_mask[64];
+  uint16_t defer_mask[64];
   int defer_n = 0;
   for (;;) {
     int n = 0;
@@ -3292,7 +3308,7 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
         if (inst && defer_n < 64) {
           defer_id[defer_n] = inst->id;
           defer_mask[defer_n] =
-              (uint8_t)(cand[n].comp_mask & ~NG_COMP_FLAGS);
+              (uint16_t)(cand[n].comp_mask & ~NG_COMP_FLAGS);
           defer_n++;
         }
         continue;
@@ -3349,6 +3365,7 @@ static void mod_net_flush_state_update(ModNetCtx *ctx) {
         mod_scene_graph_note_sent(inst, &batch[i]);
       }
     }
+    mod_net_stamp_host_time();
     const bool ok =
         (send_n == 1)
             ? ng_proto_encode_state_update(&ctx->tx_buf, batch[0].seq, &batch[0])
@@ -3538,3 +3555,6 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: composer-2.5 | 2026-08-09 | proxy ack parent PHYS join | 274443
 // agent: composer-2.5 | 2026-08-09 | raise soft PHYS resync budget | 462260
 // agent: composer-2.5 | 2026-08-09 | flush skip no redity same pass | 9b01cc
+// agent: grok-4.6 | 2026-08-30 | stamp host time encode | 5557cd
+// agent: grok-4.6 | 2026-08-30 | commit view host_time cache | d0595b
+// agent: grok-4.6 | 2026-08-30 | stamp elapsed wall seconds | d08602

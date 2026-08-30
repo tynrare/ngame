@@ -5,6 +5,7 @@
 #include "engine/ng_action.h"
 #include <math.h>
 #include <string.h>
+#include <time.h>
 
 static bool ng_proto_write_u8(NgProtoBuf *b, uint8_t v) {
   if (b->len + 1 > sizeof(b->data)) {
@@ -40,6 +41,43 @@ static bool ng_proto_write_f32(NgProtoBuf *b, float v) {
   return ng_proto_write_u32(b, u);
 }
 
+// agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 788e7f
+static float g_encode_host_time;
+static float g_js_host_time;
+static bool g_cache_rx_host_time;
+
+void ng_proto_stamp_host_time(float t) {
+  g_encode_host_time = t;
+  g_js_host_time = t;
+}
+
+void ng_proto_cache_rx_host_time(bool on) { g_cache_rx_host_time = on; }
+
+float ng_proto_host_time(void) { return g_js_host_time; }
+
+// agent: grok-4.6 | 2026-08-30 | elapsed wall host clock | 08c6b7
+float ng_proto_wall_seconds(void) {
+  static double t0 = -1.0;
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0.0f;
+  }
+  const double now = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+  if (t0 < 0.0) {
+    t0 = now;
+  }
+  return (float)(now - t0);
+}
+
+static bool ng_proto_write_bytes(NgProtoBuf *b, const void *p, size_t n) {
+  if (b->len + n > sizeof(b->data)) {
+    return false;
+  }
+  memcpy(b->data + b->len, p, n);
+  b->len += n;
+  return true;
+}
+
 static bool ng_proto_read_u8(NgProtoBuf *b, uint8_t *v) {
   if (b->pos + 1 > b->len) {
     return false;
@@ -73,6 +111,18 @@ static bool ng_proto_read_f32(NgProtoBuf *b, float *v) {
     return false;
   }
   memcpy(v, &u, sizeof(*v));
+  return true;
+}
+
+static bool ng_proto_read_host_time(NgProtoBuf *b) {
+  float t = 0.0f;
+  if (!ng_proto_read_f32(b, &t)) {
+    return false;
+  }
+  // agent: grok-4.6 | 2026-08-30 | view cache host_time only | e1dd7b
+  if (g_cache_rx_host_time) {
+    g_js_host_time = t;
+  }
   return true;
 }
 
@@ -806,34 +856,59 @@ static bool ng_proto_read_i16(NgProtoBuf *b, int16_t *out) {
 
 static bool ng_proto_write_state_body(NgProtoBuf *b, const NgStateUpdate *update) {
   // agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec
-  return ng_proto_write_u32(b, update->entity_id) && ng_proto_write_u16(b, update->seq) &&
-         ng_proto_write_u8(b, update->comp_mask) &&
-         (!(update->comp_mask & NG_COMP_POS) ||
-          (ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[0])) &&
-           ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[1])) &&
-           ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[2])))) &&
-         (!(update->comp_mask & NG_COMP_ROT) ||
-          /* v14: signed mrad euler — yaw (rot[1]) survives; quat asin-middle did not. */
-          (ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[0])) &&
-           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[1])) &&
-           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[2])))) &&
-         (!(update->comp_mask & NG_COMP_SCALE) ||
-          ng_proto_write_i16(b, ng_proto_quant_cm(update->scale))) &&
-         (!(update->comp_mask & NG_COMP_LIN_VEL) ||
-          (ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[0])) &&
-           ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[1])) &&
-           ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[2])))) &&
-         (!(update->comp_mask & NG_COMP_ANG_VEL) ||
-          (ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[0])) &&
-           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[1])) &&
-           ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[2]))));
+  // agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 788e7f
+  if (!ng_proto_write_u32(b, update->entity_id) || !ng_proto_write_u16(b, update->seq) ||
+      !ng_proto_write_u16(b, update->comp_mask)) {
+    return false;
+  }
+  if ((update->comp_mask & NG_COMP_POS) &&
+      (!ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[0])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[1])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_cm(update->pos[2])))) {
+    return false;
+  }
+  if ((update->comp_mask & NG_COMP_ROT) &&
+      (!ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[0])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[1])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->rot[2])))) {
+    return false;
+  }
+  if ((update->comp_mask & NG_COMP_SCALE) &&
+      !ng_proto_write_i16(b, ng_proto_quant_cm(update->scale))) {
+    return false;
+  }
+  if ((update->comp_mask & NG_COMP_LIN_VEL) &&
+      (!ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[0])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[1])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_vel(update->lin_vel[2])))) {
+    return false;
+  }
+  if ((update->comp_mask & NG_COMP_ANG_VEL) &&
+      (!ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[0])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[1])) ||
+       !ng_proto_write_i16(b, ng_proto_quant_ang_vel(update->ang_vel[2])))) {
+    return false;
+  }
+  if (update->comp_mask & NG_COMP_TEXT) {
+    size_t n = strlen(update->text);
+    if (n > NG_STATE_TEXT_MAX - 1) {
+      n = NG_STATE_TEXT_MAX - 1;
+    }
+    if (!ng_proto_write_u8(b, (uint8_t)n) ||
+        !ng_proto_write_bytes(b, update->text, n)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static bool ng_proto_read_state_body(NgProtoBuf *b, NgStateUpdate *update) {
   // agent: composer-2.5 | 2026-07-30 | proto quantize lin ang vel | b9fdec
-  uint8_t mask = 0;
+  // agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 788e7f
+  uint16_t mask = 0;
+  update->text[0] = '\0';
   if (!ng_proto_read_u32(b, &update->entity_id) || !ng_proto_read_u16(b, &update->seq) ||
-      !ng_proto_read_u8(b, &mask)) {
+      !ng_proto_read_u16(b, &mask)) {
     return false;
   }
   update->comp_mask = mask;
@@ -881,6 +956,15 @@ static bool ng_proto_read_state_body(NgProtoBuf *b, NgStateUpdate *update) {
     update->ang_vel[1] = ng_proto_dequant_ang_vel(q1);
     update->ang_vel[2] = ng_proto_dequant_ang_vel(q2);
   }
+  if (mask & NG_COMP_TEXT) {
+    uint8_t n = 0;
+    if (!ng_proto_read_u8(b, &n) || n > NG_STATE_TEXT_MAX - 1 || b->pos + n > b->len) {
+      return false;
+    }
+    memcpy(update->text, b->data + b->pos, n);
+    update->text[n] = '\0';
+    b->pos += n;
+  }
   return true;
 }
 
@@ -897,14 +981,15 @@ bool ng_proto_encode_state_update(NgProtoBuf *b, uint16_t seq, const NgStateUpda
       .seq = seq,
       .tick = update->tick,
   };
-  return ng_proto_write_header(b, &h) && ng_proto_write_state_body(b, update);
+  return ng_proto_write_header(b, &h) && ng_proto_write_f32(b, g_encode_host_time) &&
+         ng_proto_write_state_body(b, update);
 }
 
 bool ng_proto_decode_state_update(NgProtoBuf *b, NgStateUpdate *update) {
   if (!b || !update) {
     return false;
   }
-  return ng_proto_read_state_body(b, update);
+  return ng_proto_read_host_time(b) && ng_proto_read_state_body(b, update);
 }
 
 bool ng_proto_encode_state_batch(NgProtoBuf *b, uint16_t seq, uint32_t tick,
@@ -921,7 +1006,8 @@ bool ng_proto_encode_state_batch(NgProtoBuf *b, uint16_t seq, uint32_t tick,
       .seq = seq,
       .tick = tick,
   };
-  if (!ng_proto_write_header(b, &h) || !ng_proto_write_u8(b, (uint8_t)count)) {
+  if (!ng_proto_write_header(b, &h) || !ng_proto_write_f32(b, g_encode_host_time) ||
+      !ng_proto_write_u8(b, (uint8_t)count)) {
     return false;
   }
   for (int i = 0; i < count; i++) {
@@ -938,7 +1024,7 @@ bool ng_proto_decode_state_batch(NgProtoBuf *b, NgStateUpdate *updates, int max_
     return false;
   }
   uint8_t count = 0;
-  if (!ng_proto_read_u8(b, &count)) {
+  if (!ng_proto_read_host_time(b) || !ng_proto_read_u8(b, &count)) {
     return false;
   }
   if (count > (uint8_t)max_count) {
@@ -1391,3 +1477,6 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt) {
 // agent: composer-2.5 | 2026-08-01 | proto version 12 | c8cd04
 // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | ded0c5
 // agent: composer-2.5 | 2026-08-09 | state rot full-circle euler wire | 2cb801
+// agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 788e7f
+// agent: grok-4.6 | 2026-08-30 | view cache host_time only | e1dd7b
+// agent: grok-4.6 | 2026-08-30 | elapsed wall host clock | 08c6b7

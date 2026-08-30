@@ -19,6 +19,14 @@ struct duk_hthread;
 #define NG_ENTITY_ID_SIM_BASE 0x40000000u
 #define NG_ENTITY_ID_LOCAL_BASE 0x80000000u
 
+#define NG_SCENE_TEXT_MAX 256
+
+// agent: grok-4.6 | 2026-08-30 | inst space text label fields | 7ac0fc
+typedef enum NgSceneSpace {
+  NG_SCENE_SPACE_WORLD = 0,
+  NG_SCENE_SPACE_SCREEN = 1,
+} NgSceneSpace;
+
 // agent: composer-2.5 | 2026-08-02 | add FIXED_STEP spawn ctx | abcd62
 typedef enum NgSpawnCtx {
   NG_SPAWN_CTX_NONE = 0,
@@ -118,6 +126,14 @@ typedef struct NgSceneInst {
   uint8_t prefer_live_draw;
   double local_author_at;
   int script_inst_stash;
+  // agent: grok-4.6 | 2026-08-30 | inst space text label fields | 7ac0fc
+  uint8_t space;
+  char text[NG_SCENE_TEXT_MAX];
+  float text_size;
+  float text_outline;
+  uint8_t tint_r;
+  uint8_t tint_g;
+  uint8_t tint_b;
 } NgSceneInst;
 
 typedef struct NgSceneRegistry {
@@ -212,3 +228,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-08-02 | add FIXED_STEP spawn ctx | abcd62
 // agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | d3e801
 // agent: composer-2.5 | 2026-08-09 | live author timestamp field | d39e8e
+// agent: grok-4.6 | 2026-08-30 | inst space text label fields | 7ac0fc

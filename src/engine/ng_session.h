@@ -40,16 +40,19 @@ typedef struct NgSessionState {
 } NgSessionState;
 
 // agent: composer-2.5 | 2026-07-30 | state update lin ang vel | 16a0ac
+#define NG_STATE_TEXT_MAX 48
 typedef struct NgStateUpdate {
   uint32_t entity_id;
   uint16_t seq;
-  uint8_t comp_mask;
+  // agent: grok-4.6 | 2026-08-30 | state text u16 mask | 9977b2
+  uint16_t comp_mask;
   uint32_t tick;
   float pos[3];
   float rot[3];
   float scale;
   float lin_vel[3];
   float ang_vel[3];
+  char text[NG_STATE_TEXT_MAX];
 } NgStateUpdate;
 
 #endif
@@ -59,3 +62,4 @@ typedef struct NgStateUpdate {
 // agent: composer-2.5 | 2026-07-30 | state update lin ang vel | 16a0ac
 // agent: composer-2.5 | 2026-08-01 | session playout field | 50d23e
 // agent: composer-2.5 | 2026-08-01 | session sim mode comment | 4a9b0e
+// agent: grok-4.6 | 2026-08-30 | state text u16 mask | 9977b2

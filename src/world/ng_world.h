@@ -32,6 +32,8 @@ typedef enum NgCompMask {
   NG_COMP_SCALE = 1u << 5,
   NG_COMP_LIN_VEL = 1u << 6,
   NG_COMP_ANG_VEL = 1u << 7,
+  // agent: grok-4.6 | 2026-08-30 | TEXT bit ninth | e138f6
+  NG_COMP_TEXT = 1u << 8,
   NG_COMP_ALL   = 0xffu,
 } NgCompMask;
 
@@ -94,3 +96,4 @@ uint32_t ng_world_hash(const NgWorld *w);
 #endif
 // agent: composer-2.5 | 2026-07-25 | web smaller snapshot caps | d34d5e
 // agent: composer-2.5 | 2026-07-30 | comp mask lin ang vel | 1de454
+// agent: grok-4.6 | 2026-08-30 | TEXT bit ninth | e138f6
