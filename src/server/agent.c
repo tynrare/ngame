@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -192,6 +193,40 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
     return;
   }
 
+#if !defined(NG_SERVER)
+  // agent: grok-4.6 | 2026-08-31 | agent screenshot command | 693abf
+  if (strncmp(cmdline, "screenshot", 10) == 0) {
+    if (mod_net_is_dedicated_host()) {
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"screenshot client only\"}");
+      return;
+    }
+    const char *p = cmdline + 10;
+    while (*p == ' ' || *p == '\t') {
+      p++;
+    }
+    if (*p == '\0' || strstr(p, "..") != NULL) {
+      mod_agent_send_json(ctx->client_fd,
+                          "{\"ok\":false,\"error\":\"usage: screenshot <path.png>\"}");
+      return;
+    }
+    const size_t n = strlen(p);
+    if (n < 5 || n >= 500 || strcasecmp(p + n - 4, ".png") != 0) {
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"path must end in .png\"}");
+      return;
+    }
+    mod_render_request_screenshot(p);
+    char out[640];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"screenshot queued path=%s\"}", p);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+#else
+  if (strncmp(cmdline, "screenshot", 10) == 0) {
+    mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"screenshot client only\"}");
+    return;
+  }
+#endif
+
   // agent: composer-2.5 | 2026-07-29 | mcp wire input transform observe | e7b3c1
   // agent: composer-2.5 | 2026-07-29 | mcp entity transforms server | 649b35
   if (strcmp(cmdline, "entity_transforms") == 0) {
@@ -295,6 +330,24 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
     char out[256];
     snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"wired buttons=%d frames=%d\"}", buttons,
              frames);
+    mod_agent_send_json(ctx->client_fd, out);
+    return;
+  }
+
+  // agent: grok-4.6 | 2026-08-31 | wire analog yaw cmd | 9818b2
+  if (strncmp(cmdline, "wire_analog", 11) == 0) {
+    if (mod_net_is_dedicated_host()) {
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"wire_analog client only\"}");
+      return;
+    }
+    float yaw = 0.0f;
+    if (sscanf(cmdline + 11, " %f", &yaw) < 1) {
+      mod_agent_send_json(ctx->client_fd, "{\"ok\":false,\"error\":\"usage: wire_analog <yaw>\"}");
+      return;
+    }
+    mod_lockstep_set_local_analog(yaw);
+    char out[160];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"text\":\"wired analog yaw=%.4f\"}", (double)yaw);
     mod_agent_send_json(ctx->client_fd, out);
     return;
   }
@@ -609,3 +662,5 @@ void mod_agent_poll(void) { mod_agent_poll_io(&g_agent_ctx); }
 // agent: composer-2.5 | 2026-08-01 | wire_input KEY_F bit | 28e90f
 // agent: composer-2.5 | 2026-08-09 | dedicated host agent root | 4dfc0d
 // agent: grok-4.6 | 2026-08-12 | probe_snapshot agent cmd | 73df93
+// agent: grok-4.6 | 2026-08-31 | agent screenshot command | 693abf
+// agent: grok-4.6 | 2026-08-31 | wire analog yaw cmd | 9818b2

@@ -18,7 +18,7 @@
 #include <string.h>
 
 #define GPHYS() (*mod_scene_runtime_physics())
-/* sim-entity-id step 4: body name wire e<id>/<desc> (userData cleared on Restore). */
+/* sim-entity-id step 4: body name e<id>/<desc>[#key] (userData cleared on Restore). */
 #define NG_PHYS_BODY_NAME_MAX 64
 
 static b3WorldId mod_scene_physics_world_id(void) {
@@ -26,15 +26,20 @@ static b3WorldId mod_scene_physics_world_id(void) {
 }
 
 // sim-entity-id step 4
+// agent: grok-4.6 | 2026-08-31 | stamp body names with key | ef222d
 static void mod_scene_physics_format_body_name(char *out, size_t cap, uint32_t entity_id,
-                                              const char *desc) {
+                                              const char *desc, const char *key) {
   const char *d = (desc && desc[0] != '\0') ? desc : "_";
-  snprintf(out, cap, "e%u/%s", entity_id, d);
+  if (key && key[0] != '\0') {
+    snprintf(out, cap, "e%u/%s#%s", entity_id, d, key);
+  } else {
+    snprintf(out, cap, "e%u/%s", entity_id, d);
+  }
 }
 
 // sim-entity-id step 4
 static bool mod_scene_physics_parse_body_name(const char *name, uint32_t *out_id, char *out_desc,
-                                              size_t desc_cap) {
+                                              size_t desc_cap, char *out_key, size_t key_cap) {
   if (!name || name[0] != 'e' || !out_id) {
     return false;
   }
@@ -43,12 +48,29 @@ static bool mod_scene_physics_parse_body_name(const char *name, uint32_t *out_id
     return false;
   }
   *out_id = id;
+  if (out_key && key_cap > 0) {
+    out_key[0] = '\0';
+  }
   if (out_desc && desc_cap > 0) {
     out_desc[0] = '\0';
     const char *slash = strchr(name, '/');
     if (slash && slash[1] != '\0') {
-      strncpy(out_desc, slash + 1, desc_cap - 1);
-      out_desc[desc_cap - 1] = '\0';
+      const char *hash = strchr(slash + 1, '#');
+      if (hash) {
+        size_t n = (size_t)(hash - (slash + 1));
+        if (n >= desc_cap) {
+          n = desc_cap - 1;
+        }
+        memcpy(out_desc, slash + 1, n);
+        out_desc[n] = '\0';
+        if (out_key && key_cap > 0) {
+          strncpy(out_key, hash + 1, key_cap - 1);
+          out_key[key_cap - 1] = '\0';
+        }
+      } else {
+        strncpy(out_desc, slash + 1, desc_cap - 1);
+        out_desc[desc_cap - 1] = '\0';
+      }
     }
   }
   return true;
@@ -61,7 +83,7 @@ static void mod_scene_physics_set_inst_body_name(b3BodyId bodyId, const NgSceneI
   }
   char name[NG_PHYS_BODY_NAME_MAX];
   if (mod_scene_physics_is_input_sim()) {
-    mod_scene_physics_format_body_name(name, sizeof(name), inst->id, inst->desc_name);
+    mod_scene_physics_format_body_name(name, sizeof(name), inst->id, inst->desc_name, inst->key);
     b3Body_SetName(bodyId, name);
     return;
   }
@@ -69,7 +91,7 @@ static void mod_scene_physics_set_inst_body_name(b3BodyId bodyId, const NgSceneI
     b3Body_SetName(bodyId, inst->key);
     return;
   }
-  mod_scene_physics_format_body_name(name, sizeof(name), inst->id, inst->desc_name);
+  mod_scene_physics_format_body_name(name, sizeof(name), inst->id, inst->desc_name, inst->key);
   b3Body_SetName(bodyId, name);
 }
 
@@ -187,7 +209,8 @@ bool mod_scene_physics_describe_shape(const char *name, const char *type, float 
   return true;
 }
 
-bool mod_scene_physics_describe_body(const char *name, const char *type, const char *shape) {
+bool mod_scene_physics_describe_body(const char *name, const char *type, const char *shape,
+                                    bool lock_rot) {
   if (!name || !shape || name[0] == '\0' || shape[0] == '\0') {
     return false;
   }
@@ -212,6 +235,7 @@ bool mod_scene_physics_describe_body(const char *name, const char *type, const c
   }
   existing->alive = true;
   existing->type = bt;
+  existing->lock_rot = lock_rot;
   strncpy(existing->shape, shape, sizeof(existing->shape) - 1);
   return true;
 }
@@ -374,6 +398,12 @@ bool mod_scene_physics_attach(int handle, const char *body_name, NgSyncMode sync
     bodyDef.enableSleep = false;
     bodyDef.linearDamping = 0.0f;
     bodyDef.angularDamping = 0.0f;
+  }
+  // agent: grok-4.6 | 2026-08-31 | body lock_rot apply | b0d7c1
+  if (bdesc->lock_rot) {
+    bodyDef.motionLocks.angularX = true;
+    bodyDef.motionLocks.angularY = true;
+    bodyDef.motionLocks.angularZ = true;
   }
   b3BodyId bodyId = b3CreateBody(mod_scene_physics_world_id(), &bodyDef);
   if (!b3Body_IsValid(bodyId)) {
@@ -772,12 +802,19 @@ static void mod_scene_physics_bind_restored(NgSceneInst *inst, b3BodyId bid) {
 /* Upsert/bind one restored body onto the active graph runtime. */
 // sim-entity-id step 6
 static bool mod_scene_physics_upsert_one(b3BodyId bid, uint32_t entity_id, const char *desc,
-                                         uint32_t *matched_ids, int *matched_n, int *rebinds,
-                                         int *upserts) {
+                                         const char *key, uint32_t *matched_ids, int *matched_n,
+                                         int *rebinds, int *upserts) {
   if (!matched_ids || !matched_n || entity_id == 0) {
     return false;
   }
   NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
+  // agent: grok-4.6 | 2026-08-31 | stamp body names with key | ef222d
+  if (!inst && key && key[0] != '\0') {
+    inst = mod_scene_graph_inst_by_key(key);
+    if (inst && inst->id != entity_id) {
+      mod_scene_graph_remap_entity_id(inst, entity_id);
+    }
+  }
   if (!inst) {
     if (!desc || desc[0] == '\0' || strcmp(desc, "_") == 0) {
       NG_LOG_WARN("lockstep: import orphan body e%u — no desc", entity_id);
@@ -796,7 +833,8 @@ static bool mod_scene_physics_upsert_one(b3BodyId bid, uint32_t entity_id, const
       pos[2] = (float)p.z;
       mod_scene_physics_euler_from_quat(b3Body_GetRotation(bid), rot);
     }
-    const int handle = mod_scene_graph_spawn(desc, entity_id, NULL, pos, rot, 1.0f, NULL, -1);
+    const int handle =
+        mod_scene_graph_spawn(desc, entity_id, (key && key[0]) ? key : NULL, pos, rot, 1.0f, NULL, -1);
     inst = mod_scene_graph_inst_by_handle(handle);
     if (!inst) {
       NG_LOG_WARN("lockstep: import upsert spawn failed desc=%s id=%u", desc, entity_id);
@@ -805,7 +843,8 @@ static bool mod_scene_physics_upsert_one(b3BodyId bid, uint32_t entity_id, const
     if (upserts) {
       (*upserts)++;
     }
-    NG_LOG_INFO("lockstep: import upsert id=%u desc=%s", entity_id, desc);
+    NG_LOG_INFO("lockstep: import upsert id=%u desc=%s key=%s", entity_id, desc,
+                (key && key[0]) ? key : "");
   } else if (rebinds) {
     (*rebinds)++;
   }
@@ -907,7 +946,8 @@ bool mod_scene_physics_import_ex(const uint8_t *data, int size, uint32_t flags) 
     const char *name = b3Body_GetName(collect.ids[j]);
     uint32_t entity_id = 0;
     char desc[32];
-    if (!mod_scene_physics_parse_body_name(name, &entity_id, desc, sizeof(desc))) {
+    char key[32];
+    if (!mod_scene_physics_parse_body_name(name, &entity_id, desc, sizeof(desc), key, sizeof(key))) {
       /* Non-input-sim keyed names: match key on server graph only. */
       if (name && name[0] != '\0') {
         NgSceneInst *by_key = mod_scene_graph_inst_by_key(name);
@@ -927,7 +967,7 @@ bool mod_scene_physics_import_ex(const uint8_t *data, int size, uint32_t flags) 
       NG_LOG_INFO("lockstep: import skip upsert id=%u desc=%s", entity_id, desc);
       continue;
     }
-    (void)mod_scene_physics_upsert_one(collect.ids[j], entity_id, desc, matched_ids, &matched_n,
+    (void)mod_scene_physics_upsert_one(collect.ids[j], entity_id, desc, key, matched_ids, &matched_n,
                                        &rebinds, &upserts);
   }
 
@@ -943,10 +983,18 @@ bool mod_scene_physics_import_ex(const uint8_t *data, int size, uint32_t flags) 
       const char *name = b3Body_GetName(collect.ids[j]);
       uint32_t entity_id = 0;
       char desc[32];
-      if (!mod_scene_physics_parse_body_name(name, &entity_id, desc, sizeof(desc))) {
+      char key[32];
+      if (!mod_scene_physics_parse_body_name(name, &entity_id, desc, sizeof(desc), key,
+                                             sizeof(key))) {
         continue;
       }
       NgSceneInst *inst = mod_scene_graph_inst_by_id(entity_id);
+      if (!inst && key[0] != '\0') {
+        inst = mod_scene_graph_inst_by_key(key);
+        if (inst && inst->id != entity_id) {
+          mod_scene_graph_remap_entity_id(inst, entity_id);
+        }
+      }
       if (!inst) {
         if (!do_upsert || desc[0] == '\0' || strcmp(desc, "_") == 0 ||
             !mod_scene_graph_entity_desc(desc)) {
@@ -959,7 +1007,8 @@ bool mod_scene_physics_import_ex(const uint8_t *data, int size, uint32_t flags) 
         pos[1] = (float)p.y;
         pos[2] = (float)p.z;
         mod_scene_physics_euler_from_quat(b3Body_GetRotation(collect.ids[j]), rot);
-        const int handle = mod_scene_graph_spawn(desc, entity_id, NULL, pos, rot, 1.0f, NULL, -1);
+        const int handle =
+            mod_scene_graph_spawn(desc, entity_id, key[0] ? key : NULL, pos, rot, 1.0f, NULL, -1);
         inst = mod_scene_graph_inst_by_handle(handle);
       }
       if (!inst) {
@@ -1088,3 +1137,5 @@ bool mod_scene_physics_save_ring_restore(uint32_t tick) {
 // agent: composer-2.5 | 2026-08-01 | import sync poses from bodies | e80a86
 // agent: composer-2.5 | 2026-08-02 | phys body name e id desc | 43e739
 // agent: composer-2.5 | 2026-08-02 | save ring rebind only import | 5a5daa
+// agent: grok-4.6 | 2026-08-31 | body lock_rot apply | b0d7c1
+// agent: grok-4.6 | 2026-08-31 | stamp body names with key | ef222d

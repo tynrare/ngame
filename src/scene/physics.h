@@ -44,11 +44,13 @@ typedef struct NgScenePhysShapeDesc {
   float radius; /* sphere only; hx unused for mass when type=sphere */
 } NgScenePhysShapeDesc;
 
+// agent: grok-4.6 | 2026-08-31 | body lock_rot field | 681f2b
 typedef struct NgScenePhysBodyDesc {
   bool alive;
   char name[32];
   NgScenePhysBodyType type;
   char shape[32];
+  bool lock_rot;
 } NgScenePhysBodyDesc;
 
 typedef struct ModScenePhysicsCtx {
@@ -76,7 +78,8 @@ void mod_scene_physics_set_gravity(float gx, float gy, float gz);
 
 bool mod_scene_physics_describe_shape(const char *name, const char *type, float hx, float hy,
                                       float hz, float density, float friction, bool sensor);
-bool mod_scene_physics_describe_body(const char *name, const char *type, const char *shape);
+bool mod_scene_physics_describe_body(const char *name, const char *type, const char *shape,
+                                    bool lock_rot);
 bool mod_scene_physics_dispose(const char *kind, const char *name);
 
 bool mod_scene_physics_should_simulate(NgSyncMode sync, bool on_server, bool is_controller);
@@ -130,4 +133,4 @@ bool mod_scene_physics_save_ring_restore(uint32_t tick);
 // agent: composer-2.5 | 2026-07-31 | drop mode b comment phys | 127036
 // agent: composer-2.5 | 2026-08-01 | hybrid sim mode enum | 772934
 // agent: composer-2.5 | 2026-08-02 | save ring rebind only import | 774e0a
-// agent: composer-2.5 | 2026-08-02 | save ring rebind only import | 774e0a
+// agent: grok-4.6 | 2026-08-31 | body lock_rot field | 681f2b

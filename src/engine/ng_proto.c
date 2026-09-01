@@ -1188,6 +1188,7 @@ static bool ng_proto_read_lock_action(NgProtoBuf *b, NgLockAction *a) {
 }
 
 // agent: composer-2.5 | 2026-07-29 | lockstep protocol packets | 30ad80
+// agent: grok-4.6 | 2026-08-31 | encode lock analog byte | 8d1e06
 bool ng_proto_encode_lock_input(NgProtoBuf *b, uint16_t seq, const NgLockInputPkt *pkt) {
   if (!b || !pkt || pkt->count > NG_LOCK_INPUT_MAX) {
     return false;
@@ -1206,7 +1207,8 @@ bool ng_proto_encode_lock_input(NgProtoBuf *b, uint16_t seq, const NgLockInputPk
     return false;
   }
   for (uint8_t i = 0; i < pkt->count; i++) {
-    if (!ng_proto_write_u8(b, pkt->bits[i]) || !ng_proto_write_lock_action(b, &pkt->actions[i])) {
+    if (!ng_proto_write_u8(b, pkt->bits[i]) || !ng_proto_write_u8(b, pkt->analog[i]) ||
+        !ng_proto_write_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -1223,7 +1225,8 @@ bool ng_proto_decode_lock_input(NgProtoBuf *b, NgLockInputPkt *pkt) {
     return false;
   }
   for (uint8_t i = 0; i < pkt->count; i++) {
-    if (!ng_proto_read_u8(b, &pkt->bits[i]) || !ng_proto_read_lock_action(b, &pkt->actions[i])) {
+    if (!ng_proto_read_u8(b, &pkt->bits[i]) || !ng_proto_read_u8(b, &pkt->analog[i]) ||
+        !ng_proto_read_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -1445,7 +1448,7 @@ bool ng_proto_encode_lock_confirm(NgProtoBuf *b, uint16_t seq, const NgLockConfi
   }
   for (uint8_t i = 0; i < pkt->peer_count; i++) {
     if (!ng_proto_write_u8(b, pkt->peer_ids[i]) || !ng_proto_write_u8(b, pkt->bits[i]) ||
-        !ng_proto_write_lock_action(b, &pkt->actions[i])) {
+        !ng_proto_write_u8(b, pkt->analog[i]) || !ng_proto_write_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -1463,7 +1466,7 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt) {
   }
   for (uint8_t i = 0; i < pkt->peer_count; i++) {
     if (!ng_proto_read_u8(b, &pkt->peer_ids[i]) || !ng_proto_read_u8(b, &pkt->bits[i]) ||
-        !ng_proto_read_lock_action(b, &pkt->actions[i])) {
+        !ng_proto_read_u8(b, &pkt->analog[i]) || !ng_proto_read_lock_action(b, &pkt->actions[i])) {
       return false;
     }
   }
@@ -1480,3 +1483,4 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt) {
 // agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 788e7f
 // agent: grok-4.6 | 2026-08-30 | view cache host_time only | e1dd7b
 // agent: grok-4.6 | 2026-08-30 | elapsed wall host clock | 08c6b7
+// agent: grok-4.6 | 2026-08-31 | encode lock analog byte | 8d1e06

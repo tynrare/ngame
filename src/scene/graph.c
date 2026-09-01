@@ -268,6 +268,21 @@ void mod_scene_graph_registry_clear_id(uint32_t entity_id) {
   }
 }
 
+// agent: grok-4.6 | 2026-08-31 | remap inst id on key | c71586
+void mod_scene_graph_remap_entity_id(NgSceneInst *inst, uint32_t new_id) {
+  if (!inst || new_id == 0u || inst->id == new_id) {
+    return;
+  }
+  if (mod_scene_graph_inst_by_id(new_id)) {
+    return;
+  }
+  mod_scene_graph_registry_clear_id(inst->id);
+  inst->id = new_id;
+  (void)mod_scene_graph_registry_add_instance(inst->desc_name, inst->key[0] ? inst->key : NULL,
+                                              new_id, inst->sync, inst->pos, inst->rot,
+                                              inst->scale);
+}
+
 void mod_scene_graph_fill_session_spawns(NgSessionState *session) {
   if (!session) {
     return;
@@ -450,6 +465,9 @@ int mod_scene_graph_spawn(const char *desc_name, uint32_t entity_id, const char 
       duk_new(ctx, 0);
       duk_push_int(ctx, inst->handle);
       duk_put_prop_string(ctx, -2, "handle");
+      // agent: grok-4.6 | 2026-08-31 | put inst key on js object | 9ebb0f
+      duk_push_string(ctx, inst->key);
+      duk_put_prop_string(ctx, -2, "key");
       char inst_key[48];
       snprintf(inst_key, sizeof(inst_key), "inst_%d", inst->handle);
       duk_push_global_stash(ctx);
@@ -1301,3 +1319,5 @@ const NgSceneInst *mod_scene_graph_inst_at(int index) {
 // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5
 // agent: grok-4.6 | 2026-08-30 | default label tint size | c8573b
 // agent: grok-4.6 | 2026-08-30 | take dirty apply TEXT | de33e1
+// agent: grok-4.6 | 2026-08-31 | put inst key on js object | 9ebb0f
+// agent: grok-4.6 | 2026-08-31 | remap inst id on key | c71586

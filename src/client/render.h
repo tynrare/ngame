@@ -25,6 +25,10 @@ bool mod_render_set(const char *path, const char *value);
 /** Get path into out. Returns false if unknown. */
 bool mod_render_get(const char *path, char *out, size_t cap);
 
+// agent: grok-4.6 | 2026-08-31 | screenshot request API | 9c40fa
+void mod_render_request_screenshot(const char *path);
+void mod_render_flush_screenshot(void);
+
 #endif
 
 // agent: grok-4.6 | 2026-08-21 | chunk pages in probe snapshot | 93a62c
@@ -32,3 +36,4 @@ bool mod_render_get(const char *path, char *out, size_t cap);
 // agent: composer-2.5 | 2026-08-09 | gbuffer debug pass API | b23e6f
 // agent: composer-2.5 | 2026-08-09 | CLI set render.rc tree | ee3ab2
 // agent: grok-4.6 | 2026-08-12 | probe snapshot MCP header | d8a868
+// agent: grok-4.6 | 2026-08-31 | screenshot request API | 9c40fa

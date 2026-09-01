@@ -785,13 +785,14 @@ static void mod_net_find_peer_by_id(NgNet *net, NgNetPeer *peer, void *vctx) {
   }
 }
 
+// agent: grok-4.6 | 2026-08-31 | store analog from wire | 6fd4c1
 static void mod_net_deliver_lock_input(ModNetCtx *ctx, NgNet *net, NgNetPeer *from,
                                       const NgLockInputPkt *pkt) {
   if (!ctx || !pkt) {
     return;
   }
   for (uint8_t i = 0; i < pkt->count; i++) {
-    mod_lockstep_store_remote_input(pkt->peer_id, pkt->base_tick + i, pkt->bits[i],
+    mod_lockstep_store_remote_input(pkt->peer_id, pkt->base_tick + i, pkt->bits[i], pkt->analog[i],
                                     &pkt->actions[i]);
   }
   if (!ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, pkt)) {
@@ -1802,7 +1803,7 @@ static void mod_net_handle_host_packet(NgNet *net, NgNetPeer *peer, const uint8_
     }
 #endif
     for (uint8_t i = 0; i < pkt.count; i++) {
-      mod_lockstep_store_remote_input(pkt.peer_id, pkt.base_tick + i, pkt.bits[i],
+      mod_lockstep_store_remote_input(pkt.peer_id, pkt.base_tick + i, pkt.bits[i], pkt.analog[i],
                                       &pkt.actions[i]);
     }
     if (!ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &pkt)) {
@@ -2134,7 +2135,7 @@ static void mod_net_handle_client_packet(NgNet *net, NgNetPeer *peer, const uint
       return;
     }
     for (uint8_t i = 0; i < pkt.count; i++) {
-      mod_lockstep_store_remote_input(pkt.peer_id, pkt.base_tick + i, pkt.bits[i],
+      mod_lockstep_store_remote_input(pkt.peer_id, pkt.base_tick + i, pkt.bits[i], pkt.analog[i],
                                       &pkt.actions[i]);
     }
     break;
@@ -3138,17 +3139,19 @@ static void mod_net_flush_uplink(ModNetCtx *ctx) {
   inp.peer_id = ctx->uplink_peer_id;
   int n = 0;
   uint8_t sample_bits = 0;
+  uint8_t sample_analog = 0;
   NgLockAction sample_action = {0};
   if (mod_lockstep_active()) {
     const uint32_t local_conf = mod_lockstep_confirmed_tick();
     if (local_conf != 0u) {
-      mod_lockstep_merge_children(local_conf, &sample_bits, &sample_action);
+      mod_lockstep_merge_children(local_conf, &sample_bits, &sample_analog, &sample_action);
     } else {
       sample_bits = mod_lockstep_last_bits_or();
     }
   }
   while (n < NG_LOCK_INPUT_MAX && base + (uint32_t)n <= target) {
     inp.bits[n] = sample_bits;
+    inp.analog[n] = sample_analog;
     /* Attach action only on the first unsent tip so it is not duplicated. */
     if (n == 0 && sample_action.present) {
       inp.actions[n] = sample_action;
@@ -3231,7 +3234,8 @@ static void mod_net_flush_lockstep(ModNetCtx *ctx) {
   }
   inp.peer_id = (uint8_t)local_id;
   const int n =
-      mod_lockstep_fill_send_window(&inp.base_tick, inp.bits, inp.actions, NG_LOCK_INPUT_MAX);
+      mod_lockstep_fill_send_window(&inp.base_tick, inp.bits, inp.actions, inp.analog,
+                                    NG_LOCK_INPUT_MAX);
   if (n > 0) {
     inp.count = (uint8_t)n;
     if (ng_proto_encode_lock_input(&ctx->tx_buf, ++ctx->seq, &inp)) {
@@ -3558,3 +3562,4 @@ void *mod_net_ctx(void) { return &g_net_ctx; }
 // agent: grok-4.6 | 2026-08-30 | stamp host time encode | 5557cd
 // agent: grok-4.6 | 2026-08-30 | commit view host_time cache | d0595b
 // agent: grok-4.6 | 2026-08-30 | stamp elapsed wall seconds | d08602
+// agent: grok-4.6 | 2026-08-31 | store analog from wire | 6fd4c1

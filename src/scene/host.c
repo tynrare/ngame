@@ -494,6 +494,7 @@ static duk_ret_t bind_describe(duk_context *ctx) {
       const char *shader = NULL;
       const char *src = NULL;
       const char *draw = NULL;
+      const char *albedo = NULL;
       duk_get_prop_string(ctx, 2, "mesh");
       if (duk_is_string(ctx, -1)) {
         mesh = duk_get_string(ctx, -1);
@@ -514,11 +515,17 @@ static duk_ret_t bind_describe(duk_context *ctx) {
         draw = duk_get_string(ctx, -1);
       }
       duk_pop(ctx);
+      duk_get_prop_string(ctx, 2, "albedo");
+      if (duk_is_string(ctx, -1)) {
+        albedo = duk_get_string(ctx, -1);
+      }
+      duk_pop(ctx);
       // agent: grok-4.6 | 2026-08-30 | label font describe aliases | e2eeb1
       if (src || (draw && strcmp(draw, "msdf") == 0)) {
         mod_scene_assets_describe_font(name, src);
       } else {
-        mod_scene_assets_describe_model(name, mesh, shader);
+        // agent: grok-4.6 | 2026-08-31 | parse model albedo field | 7d3617
+        mod_scene_assets_describe_model(name, mesh, shader, albedo);
       }
     } else if (strcmp(kind, "shape") == 0) {
       // agent: composer-2.5 | 2026-07-29 | body shape fixed_step wire | 37245c
@@ -583,7 +590,14 @@ static duk_ret_t bind_describe(duk_context *ctx) {
         shape = duk_get_string(ctx, -1);
       }
       duk_pop(ctx);
-      mod_scene_physics_describe_body(name, btype, shape);
+      bool lock_rot = false;
+      duk_get_prop_string(ctx, 2, "lock_rot");
+      if (duk_is_boolean(ctx, -1)) {
+        lock_rot = duk_get_boolean(ctx, -1) ? true : false;
+      }
+      duk_pop(ctx);
+      // agent: grok-4.6 | 2026-08-31 | parse body lock_rot | 1b3950
+      mod_scene_physics_describe_body(name, btype, shape, lock_rot);
     } else if (strcmp(kind, "entity") == 0) {
       duk_get_prop_string(ctx, 2, "model");
       if (duk_is_string(ctx, -1)) {
@@ -1111,13 +1125,47 @@ static duk_ret_t bind_get_peer_input(duk_context *ctx) {
       peer_id = mod_lockstep_local_peer_id();
     }
     const uint32_t tick = mod_lockstep_step_tick();
-    if (peer_id != 0 && mod_lockstep_have_input(peer_id, tick)) {
-      buttons = (int)mod_lockstep_bits_for(peer_id, tick);
+    if (peer_id != 0 && tick != 0u) {
+      if (mod_lockstep_have_input(peer_id, tick)) {
+        buttons = (int)mod_lockstep_bits_for(peer_id, tick);
+      } else {
+        // agent: grok-4.6 | 2026-08-31 | lockstep view pose samples | 7778ae
+        buttons = (int)mod_lockstep_last_bits(peer_id);
+      }
     }
   } else if (peer_id == 0 || peer_id == mod_lockstep_local_peer_id()) {
     buttons = mod_input_buttons();
   }
   duk_push_boolean(ctx, mod_scene_input_key_down(key, buttons) ? 1 : 0);
+  return 1;
+}
+
+// agent: grok-4.6 | 2026-08-31 | js analog peers bindings | 2ac462
+static duk_ret_t bind_set_local_analog(duk_context *ctx) {
+  mod_lockstep_set_local_analog((float)duk_get_number(ctx, 0));
+  return 0;
+}
+
+// agent: grok-4.6 | 2026-08-31 | bind get_local_analog | 275aa4
+static duk_ret_t bind_get_local_analog(duk_context *ctx) {
+  duk_push_number(ctx, (double)mod_lockstep_local_analog());
+  return 1;
+}
+
+static duk_ret_t bind_get_peer_analog(duk_context *ctx) {
+  uint32_t peer_id = (uint32_t)duk_require_uint(ctx, 0);
+  duk_push_number(ctx, (double)mod_lockstep_analog_yaw(peer_id));
+  return 1;
+}
+
+static duk_ret_t bind_lockstep_peers(duk_context *ctx) {
+  uint32_t ids[NG_LOCK_PEER_MAX];
+  const int n = mod_lockstep_fill_peer_ids(ids, NG_LOCK_PEER_MAX);
+  duk_push_array(ctx);
+  for (int i = 0; i < n; i++) {
+    duk_push_uint(ctx, ids[i]);
+    duk_put_prop_index(ctx, -2, (duk_uarridx_t)i);
+  }
   return 1;
 }
 
@@ -1475,10 +1523,12 @@ static duk_ret_t bind_server_time(duk_context *ctx) {
 // agent: composer-2.5 | 2026-07-29 | js get_position binding | 9b4d7e
 static duk_ret_t bind_get_position(duk_context *ctx) {
   NgSceneInst *inst = mod_scene_inst_from_handle(duk_require_int(ctx, 0));
-  duk_push_object(ctx);
+  // agent: grok-4.6 | 2026-08-31 | null get_position if dead | 82ad22
   if (!inst) {
+    duk_push_null(ctx);
     return 1;
   }
+  duk_push_object(ctx);
   duk_push_number(ctx, inst->pos[0]);
   duk_put_prop_string(ctx, -2, "x");
   duk_push_number(ctx, inst->pos[1]);
@@ -1921,6 +1971,10 @@ static void mod_scene_bind_global(duk_context *ctx) {
   BIND("get_any_input", bind_get_any_input, 1);
   BIND("get_local_input", bind_get_local_input, 1);
   BIND("get_peer_input", bind_get_peer_input, 2);
+  BIND("set_local_analog", bind_set_local_analog, 1);
+  BIND("get_local_analog", bind_get_local_analog, 0);
+  BIND("get_peer_analog", bind_get_peer_analog, 1);
+  BIND("lockstep_peers", bind_lockstep_peers, 0);
   BIND("get_input", bind_get_input, 1); /* alias → get_any_input */
   // agent: composer-2.5 | 2026-07-30 | apply_impulse JS binding | b980ed
   // agent: composer-2.5 | 2026-07-30 | apply force torque JS bindings | cd7a18
@@ -2525,6 +2579,7 @@ static void mod_scene_push_server_phys_to_view(void) {
     char key[32];
     float pos[3];
     float rot[3];
+    float lin_vel[3];
   } NgPhysPose;
   NgPhysPose poses[NG_SCENE_INST_MAX];
   int n = 0;
@@ -2538,12 +2593,9 @@ static void mod_scene_push_server_phys_to_view(void) {
     if (!inst) {
       continue;
     }
-    /* sim:server — sync:server bodies; lockstep — any local body with Box3D. */
+    /* sim:server — sync:server bodies; lockstep — keyed graph poses (bodies optional). */
     if (lockstep) {
-      if (inst->body_id_bits == 0 && inst->body[0] == '\0') {
-        continue;
-      }
-      if (inst->body_id_bits == 0) {
+      if (inst->body[0] == '\0' && inst->key[0] == '\0') {
         continue;
       }
     } else if (inst->sync != NG_SYNC_SERVER || inst->body_id_bits == 0) {
@@ -2558,6 +2610,12 @@ static void mod_scene_push_server_phys_to_view(void) {
     poses[n].rot[0] = inst->rot[0];
     poses[n].rot[1] = inst->rot[1];
     poses[n].rot[2] = inst->rot[2];
+    poses[n].lin_vel[0] = inst->lin_vel[0];
+    poses[n].lin_vel[1] = inst->lin_vel[1];
+    poses[n].lin_vel[2] = inst->lin_vel[2];
+    if (inst->body_id_bits != 0) {
+      (void)mod_scene_physics_get_linear_velocity(inst->handle, poses[n].lin_vel);
+    }
     n++;
   }
   if (n == 0) {
@@ -2574,7 +2632,7 @@ static void mod_scene_push_server_phys_to_view(void) {
     /* Input-sim: match by entity id only (sim-band / SESSION). Non-input-sim
      * still prefers key when present. */
     NgSceneInst *v = NULL;
-    if (!lockstep && poses[i].key[0] != '\0') {
+    if (poses[i].key[0] != '\0') {
       v = mod_scene_graph_inst_by_key(poses[i].key);
     }
     if (!v) {
@@ -2589,6 +2647,21 @@ static void mod_scene_push_server_phys_to_view(void) {
     v->rot[0] = poses[i].rot[0];
     v->rot[1] = poses[i].rot[1];
     v->rot[2] = poses[i].rot[2];
+    v->lin_vel[0] = poses[i].lin_vel[0];
+    v->lin_vel[1] = poses[i].lin_vel[1];
+    v->lin_vel[2] = poses[i].lin_vel[2];
+    // agent: grok-4.6 | 2026-08-31 | lockstep view pose samples | 7778ae
+    {
+      char local_key[16];
+      snprintf(local_key, sizeof(local_key), "p%u", mod_lockstep_local_peer_id());
+      if (lockstep && poses[i].key[0] && strcmp(poses[i].key, local_key) == 0) {
+        mod_scene_graph_note_local_author(v, GetTime());
+      } else if (lockstep) {
+        v->prefer_live_draw = 0;
+        mod_scene_graph_push_sample(v, GetTime());
+        mod_scene_graph_note_state_arrival(GetTime());
+      }
+    }
   }
 }
 #endif
@@ -3633,7 +3706,7 @@ static bool mod_scene_lockstep_hash_smoke(void) {
   /* Capture non-zero bits into a later slot (store_remote overwrites after gen_local). */
   mod_lockstep_set_clock_owner(false);
   mod_lockstep_store_remote_input(mod_lockstep_local_peer_id(), 2u, (uint8_t)(NG_INPUT_A | NG_INPUT_W),
-                                  NULL);
+                                  0, NULL);
   if (mod_lockstep_bits_for(mod_lockstep_local_peer_id(), 2u) != (uint8_t)(NG_INPUT_A | NG_INPUT_W)) {
     mod_scene_runtime_use_server();
     mod_scene_unload(mod_scene_runtime_scene());
@@ -3888,9 +3961,9 @@ static bool mod_scene_action_dual_peer_id_smoke(void) {
     a.argv[5] = -1;
     a.argv[6] = 20;
     /* Store while confirm=0 so late-input drop does not discard. */
-    mod_lockstep_store_remote_input(2, tick, 0, &a);
+    mod_lockstep_store_remote_input(2, tick, 0, 0, &a);
     a.argv[0] = 1;
-    mod_lockstep_store_remote_input(1, tick, 0, &a);
+    mod_lockstep_store_remote_input(1, tick, 0, 0, &a);
   }
   mod_lockstep_set_confirmed_tick(tick);
   mod_lockstep_set_step_tick(tick);
@@ -4176,3 +4249,8 @@ bool mod_scene_smoke_test(void) {
 // agent: grok-4.6 | 2026-08-30 | server_time one host clock | 4b7ff1
 // agent: grok-4.6 | 2026-08-30 | now server_time same wall | e1038b
 // agent: grok-4.6 | 2026-08-30 | describe bind scene scopes | 12f647
+// agent: grok-4.6 | 2026-08-31 | parse model albedo field | 7d3617
+// agent: grok-4.6 | 2026-08-31 | js analog peers bindings | 2ac462
+// agent: grok-4.6 | 2026-08-31 | bind get_local_analog | 275aa4
+// agent: grok-4.6 | 2026-08-31 | lockstep view pose samples | 7778ae
+// agent: grok-4.6 | 2026-08-31 | null get_position if dead | 82ad22

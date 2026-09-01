@@ -13,6 +13,7 @@
 #include "engine/ng_log.h"
 #include "engine/ng_proto.h"
 #include "physics.h"
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,33 @@
 // agent: composer-2.5 | 2026-07-31 | lockstep stats and adapt | 68202b
 
 // agent: cursor-grok-4.5 | 2026-07-31 | host prune silent stall peers | a55e1c
+static float g_local_yaw;
+
+/** Quantize yaw radians to u8 (0..255 → [0, 2π)). */
+static uint8_t mod_lockstep_yaw_u8(float yaw) {
+  const float tau = 6.28318530718f;
+  float t = yaw / tau;
+  t -= floorf(t);
+  if (t < 0.0f) {
+    t += 1.0f;
+  }
+  int q = (int)(t * 256.0f);
+  if (q > 255) {
+    q = 255;
+  }
+  if (q < 0) {
+    q = 0;
+  }
+  return (uint8_t)q;
+}
+
+static float mod_lockstep_yaw_f(uint8_t q) { return (float)q * (6.28318530718f / 256.0f); }
+
+void mod_lockstep_set_local_analog(float yaw) { g_local_yaw = yaw; }
+
+// agent: grok-4.6 | 2026-08-31 | local analog getter | 278240
+float mod_lockstep_local_analog(void) { return g_local_yaw; }
+
 static double mod_lockstep_wall_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -30,6 +58,7 @@ typedef struct NgLockSlot {
   bool present;
   bool predicted; /* last-input hold; confirm may correct */
   uint8_t bits;
+  uint8_t analog;
   uint32_t tick; /* absolute tick; required so ring wrap cannot false-match */
   // agent: composer-2.5 | 2026-08-01 | slot action propose APIs | a8876f
   bool has_action;
@@ -48,6 +77,7 @@ typedef struct NgLockPeer {
   uint32_t ack_our; /* remote reports they have world inputs through this tick */
   double last_input_wall; /* monotonic; host prunes silent peers (left) */
   uint8_t last_bits; /* prediction hold */
+  uint8_t last_analog;
   // agent: composer-2.5 | 2026-08-01 | per-peer playout lockstep | ce507f
   uint8_t playout_ticks; /* 0 = use global session playout */
   uint8_t zf_window;
@@ -165,6 +195,7 @@ static void mod_lockstep_gen_local(uint32_t tick) {
   }
   NgLockSlot *s = &self->slots[tick % NG_LOCK_RING];
   const uint8_t bits = (uint8_t)(mod_input_buttons() & 0xff);
+  const uint8_t analog = mod_lockstep_yaw_u8(g_local_yaw);
   if (s->present && s->tick == tick) {
     /* Already committed for this tick — do not change bits (determinism). */
     if (tick > g_lock.local_send_tick) {
@@ -175,6 +206,7 @@ static void mod_lockstep_gen_local(uint32_t tick) {
   }
   s->present = true;
   s->bits = bits;
+  s->analog = analog;
   s->tick = tick;
   s->predicted = false;
   /* Fresh gen does not invent actions; propose_local_action may attach later. */
@@ -185,6 +217,7 @@ static void mod_lockstep_gen_local(uint32_t tick) {
     g_lock.local_send_tick = tick;
   }
   self->last_bits = bits;
+  self->last_analog = analog;
   self->last_input_wall = mod_lockstep_wall_now();
   mod_lockstep_advance_contiguous(self);
 }
@@ -714,6 +747,7 @@ static void mod_lockstep_ensure_predict(uint32_t tick) {
     s->present = true;
     s->predicted = true;
     s->bits = p->last_bits;
+    s->analog = p->last_analog;
     s->tick = tick;
     /* Never hold-fire: predicted slots copy bits only. */
     s->has_action = false;
@@ -765,6 +799,16 @@ NgLockGate mod_lockstep_gate(void) {
     if (g_lock.confirmed_tick >= next_sim) {
       return NG_LOCK_GATE_GO;
     }
+    // agent: grok-4.6 | 2026-08-31 | hybrid host mirror predict | 64f3d2
+    if (g_lock.hybrid) {
+      NgLockPeer *self = mod_lockstep_find_peer(g_lock.local_peer_id);
+      const uint32_t pred_allow = mod_lockstep_predict_allow();
+      if (next_sim <= g_lock.confirmed_tick + pred_allow && self &&
+          mod_lockstep_slot_has(self, next_sim)) {
+        mod_lockstep_ensure_predict(next_sim);
+        return NG_LOCK_GATE_GO;
+      }
+    }
     return NG_LOCK_GATE_STALL;
   }
 
@@ -773,11 +817,20 @@ NgLockGate mod_lockstep_gate(void) {
   }
   if (g_lock.peer_count <= 1) {
     /* Mirror with only self still needs host LOCK_CONFIRM — never self-confirm
-     * (that races ahead of the server and desyncs). */
+     * (that races ahead of the server and desyncs). Hybrid: last-input predict. */
     // agent: composer-2.5 | 2026-07-31 | mirrors never self confirm | 6b113e
     g_lock.sim_started = true;
     if (g_lock.confirmed_tick >= next_sim) {
       return NG_LOCK_GATE_GO;
+    }
+    if (g_lock.hybrid) {
+      NgLockPeer *self = mod_lockstep_find_peer(g_lock.local_peer_id);
+      const uint32_t pred_allow = mod_lockstep_predict_allow();
+      if (next_sim <= g_lock.confirmed_tick + pred_allow && self &&
+          mod_lockstep_slot_has(self, next_sim)) {
+        mod_lockstep_ensure_predict(next_sim);
+        return NG_LOCK_GATE_GO;
+      }
     }
     return NG_LOCK_GATE_STALL;
   }
@@ -796,7 +849,7 @@ NgLockGate mod_lockstep_gate(void) {
   if (g_lock.hybrid) {
     NgLockPeer *self = mod_lockstep_find_peer(g_lock.local_peer_id);
     const uint32_t pred_allow = mod_lockstep_predict_allow();
-    if (g_lock.confirmed_tick > 0 && next_sim <= g_lock.confirmed_tick + pred_allow && self &&
+    if (next_sim <= g_lock.confirmed_tick + pred_allow && self &&
         mod_lockstep_slot_has(self, next_sim)) {
       mod_lockstep_ensure_predict(next_sim);
       return NG_LOCK_GATE_GO;
@@ -837,7 +890,7 @@ void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash) {
   }
 }
 
-void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits,
+void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits, uint8_t analog,
                                      const NgLockAction *action) {
   // agent: composer-2.5 | 2026-07-30 | solo lockstep always go | 4950ad
   // agent: composer-2.5 | 2026-07-30 | slot conflict triggers desync | b2989d
@@ -860,7 +913,7 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
   p->got_input = true;
   p->last_input_wall = mod_lockstep_wall_now();
   p->last_bits = bits;
-  /* Drop late inputs after host confirm (bits already committed). */
+  p->last_analog = analog;
   if (g_lock.confirmed_tick != 0 && tick <= g_lock.confirmed_tick) {
     return;
   }
@@ -885,13 +938,14 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
   if (s->present && s->tick == tick) {
     /* Action-less redundant INPUT must not wipe a prior propose. Only upgrade
      * when the wire carries an action (or bits change). */
-    if (s->bits != bits ||
+    if (s->bits != bits || s->analog != analog ||
         (act_present &&
          (!s->has_action || s->action_id != action->id || s->action_argc != action->argc))) {
       if (g_lock.clock_owner) {
         /* Adopt newer wire bits before step; ignore conflicts after step. */
         if (tick > g_lock.sim_tick) {
           s->bits = bits;
+          s->analog = analog;
           s->predicted = false;
           if (act_present) {
             s->has_action = true;
@@ -909,6 +963,7 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
       // agent: composer-2.5 | 2026-07-30 | host commit overwrites local | 2da677
       if (tick > g_lock.sim_tick) {
         s->bits = bits;
+        s->analog = analog;
         s->predicted = false;
         if (act_present) {
           s->has_action = true;
@@ -921,6 +976,7 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
       NG_LOG_WARN("lockstep: adopt remote bits peer=%u tick=%u was=%u now=%u", peer_id, tick,
                   (unsigned)s->bits, (unsigned)bits);
       s->bits = bits;
+      s->analog = analog;
       s->predicted = false;
       if (act_present) {
         s->has_action = true;
@@ -934,6 +990,7 @@ void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bi
   }
   s->present = true;
   s->bits = bits;
+  s->analog = analog;
   s->tick = tick;
   s->predicted = false;
   if (act_present) {
@@ -1019,7 +1076,7 @@ uint32_t mod_lockstep_last_hash(void) { return g_lock.last_hash; }
 uint32_t mod_lockstep_last_hash_tick(void) { return g_lock.last_hash_tick; }
 
 int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits,
-                                  NgLockAction *out_actions, int max_count) {
+                                  NgLockAction *out_actions, uint8_t *out_analog, int max_count) {
   // agent: cursor-grok-4.5 | 2026-07-31 | gaffer reduce gate end_sync | 0f5fb7
   // agent: composer-2.5 | 2026-08-01 | slot action propose APIs | a8876f
   if (!out_base_tick || !out_bits || max_count <= 0 || g_lock.local_send_tick == 0) {
@@ -1052,6 +1109,9 @@ int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits,
     }
     const NgLockSlot *sl = &self->slots[t % NG_LOCK_RING];
     out_bits[n] = sl->bits;
+    if (out_analog) {
+      out_analog[n] = sl->analog;
+    }
     if (out_actions) {
       memset(&out_actions[n], 0, sizeof(out_actions[n]));
       if (sl->has_action) {
@@ -1249,6 +1309,7 @@ bool mod_lockstep_apply_confirm(const NgLockConfirmPkt *pkt) {
     s->present = true;
     s->predicted = false;
     s->bits = pkt->bits[i];
+    s->analog = pkt->analog[i];
     s->tick = pkt->tick;
     if (pkt->actions[i].present) {
       s->has_action = true;
@@ -1267,6 +1328,7 @@ bool mod_lockstep_apply_confirm(const NgLockConfirmPkt *pkt) {
       s->action_argc = 0;
     }
     p->last_bits = pkt->bits[i];
+    p->last_analog = pkt->analog[i];
     p->got_input = true;
     mod_lockstep_advance_contiguous(p);
   }
@@ -1385,6 +1447,7 @@ bool mod_lockstep_host_try_confirm(NgLockConfirmPkt *out) {
     if (mod_lockstep_slot_has(p, next)) {
       const NgLockSlot *sl = &p->slots[next % NG_LOCK_RING];
       out->bits[idx] = sl->bits;
+      out->analog[idx] = sl->analog;
       if (sl->has_action) {
         out->actions[idx].present = 1;
         out->actions[idx].id = sl->action_id;
@@ -1393,6 +1456,7 @@ bool mod_lockstep_host_try_confirm(NgLockConfirmPkt *out) {
       }
     } else {
       out->bits[idx] = 0; /* deadline / disconnect fill */
+      out->analog[idx] = p->last_analog;
       /* Zero-fill: no action. */
       miss |= (uint8_t)(1u << idx);
     }
@@ -1496,11 +1560,15 @@ uint8_t mod_lockstep_last_bits_or(void) {
   return bits;
 }
 
-bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, NgLockAction *out_action) {
+bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, uint8_t *out_analog,
+                                 NgLockAction *out_action) {
   if (!out_bits) {
     return false;
   }
   *out_bits = 0;
+  if (out_analog) {
+    *out_analog = 0;
+  }
   if (out_action) {
     memset(out_action, 0, sizeof(*out_action));
   }
@@ -1514,6 +1582,9 @@ bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, NgLockAction 
     if (tick != 0 && mod_lockstep_slot_has(p, tick)) {
       const NgLockSlot *sl = &p->slots[tick % NG_LOCK_RING];
       *out_bits |= sl->bits;
+      if (out_analog && *out_analog == 0) {
+        *out_analog = sl->analog;
+      }
       if (out_action && !out_action->present && sl->has_action) {
         out_action->present = 1;
         out_action->id = sl->action_id;
@@ -1522,9 +1593,46 @@ bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, NgLockAction 
       }
     } else {
       *out_bits |= p->last_bits;
+      if (out_analog && *out_analog == 0) {
+        *out_analog = p->last_analog;
+      }
     }
   }
   return any;
+}
+
+float mod_lockstep_analog_yaw(uint32_t peer_id) {
+  if (peer_id == 0) {
+    peer_id = g_lock.local_peer_id;
+  }
+  if (!g_lock.active || peer_id == 0) {
+    return g_local_yaw;
+  }
+  const uint32_t tick = mod_lockstep_step_tick();
+  NgLockPeer *p = mod_lockstep_find_peer(peer_id);
+  if (!p) {
+    return (peer_id == g_lock.local_peer_id) ? g_local_yaw : 0.0f;
+  }
+  if (tick != 0 && mod_lockstep_slot_has(p, tick)) {
+    return mod_lockstep_yaw_f(p->slots[tick % NG_LOCK_RING].analog);
+  }
+  return mod_lockstep_yaw_f(p->last_analog);
+}
+
+// agent: grok-4.6 | 2026-08-31 | skip ghosts in peer ids | 052962
+int mod_lockstep_fill_peer_ids(uint32_t *out_ids, int max_count) {
+  if (!out_ids || max_count <= 0) {
+    return 0;
+  }
+  int n = 0;
+  for (int i = 0; i < g_lock.peer_count && n < max_count; i++) {
+    NgLockPeer *p = &g_lock.peers[i];
+    if (!p->alive || p->ghost || p->peer_id == 0) {
+      continue;
+    }
+    out_ids[n++] = p->peer_id;
+  }
+  return n;
 }
 
 // agent: composer-2.5 | 2026-08-01 | slot action propose APIs | a8876f
@@ -1679,3 +1787,7 @@ int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers) {
 // agent: composer-2.5 | 2026-08-02 | peer heartbeat API | 35dfd4
 // agent: composer-2.5 | 2026-08-09 | propose next unsent tip | 5a28ac
 // agent: composer-2.5 | 2026-08-09 | lockstep child input merge | 1ca140
+// agent: grok-4.6 | 2026-08-31 | slot analog yaw sample | 8a6dfc
+// agent: grok-4.6 | 2026-08-31 | skip ghosts in peer ids | 052962
+// agent: grok-4.6 | 2026-08-31 | local analog getter | 278240
+// agent: grok-4.6 | 2026-08-31 | hybrid host mirror predict | 64f3d2

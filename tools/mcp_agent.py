@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import sys
+import time
 from typing import Any
 
 AGENT_HOST = "127.0.0.1"
@@ -120,6 +121,27 @@ TOOLS = [
             "required": [],
         },
     },
+    # agent: grok-4.6 | 2026-08-31 | mcp screenshot analog tools | b17145
+    {
+        "name": "screenshot",
+        "description": "Capture the in-app framebuffer to a PNG path (client/gateway only).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Destination .png path."},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "wire_analog",
+        "description": "Set local lockstep analog yaw in radians (client/gateway only).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"yaw": {"type": "number", "description": "Yaw radians."}},
+            "required": ["yaw"],
+        },
+    },
 ]
 
 
@@ -186,6 +208,17 @@ def run_tool(name: str, arguments: dict[str, Any]) -> str:
         ty = float(arguments.get("ty", 800.0) or 800.0)
         tz = float(arguments.get("tz", 0.0) or 0.0)
         resp = agent_request({"line": f"force_torque {key} {tx} {ty} {tz}"})
+    elif name == "screenshot":
+        path = str(arguments.get("path", "")).strip()
+        resp = agent_request({"line": f"screenshot {path}"})
+        if resp.get("ok") and path:
+            for _ in range(40):
+                if os.path.isfile(path) and os.path.getsize(path) > 32:
+                    break
+                time.sleep(0.05)
+    elif name == "wire_analog":
+        yaw = float(arguments.get("yaw", 0.0) or 0.0)
+        resp = agent_request({"line": f"wire_analog {yaw}"})
     else:
         return json.dumps({"ok": False, "error": f"unknown tool: {name}"})
 
@@ -293,3 +326,4 @@ if __name__ == "__main__":
 # agent: composer-2.5 | 2026-07-28 | mcp dual port render tool | 13f975
 # agent: composer-2.5 | 2026-07-29 | mcp wire input transform tools | 2f9c8a
 # agent: composer-2.5 | 2026-07-30 | sync missing agent tools | 43558a
+# agent: grok-4.6 | 2026-08-31 | mcp screenshot analog tools | b17145

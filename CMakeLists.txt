@@ -183,9 +183,10 @@ if(NOT EMSCRIPTEN)
   target_compile_definitions(ng_cmd_latency PRIVATE NG_NET_SMOKE ${NG_ENET_DEFS})
   target_link_libraries(ng_cmd_latency PRIVATE m)
 
+  # agent: grok-4.6 | 2026-08-31 | link proto js phys smoke | ee9330
   add_executable(ng_scene_js_smoke EXCLUDE_FROM_ALL tools/scene_js_smoke.c ${NG_SCENE_SOURCES}
                  src/client/input.c src/engine/ng_session.c src/engine/ng_sync.c
-                 src/engine/ng_mod.c src/engine/ng_bus.c
+                 src/engine/ng_mod.c src/engine/ng_bus.c src/engine/ng_proto.c
                  src/world/ng_world.c ${NG_VENDOR_SOURCES})
   target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_scene_js_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
@@ -198,30 +199,37 @@ if(NOT EMSCRIPTEN)
   target_link_libraries(ng_scene_js_smoke PRIVATE m box3d)
 
   # agent: composer-2.5 | 2026-07-31 | phys save smoke cmake | 33f75f
+  # agent: grok-4.6 | 2026-08-31 | link proto js phys smoke | ee9330
   add_executable(ng_phys_save_smoke EXCLUDE_FROM_ALL tools/phys_save_smoke.c ${NG_SCENE_SOURCES}
                  src/client/input.c src/engine/ng_session.c src/engine/ng_sync.c
-                 src/engine/ng_mod.c src/engine/ng_bus.c
+                 src/engine/ng_mod.c src/engine/ng_bus.c src/engine/ng_proto.c
                  src/world/ng_world.c ${NG_VENDOR_SOURCES})
   target_include_directories(ng_phys_save_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
   target_compile_definitions(ng_phys_save_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_phys_save_smoke PRIVATE m box3d)
 
   # agent: grok-4.6 | 2026-08-21 | link rc_ws on latency bins | 0838e0
+  # agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a
   add_executable(ng_cmd_loopback_latency EXCLUDE_FROM_ALL tools/cmd_loopback_latency.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c src/client/render_rc_ws.c
+                 src/client/font_msdf.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
                  src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
+  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include
+                             ${RAYLIB_DIR}/src/external)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m box3d)
 
   # agent: grok-4.6 | 2026-08-21 | remove probe smoke cmake target | 5f8a09
+  # agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a
   add_executable(ng_embed_smoke EXCLUDE_FROM_ALL tools/embed_smoke.c ${NG_CORE_SOURCES}
                  src/client/input.c src/net/mod_net.c src/client/render.c src/client/render_rc_ws.c
+                 src/client/font_msdf.c
                  ${NG_SCENE_SOURCES}
                  src/ng_shader.c src/ng_viewport.c src/server/script.c
                  src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_embed_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
+  target_include_directories(ng_embed_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include
+                             ${RAYLIB_DIR}/src/external)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_embed_smoke PRIVATE raylib m box3d)
 endif()
@@ -244,3 +252,5 @@ endif()
 # agent: grok-4.6 | 2026-08-21 | link rc_ws on latency bins | 0838e0
 # agent: grok-4.6 | 2026-08-21 | remove probe smoke cmake target | 5f8a09
 # agent: grok-4.6 | 2026-08-28 | link font_msdf client | 23a97d
+# agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a
+# agent: grok-4.6 | 2026-08-31 | link proto js phys smoke | ee9330

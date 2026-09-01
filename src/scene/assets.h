@@ -70,6 +70,8 @@ typedef struct NgSceneModelDesc {
   // agent: grok-4.6 | 2026-08-30 | font model draw src fields | 8b11df
   NgSceneModelDraw draw;
   char font_src[64];
+  // agent: grok-4.6 | 2026-08-31 | model shader albedo path | c46089
+  char albedo[64];
 } NgSceneModelDesc;
 
 typedef struct NgSceneViewMeta {
@@ -112,6 +114,8 @@ typedef struct NgSceneResolvedModel {
   uint8_t glow_b;
   float roughness;
   float metalness;
+  // agent: grok-4.6 | 2026-08-31 | model shader albedo path | c46089
+  char albedo[64];
 } NgSceneResolvedModel;
 
 void mod_scene_assets_reset(void);
@@ -122,7 +126,8 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
                                       bool have_tint, uint8_t glow_r, uint8_t glow_g,
                                       uint8_t glow_b, bool have_glow, float roughness,
                                       float metalness);
-bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader);
+bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader,
+                                     const char *albedo);
 /** Register an MSDF font as a model (no mesh). */
 bool mod_scene_assets_describe_font(const char *name, const char *src);
 const NgSceneModelDesc *mod_scene_assets_get_model(const char *name);
@@ -155,3 +160,4 @@ NgEntityType mod_scene_assets_entity_type_for_kind(NgSceneMeshKind kind);
 // agent: composer-2.5 | 2026-08-09 | set view camera assets | 10114b
 // agent: grok-4.6 | 2026-08-30 | font model draw src fields | 8b11df
 // agent: grok-4.6 | 2026-08-30 | named scope table APIs | 870861
+// agent: grok-4.6 | 2026-08-31 | model shader albedo path | c46089

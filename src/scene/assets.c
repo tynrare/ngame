@@ -162,7 +162,8 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
   return true;
 }
 
-bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader) {
+bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader,
+                                     const char *albedo) {
   if (!name || !mesh) {
     return false;
   }
@@ -179,6 +180,11 @@ bool mod_scene_assets_describe_model(const char *name, const char *mesh, const c
     existing->mesh_kind = md->kind;
     existing->draw = NG_SCENE_DRAW_MESH;
     existing->font_src[0] = '\0';
+    // agent: grok-4.6 | 2026-08-31 | copy albedo into resolved | a8f4ad
+    existing->albedo[0] = '\0';
+    if (albedo && albedo[0]) {
+      mod_scene_assets_normalize_res_path(existing->albedo, sizeof(existing->albedo), albedo);
+    }
     return true;
   }
   if (GASSETS().model_count >= NG_SCENE_ASSET_MAX) {
@@ -194,6 +200,9 @@ bool mod_scene_assets_describe_model(const char *name, const char *mesh, const c
   }
   m->mesh_kind = md->kind;
   m->draw = NG_SCENE_DRAW_MESH;
+  if (albedo && albedo[0]) {
+    mod_scene_assets_normalize_res_path(m->albedo, sizeof(m->albedo), albedo);
+  }
   return true;
 }
 
@@ -482,6 +491,11 @@ static bool mod_scene_assets_fill_resolved(const NgSceneModelDesc *model, NgScen
   out->glow_b = shader->glow_b;
   out->roughness = shader->roughness;
   out->metalness = shader->metalness;
+  // agent: grok-4.6 | 2026-08-31 | copy albedo into resolved | a8f4ad
+  out->albedo[0] = '\0';
+  if (model->albedo[0]) {
+    strncpy(out->albedo, model->albedo, sizeof(out->albedo) - 1);
+  }
   return true;
 }
 
@@ -516,3 +530,4 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
 // agent: composer-2.5 | 2026-08-09 | set view camera assets | d004a6
 // agent: grok-4.6 | 2026-08-30 | describe font without mesh | 3b5e0c
 // agent: grok-4.6 | 2026-08-30 | named scope table APIs | 6605bc
+// agent: grok-4.6 | 2026-08-31 | copy albedo into resolved | a8f4ad

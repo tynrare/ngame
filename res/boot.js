@@ -3,6 +3,7 @@
 // agent: composer-2.5 | 2026-08-09 | register rc scene | fbdaa0
 // agent: grok-4.6 | 2026-08-28 | register fonts scene id | fc17e8
 // agent: grok-4.6 | 2026-08-30 | register syncstats scene | f26d47
+// agent: grok-4.6 | 2026-08-31 | register crawler scene id | 32add4
 global.register("sphere", "scenes/sphere.js");
 global.register("cube", "scenes/cube.js");
 global.register("physics", "scenes/physics.js");
@@ -14,6 +15,7 @@ global.register("rc", "scenes/rc.js");
 global.register("example", "scenes/example.js");
 global.register("fonts", "scenes/fonts.js");
 global.register("syncstats", "scenes/syncstats.js");
+global.register("crawler", "scenes/crawler.js");
 
 function Boot() {}
 
@@ -47,3 +49,4 @@ global.module(Boot);
 // agent: composer-2.5 | 2026-08-09 | register rc scene | fbdaa0
 // agent: grok-4.6 | 2026-08-28 | register fonts scene id | fc17e8
 // agent: grok-4.6 | 2026-08-30 | register syncstats scene | f26d47
+// agent: grok-4.6 | 2026-08-31 | register crawler scene id | 32add4

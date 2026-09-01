@@ -229,6 +229,8 @@ void ng_app_client_frame(void) {
 
   ng_mod_publish_draw();
   EndDrawing();
+  // agent: grok-4.6 | 2026-08-31 | flush screenshot after draw | 994fc8
+  mod_render_flush_screenshot();
 
 #if !defined(__EMSCRIPTEN__)
   /* Pad to ~60Hz wall when the frame was fast. After a slow swap/unfocus stall,
@@ -280,3 +282,4 @@ void ng_app_client_shutdown(void) {
 // agent: composer-2.5 | 2026-07-30 | sample input after BeginDrawing | e28250
 // agent: cursor-grok-4.5 | 2026-07-31 | wall clock gateway sim pump | e39666
 // agent: composer-2.5 | 2026-08-02 | client apply sim throttle flags | 895b64
+// agent: grok-4.6 | 2026-08-31 | flush screenshot after draw | 994fc8

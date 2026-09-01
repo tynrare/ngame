@@ -1,5 +1,6 @@
 // agent: composer-2.5 | 2026-07-25 | headless embedded smoke test | 69db60
 // agent: composer-2.5 | 2026-07-28 | gateway loopback smoke test | 2eb821
+// agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a
 #include "engine/ng_bus.h"
 #include "engine/ng_log.h"
 #include "engine/ng_mod.h"
@@ -8,6 +9,7 @@
 #include "server/sim.h"
 #include "server/script.h"
 #include <raylib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -79,4 +81,10 @@ int main(void) {
   return 0;
 }
 
+// agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a
+uint16_t mod_agent_listening_port(void) { return 0; }
+const char *ng_app_client_mode_text(void) { return "embedded"; }
+
+// agent: composer-2.5 | 2026-07-25 | headless embedded smoke test | 69db60
 // agent: composer-2.5 | 2026-07-28 | gateway loopback smoke test | 2eb821
+// agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a

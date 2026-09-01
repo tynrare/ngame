@@ -16,7 +16,8 @@ struct NgActionResult;
 // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
 // agent: composer-2.5 | 2026-08-09 | bump proto version 14 | 134f65
 // agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 35cd29
-#define NG_PROTO_VERSION 15
+// agent: grok-4.6 | 2026-08-31 | proto v16 lock analog | a57052
+#define NG_PROTO_VERSION 16
 
 #define NG_CH_UNRELIABLE 0
 #define NG_CH_RELIABLE   1
@@ -65,6 +66,7 @@ typedef struct NgLockInputPkt {
   uint32_t base_tick;
   uint8_t count;
   uint8_t bits[NG_LOCK_INPUT_MAX];
+  uint8_t analog[NG_LOCK_INPUT_MAX];
   NgLockAction actions[NG_LOCK_INPUT_MAX];
 } NgLockInputPkt;
 
@@ -114,6 +116,7 @@ typedef struct NgLockConfirmPkt {
   uint8_t peer_count;
   uint8_t peer_ids[NG_LOCK_PEER_MAX];
   uint8_t bits[NG_LOCK_PEER_MAX];
+  uint8_t analog[NG_LOCK_PEER_MAX];
   uint8_t miss_mask; /* bit i set => bits[i] was zero-filled */
   // agent: composer-2.5 | 2026-08-01 | lockstep action wire v13 | 5d4dc6
   NgLockAction actions[NG_LOCK_PEER_MAX];
@@ -224,3 +227,4 @@ bool ng_proto_decode_lock_confirm(NgProtoBuf *b, NgLockConfirmPkt *pkt);
 // agent: grok-4.6 | 2026-08-30 | proto v15 text host_time | 35cd29
 // agent: grok-4.6 | 2026-08-30 | view cache host_time only | 4d3b54
 // agent: grok-4.6 | 2026-08-30 | elapsed wall host clock | f72906
+// agent: grok-4.6 | 2026-08-31 | proto v16 lock analog | a57052

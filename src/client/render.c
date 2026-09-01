@@ -97,6 +97,9 @@ typedef struct RenderAsset {
   Color glow;
   float roughness;
   float metalness;
+  // agent: grok-4.6 | 2026-08-31 | load bind albedo texture | 85e565
+  Texture2D albedo;
+  bool have_albedo;
 } RenderAsset;
 
 #define NG_RENDER_CACHE_MAX 16
@@ -347,6 +350,8 @@ static void mod_render_load_asset_mesh(RenderAsset *a, const NgSceneResolvedMode
   a->roughness = resolved->roughness;
   a->metalness = resolved->metalness;
   a->bg = BLACK;
+  a->have_albedo = false;
+  a->albedo = (Texture2D){0};
   a->model = LoadModelFromMesh(mesh);
   a->shader = ng_shader_load(vs_path, fs_path);
   if (a->shader.handle.id == 0) {
@@ -354,6 +359,24 @@ static void mod_render_load_asset_mesh(RenderAsset *a, const NgSceneResolvedMode
     return;
   }
   a->model.materials[0].shader = a->shader.handle;
+  // agent: grok-4.6 | 2026-08-31 | load bind albedo texture | 85e565
+  // agent: grok-4.6 | 2026-08-31 | flip albedo image vertical | 1576d2
+  if (resolved->albedo[0]) {
+    char tex_path[160];
+    snprintf(tex_path, sizeof(tex_path), NG_RES_ROOT "%s",
+             resolved->albedo[0] == '/' ? resolved->albedo + 1 : resolved->albedo);
+    Image img = LoadImage(tex_path);
+    if (img.data) {
+      ImageFlipVertical(&img);
+      a->albedo = LoadTextureFromImage(img);
+      UnloadImage(img);
+    }
+    if (a->albedo.id != 0) {
+      SetTextureFilter(a->albedo, TEXTURE_FILTER_POINT);
+      SetMaterialTexture(&a->model.materials[0], MATERIAL_MAP_ALBEDO, a->albedo);
+      a->have_albedo = true;
+    }
+  }
   a->ready = true;
 }
 
@@ -362,6 +385,11 @@ static void mod_render_unload_asset(RenderAsset *a) {
     return;
   }
   ng_shader_unload(&a->shader);
+  if (a->have_albedo && a->albedo.id != 0) {
+    UnloadTexture(a->albedo);
+    a->albedo = (Texture2D){0};
+    a->have_albedo = false;
+  }
   UnloadModel(a->model);
   a->ready = false;
 }
@@ -2213,6 +2241,25 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
   return false;
 }
 
+// agent: grok-4.6 | 2026-08-31 | screenshot request API | 9c40fa
+static char g_screenshot_path[512];
+
+void mod_render_request_screenshot(const char *path) {
+  if (!path || !path[0]) {
+    return;
+  }
+  strncpy(g_screenshot_path, path, sizeof(g_screenshot_path) - 1);
+  g_screenshot_path[sizeof(g_screenshot_path) - 1] = '\0';
+}
+
+void mod_render_flush_screenshot(void) {
+  if (g_screenshot_path[0] == '\0') {
+    return;
+  }
+  TakeScreenshot(g_screenshot_path);
+  g_screenshot_path[0] = '\0';
+}
+
 // agent: composer-2.5 | 2026-07-29 | snapshot before empty graph | 57ca7b
 // agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
@@ -2372,3 +2419,5 @@ bool mod_render_get(const char *path, char *out, size_t cap) {
 // agent: grok-4.6 | 2026-08-21 | bind prev SH atlas fill | ad6dd7
 // agent: grok-4.6 | 2026-08-30 | drop fonts scene C branch | 347d96
 // agent: grok-4.6 | 2026-08-30 | batch draw by scope_id | 43b1e0
+// agent: grok-4.6 | 2026-08-31 | load bind albedo texture | 85e565
+// agent: grok-4.6 | 2026-08-31 | flip albedo image vertical | 1576d2

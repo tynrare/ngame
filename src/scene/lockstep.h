@@ -107,7 +107,8 @@ void mod_lockstep_on_stepped(uint32_t tick, uint32_t hash);
 
 // agent: composer-2.5 | 2026-08-02 | peer heartbeat decl | 9598fb
 void mod_lockstep_peer_heartbeat(uint32_t peer_id);
-void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits,
+// agent: grok-4.6 | 2026-08-31 | lockstep analog API decls | ad45b0
+void mod_lockstep_store_remote_input(uint32_t peer_id, uint32_t tick, uint8_t bits, uint8_t analog,
                                      const NgLockAction *action);
 void mod_lockstep_store_ack(uint32_t peer_id, uint32_t ack_tick);
 
@@ -124,7 +125,7 @@ uint32_t mod_lockstep_last_hash_tick(void);
 uint32_t mod_lockstep_local_peer_id(void);
 
 int mod_lockstep_fill_send_window(uint32_t *out_base_tick, uint8_t *out_bits,
-                                  NgLockAction *out_actions, int max_count);
+                                  NgLockAction *out_actions, uint8_t *out_analog, int max_count);
 uint32_t mod_lockstep_highest_recv_contiguous(void);
 void mod_lockstep_debug(uint32_t *out_send, int *out_peers, int *out_started, uint32_t *out_peer);
 void mod_lockstep_debug_full(uint32_t *out_send, int *out_peers, int *out_started, uint32_t *out_peer,
@@ -154,7 +155,12 @@ uint32_t mod_lockstep_peer_id_at(int index);
 // agent: composer-2.5 | 2026-08-09 | lockstep child input merge | 72264b
 uint8_t mod_lockstep_last_bits_or(void);
 /* Merge children at tick: OR bits; first present action. Returns false if no peers. */
-bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, NgLockAction *out_action);
+bool mod_lockstep_merge_children(uint32_t tick, uint8_t *out_bits, uint8_t *out_analog,
+                                 NgLockAction *out_action);
+void mod_lockstep_set_local_analog(float yaw);
+float mod_lockstep_local_analog(void);
+float mod_lockstep_analog_yaw(uint32_t peer_id);
+int mod_lockstep_fill_peer_ids(uint32_t *out_ids, int max_count);
 /* Peers whose contiguous recv lags confirmed by CATCHUP_TICKS. */
 int mod_lockstep_peers_need_catchup(uint32_t *out_peers, int max_peers);
 bool mod_lockstep_copy_last_confirm(NgLockConfirmPkt *out);
@@ -194,3 +200,5 @@ void mod_lockstep_on_soft_phys(uint32_t tick);
 // agent: composer-2.5 | 2026-08-01 | predict allow budget API | 9b2bad
 // agent: composer-2.5 | 2026-08-01 | hybrid flag lockstep API | dcbe5b
 // agent: composer-2.5 | 2026-08-02 | peer heartbeat decl | 9598fb
+// agent: grok-4.6 | 2026-08-31 | lockstep analog API decls | ad45b0
+// agent: grok-4.6 | 2026-08-31 | local analog getter decl | 47306c

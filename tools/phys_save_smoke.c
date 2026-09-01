@@ -39,10 +39,10 @@ static bool smoke_setup_world(void) {
   if (!mod_scene_physics_describe_shape("box_s", "box", 0.5f, 0.5f, 0.5f, 1.0f, 0.4f, false)) {
     return false;
   }
-  if (!mod_scene_physics_describe_body("ground_b", "static", "ground_s")) {
+  if (!mod_scene_physics_describe_body("ground_b", "static", "ground_s", false)) {
     return false;
   }
-  if (!mod_scene_physics_describe_body("box_b", "dynamic", "box_s")) {
+  if (!mod_scene_physics_describe_body("box_b", "dynamic", "box_s", false)) {
     return false;
   }
   if (!mod_scene_graph_describe("entity", "ground_e", NG_SYNC_SERVER, "", "ground_b", -1)) {

@@ -170,6 +170,9 @@ bool mod_scene_graph_registry_add_instance(const char *desc_name, const char *ke
 void mod_scene_graph_registry_set_pose(uint32_t entity_id, const float pos[3], const float rot[3],
                                        float scale);
 void mod_scene_graph_registry_clear_id(uint32_t entity_id);
+// agent: grok-4.6 | 2026-08-31 | declare remap entity id | f66c63
+/** Move inst to host entity id; refresh registry. @param inst heap slot @param new_id host id @returns void */
+void mod_scene_graph_remap_entity_id(NgSceneInst *inst, uint32_t new_id);
 void mod_scene_graph_fill_session_spawns(NgSessionState *session);
 
 void mod_scene_graph_seed_pending(const NgSessionState *session);
@@ -223,3 +226,4 @@ const NgSceneInst *mod_scene_graph_inst_at(int index);
 // agent: composer-2.5 | 2026-08-09 | prefer live pose when authoring | d3e801
 // agent: composer-2.5 | 2026-08-09 | live author timestamp field | d39e8e
 // agent: grok-4.6 | 2026-08-30 | inst scope_id drop space | 850817
+// agent: grok-4.6 | 2026-08-31 | declare remap entity id | f66c63

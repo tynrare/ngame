@@ -18,7 +18,8 @@
 <!-- agent: composer-2.5 | 2026-08-10 | scenes Phase4 WS volume note | 99a031 -->
 <!-- agent: grok-4.6 | 2026-08-28 | list fonts scene id | fa75d3 -->
 <!-- agent: grok-4.6 | 2026-08-30 | list syncstats scene | 634428 -->
-Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, **`example`** (helpers demo), **`fonts`** (MSDF labels as graph entities), or **`syncstats`** (text sync + host clock).
+<!-- agent: grok-4.6 | 2026-08-31 | list crawler scene id | f70206 -->
+Load with `scene <id>`: **`cube`**, **`sphere`**, **`physics`**, **`lockstep`**, **`solar`**, **`stacking`**, **`stress_spawn`**, **`rc`**, **`example`** (helpers demo), **`fonts`** (MSDF labels as graph entities), **`syncstats`** (text sync + host clock), or **`crawler`** (hybrid FP dungeon cell).
 
 Server **startup** runs `res/boot.js` automatically (not under `scenes/`). Boot **`register`s** scene ids into a C catalog; scenes export with `global.module(Ctor)`. Feature modules live under `res/modules/` and attach via `register` + `wire` (see [architecture.md](architecture.md)).
 
@@ -291,3 +292,5 @@ Mutate simulation / bodies only in `fixed_step`. Variable `step` is for presenta
 <!-- agent: grok-4.6 | 2026-08-30 | docs JS font label entities | 9d21d9 -->
 <!-- agent: grok-4.6 | 2026-08-30 | list syncstats scene | 634428 -->
 <!-- agent: grok-4.6 | 2026-08-30 | docs named scopes | e3e033 -->
+<!-- agent: grok-4.6 | 2026-08-31 | list crawler scene id | f70206 -->
+
