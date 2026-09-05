@@ -30,6 +30,10 @@
 #include <string.h>
 #if defined(__EMSCRIPTEN__)
 #include <GLES3/gl3.h>
+#elif defined(_WIN32)
+// raylib initializes these function pointers when it creates the GL context.
+// Windows opengl32 only exports OpenGL 1.1 entry points directly.
+#include "glad.h"
 #else
 #define GL_GLEXT_PROTOTYPES
 #include <GL/glcorearb.h>
@@ -504,9 +508,11 @@ static void msdf_tf_dispose(MsdfFont *f) {
   if (f->tf_output) {
     glDeleteBuffers(1, &f->tf_output);
   }
+#if defined(__EMSCRIPTEN__)
   if (f->tf_tfbo) {
     glDeleteTransformFeedbacks(1, &f->tf_tfbo);
   }
+#endif
   f->tf_program = 0;
   f->tf_vao = 0;
   f->tf_input = 0;
@@ -584,10 +590,12 @@ static bool msdf_load_gpu(MsdfFont *f) {
   glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(FONT_MSDF_POOL * 16 * (int)sizeof(float)), NULL,
                GL_DYNAMIC_DRAW);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
+#if defined(__EMSCRIPTEN__)
   glGenTransformFeedbacks(1, &f->tf_tfbo);
   glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, f->tf_tfbo);
   glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, f->tf_output);
   glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
+#endif
   return true;
 }
 
@@ -716,13 +724,21 @@ static void msdf_tf_update(int n) {
   glEnable(GL_RASTERIZER_DISCARD);
   glUseProgram(g_msdf.tf_program);
   glBindVertexArray(g_msdf.tf_vao);
+#if defined(__EMSCRIPTEN__)
   glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, g_msdf.tf_tfbo);
+#endif
+  // Desktop targets OpenGL 3.3: use its default transform-feedback state.
+  // Named transform-feedback objects require OpenGL 4.0 (or WebGL 2).
   glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, g_msdf.tf_output);
   glBeginTransformFeedback(GL_POINTS);
   glDrawArrays(GL_POINTS, 0, n);
   glEndTransformFeedback();
   glDisable(GL_RASTERIZER_DISCARD);
+#if defined(__EMSCRIPTEN__)
   glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
+#else
+  glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
+#endif
   glBindVertexArray(0);
   glUseProgram(0);
   g_msdf.pool_dirty = false;

@@ -2316,9 +2316,7 @@ static void mod_scene_drain_pending_change(ModSceneCtx *ctx) {
   // agent: cursor-grok-4.5 | 2026-07-31 | allow same scene reload | 4ee66e
 #if defined(NG_SERVER) || defined(NG_HAS_EMBEDDED)
   char reply[256];
-  if (mod_sim_load_scene) {
-    mod_sim_load_scene(next_scene, reply, sizeof(reply));
-  }
+  mod_sim_load_scene(next_scene, reply, sizeof(reply));
 #endif
 }
 

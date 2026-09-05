@@ -1,3 +1,4 @@
+#include "net/ng_socket.h"
 // agent: composer-2.5 | 2026-07-25 | agent TCP JSON bridge | h1k39f
 // agent: composer-2.5 | 2026-07-28 | agent port render snapshot | b598b6
 #include "agent.h"
@@ -16,25 +17,18 @@
 #include "client/render.h"
 #endif
 #include "world/ng_world.h"
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 // agent: composer-2.5 | 2026-07-29 | mcp agent port probing | 8a1c2d
 #define NG_AGENT_PROBE_MIN 27101
 #define NG_AGENT_PROBE_MAX 27109
 
 typedef struct ModAgentCtx {
-  int listen_fd;
-  int client_fd;
+  NgSocket listen_fd;
+  NgSocket client_fd;
   char line_buf[4096];
   int line_len;
   char pending_reply[1024];
@@ -54,27 +48,21 @@ void mod_agent_configure(uint16_t port) {
 // agent: composer-2.5 | 2026-07-29 | expose listening port | 1b2c3d
 uint16_t mod_agent_listening_port(void) { return g_agent_ctx.port; }
 
-static void mod_agent_set_nonblock(int fd) {
-  const int flags = fcntl(fd, F_GETFL, 0);
-  if (flags >= 0) {
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  }
+static void mod_agent_set_nonblock(NgSocket fd) {
+  ng_socket_set_blocking(fd, false);
 }
 
-static void mod_agent_set_nodelay(int fd) {
+static void mod_agent_set_nodelay(NgSocket fd) {
   const int yes = 1;
-  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&yes, sizeof(yes));
 }
 
-static void mod_agent_set_blocking(int fd) {
-  const int flags = fcntl(fd, F_GETFL, 0);
-  if (flags >= 0) {
-    fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-  }
+static void mod_agent_set_blocking(NgSocket fd) {
+  ng_socket_set_blocking(fd, true);
 }
 
-static bool mod_agent_send_json(int fd, const char *json) {
-  if (fd < 0 || !json) {
+static bool mod_agent_send_json(NgSocket fd, const char *json) {
+  if (fd == NG_INVALID_SOCKET || !json) {
     return false;
   }
   const size_t n = strlen(json);
@@ -93,13 +81,13 @@ static bool mod_agent_send_json(int fd, const char *json) {
 
 // agent: composer-2.5 | 2026-07-25 | agent close fix no peek | cad4bd
 static void mod_agent_close_client(ModAgentCtx *ctx) {
-  if (ctx->client_fd < 0 || ctx->client_fd == ctx->listen_fd) {
-    ctx->client_fd = -1;
+  if (ctx->client_fd == NG_INVALID_SOCKET || ctx->client_fd == ctx->listen_fd) {
+    ctx->client_fd = NG_INVALID_SOCKET;
     ctx->line_len = 0;
     return;
   }
-  close(ctx->client_fd);
-  ctx->client_fd = -1;
+  ng_socket_close(ctx->client_fd);
+  ctx->client_fd = NG_INVALID_SOCKET;
   ctx->line_len = 0;
 }
 
@@ -473,32 +461,32 @@ static void mod_agent_handle_line(ModAgentCtx *ctx, const char *line) {
 }
 
 static void mod_agent_poll_io(ModAgentCtx *ctx) {
-  if (ctx->listen_fd < 0) {
+  if (ctx->listen_fd == NG_INVALID_SOCKET) {
     return;
   }
 
-  if (ctx->client_fd < 0) {
+  if (ctx->client_fd == NG_INVALID_SOCKET) {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
-    const int fd = accept(ctx->listen_fd, (struct sockaddr *)&addr, &len);
-    if (fd >= 0) {
+    const NgSocket fd = accept(ctx->listen_fd, (struct sockaddr *)&addr, &len);
+    if (fd != NG_INVALID_SOCKET) {
       mod_agent_set_nonblock(fd);
       mod_agent_set_nodelay(fd);
       ctx->client_fd = fd;
       NG_LOG_INFO("agent client connected");
-    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+    } else if (!ng_socket_would_block()) {
       return;
     }
   }
 
-  if (ctx->client_fd < 0) {
+  if (ctx->client_fd == NG_INVALID_SOCKET) {
     return;
   }
 
   char tmp[256];
   const ssize_t n = recv(ctx->client_fd, tmp, sizeof(tmp) - 1, 0);
   if (n <= 0) {
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    if (n < 0 && ng_socket_would_block()) {
       return;
     }
     mod_agent_close_client(ctx);
@@ -557,14 +545,17 @@ static bool mod_agent_init(void *vctx) {
   }
 #endif
   ctx->port = g_agent_port;
-  ctx->client_fd = -1;
+  ctx->client_fd = NG_INVALID_SOCKET;
 
+  ctx->listen_fd = NG_INVALID_SOCKET;
+  if (!ng_socket_startup()) return false;
   ctx->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (ctx->listen_fd < 0) {
+  if (ctx->listen_fd == NG_INVALID_SOCKET) {
+    ng_socket_cleanup();
     return false;
   }
   const int yes = 1;
-  setsockopt(ctx->listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  setsockopt(ctx->listen_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
   mod_agent_set_nonblock(ctx->listen_fd);
 
   struct sockaddr_in addr;
@@ -590,10 +581,11 @@ static bool mod_agent_init(void *vctx) {
       chosen = p;
       break;
     }
-    last_errno = errno;
+    last_errno = ng_socket_error();
     if (p == end) {
-      close(ctx->listen_fd);
-      ctx->listen_fd = -1;
+      ng_socket_close(ctx->listen_fd);
+      ctx->listen_fd = NG_INVALID_SOCKET;
+      ng_socket_cleanup();
       NG_LOG_WARN("agent bind failed %u..%u last=%u errno=%d", start, end, p,
                   last_errno);
       return false;
@@ -606,8 +598,9 @@ static bool mod_agent_init(void *vctx) {
     ctx->port = chosen;
   }
   if (listen(ctx->listen_fd, 4) < 0) {
-    close(ctx->listen_fd);
-    ctx->listen_fd = -1;
+    ng_socket_close(ctx->listen_fd);
+    ctx->listen_fd = NG_INVALID_SOCKET;
+    ng_socket_cleanup();
     return false;
   }
   NG_LOG_INFO("agent tcp listening 127.0.0.1:%u", ctx->port);
@@ -616,14 +609,15 @@ static bool mod_agent_init(void *vctx) {
 
 static void mod_agent_shutdown(void *vctx) {
   ModAgentCtx *ctx = (ModAgentCtx *)vctx;
-  if (ctx->client_fd >= 0) {
-    close(ctx->client_fd);
+  if (ctx->client_fd != NG_INVALID_SOCKET) {
+    ng_socket_close(ctx->client_fd);
   }
-  if (ctx->listen_fd >= 0) {
-    close(ctx->listen_fd);
+  if (ctx->listen_fd != NG_INVALID_SOCKET) {
+    ng_socket_close(ctx->listen_fd);
+    ng_socket_cleanup();
   }
-  ctx->client_fd = -1;
-  ctx->listen_fd = -1;
+  ctx->client_fd = NG_INVALID_SOCKET;
+  ctx->listen_fd = NG_INVALID_SOCKET;
 }
 
 // agent: composer-2.5 | 2026-07-29 | Extend NgModOps side fixed_step | 7a4619

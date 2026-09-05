@@ -11,6 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(_WIN32)
+#include "net/ng_socket.h"
+#include <wchar.h>
+#endif
 
 #if defined(__linux__)
 #include <fcntl.h>
@@ -21,7 +25,13 @@
 #include <sys/wait.h>
 #endif
 
+#if defined(_WIN32)
+static DWORD g_server_pid;
+static HANDLE g_server_process;
+static HANDLE g_server_job;
+#else
 static pid_t g_server_pid = 0;
+#endif
 
 static void ng_launch_parse_host_port(const char *spec, NgLaunchConfig *cfg) {
   if (!spec || !cfg) {
@@ -255,6 +265,90 @@ static void ng_launch_detach_stdio(void) {
 }
 #endif
 
+#if defined(_WIN32)
+static bool ng_launch_windows_port_open(uint16_t port) {
+  const NgSocket fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd == NG_INVALID_SOCKET) return false;
+  struct sockaddr_in addr = {0};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  const int result = bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+  const int error = ng_socket_error();
+  ng_socket_close(fd);
+  return result != 0 && error == WSAEADDRINUSE;
+}
+
+static bool ng_launch_windows_spawn(const NgLaunchConfig *cfg) {
+  const uint16_t port = cfg && cfg->port ? cfg->port : NG_NET_DEFAULT_PORT;
+  if (!ng_socket_startup()) return false;
+  if (ng_launch_windows_port_open(port)) {
+    ng_socket_cleanup();
+    return true;
+  }
+  wchar_t path[32768];
+  const DWORD length = GetModuleFileNameW(NULL, path, 32768);
+  wchar_t *slash = length && length < 32768 ? wcsrchr(path, L'\\') : NULL;
+  if (!slash || (size_t)(slash - path) + 18 >= 32768) {
+    ng_socket_cleanup();
+    return false;
+  }
+  wcscpy(slash + 1, L"ngame_server.exe");
+  wchar_t command[32768];
+  const int count = swprintf(command, 32768,
+      L"\"%ls\" --port %u --ping %d --loss %d --throttle %d", path, port,
+      cfg ? cfg->ping_ms : 0, cfg ? cfg->loss_pct : 0, cfg ? cfg->throttle_pct : 0);
+  if (count < 0) { ng_socket_cleanup(); return false; }
+  STARTUPINFOW startup = {0};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = {0};
+  // A job owns only the child we spawn, so closing the game cannot leave an orphan server.
+  g_server_job = CreateJobObjectW(NULL, NULL);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!g_server_job || !SetInformationJobObject(g_server_job,
+      JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    if (g_server_job) CloseHandle(g_server_job);
+    g_server_job = NULL;
+    ng_socket_cleanup();
+    return false;
+  }
+  if (!CreateProcessW(path, command, NULL, NULL, FALSE,
+      CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &startup, &process)) {
+    NG_LOG_ERROR("Cannot launch ngame_server.exe (Windows error %lu)", GetLastError());
+    CloseHandle(g_server_job);
+    g_server_job = NULL;
+    ng_socket_cleanup();
+    return false;
+  }
+  g_server_process = process.hProcess;
+  g_server_pid = process.dwProcessId;
+  if (!AssignProcessToJobObject(g_server_job, process.hProcess) ||
+      ResumeThread(process.hThread) == (DWORD)-1) {
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hThread);
+    ng_launch_stop_server();
+    ng_socket_cleanup();
+    return false;
+  }
+  CloseHandle(process.hThread);
+  bool ready = false;
+  for (int waited = 0; waited < 5000; waited += 50) {
+    if (WaitForSingleObject(g_server_process, 0) != WAIT_TIMEOUT) break;
+    if (ng_launch_windows_port_open(port)) { ready = true; break; }
+    Sleep(50);
+  }
+  ng_socket_cleanup();
+  if (!ready) {
+    NG_LOG_ERROR("ngame_server failed to start");
+    ng_launch_stop_server();
+    return false;
+  }
+  NG_LOG_INFO("local server pid %lu", g_server_pid);
+  return true;
+}
+#endif
+
 bool ng_launch_spawn_server(const NgLaunchConfig *cfg) {
 #if defined(__linux__)
   const uint16_t port = cfg && cfg->port ? cfg->port : NG_NET_DEFAULT_PORT;
@@ -321,6 +415,8 @@ bool ng_launch_spawn_server(const NgLaunchConfig *cfg) {
   }
   NG_LOG_INFO("local server pid %d", (int)g_server_pid);
   return true;
+#elif defined(_WIN32)
+  return ng_launch_windows_spawn(cfg);
 #else
   (void)cfg;
   return false;
@@ -328,7 +424,16 @@ bool ng_launch_spawn_server(const NgLaunchConfig *cfg) {
 }
 
 void ng_launch_stop_server(void) {
-#if defined(__linux__)
+#if defined(_WIN32)
+  if (g_server_job) CloseHandle(g_server_job);
+  if (g_server_process) {
+    WaitForSingleObject(g_server_process, 5000);
+    CloseHandle(g_server_process);
+  }
+  g_server_job = NULL;
+  g_server_process = NULL;
+  g_server_pid = 0;
+#elif defined(__linux__)
   if (g_server_pid <= 0) {
     return;
   }

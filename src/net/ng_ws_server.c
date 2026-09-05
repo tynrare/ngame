@@ -1,32 +1,24 @@
+#include "net/ng_socket.h"
 // agent: composer-2.5 | 2026-07-25 | websocket server bridge | m6p84k
 #include "ng_ws_server.h"
 #include "engine/ng_log.h"
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #define NG_WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define NG_WS_RX_MAX 65536
 
 struct NgWsServer {
-  int listen_fd;
-  int client_fd;
+  NgSocket listen_fd;
+  NgSocket client_fd;
   bool handshaked;
   uint8_t rx[NG_WS_RX_MAX];
   size_t rx_len;
 };
 
-static void ng_ws_set_nonblock(int fd) {
-  const int flags = fcntl(fd, F_GETFL, 0);
-  if (flags >= 0) {
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  }
+static void ng_ws_set_nonblock(NgSocket fd) {
+  ng_socket_set_blocking(fd, false);
 }
 
 static void ng_ws_sha1(const uint8_t *msg, size_t len, uint8_t out[20]) {
@@ -79,8 +71,14 @@ static void ng_ws_sha1(const uint8_t *msg, size_t len, uint8_t out[20]) {
     h4 += e;
   }
   free(m);
-  uint32_t hs[5] = {h0, h1, h2, h3, h4};
-  memcpy(out, hs, 20);
+  const uint32_t hs[5] = {h0, h1, h2, h3, h4};
+  // SHA-1 serializes words in network byte order, regardless of host endianness.
+  for (int i = 0; i < 5; i++) {
+    out[4 * i] = (uint8_t)(hs[i] >> 24);
+    out[4 * i + 1] = (uint8_t)(hs[i] >> 16);
+    out[4 * i + 2] = (uint8_t)(hs[i] >> 8);
+    out[4 * i + 3] = (uint8_t)hs[i];
+  }
 }
 
 static void ng_ws_b64(const uint8_t *in, size_t in_len, char *out, size_t out_cap) {
@@ -105,18 +103,18 @@ static void ng_ws_b64(const uint8_t *in, size_t in_len, char *out, size_t out_ca
 static bool ng_ws_handshake(NgWsServer *s) {
   char tmp[512];
   const ssize_t n = recv(s->client_fd, tmp, sizeof(tmp), 0);
-  if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+  if (n < 0 && ng_socket_would_block()) {
     return true;
   }
   if (n <= 0) {
-    close(s->client_fd);
-    s->client_fd = -1;
+    ng_socket_close(s->client_fd);
+    s->client_fd = NG_INVALID_SOCKET;
     s->rx_len = 0;
     return false;
   }
   if (s->rx_len + (size_t)n >= sizeof(s->rx)) {
-    close(s->client_fd);
-    s->client_fd = -1;
+    ng_socket_close(s->client_fd);
+    s->client_fd = NG_INVALID_SOCKET;
     s->rx_len = 0;
     return false;
   }
@@ -131,8 +129,8 @@ static bool ng_ws_handshake(NgWsServer *s) {
 
   const char *key_hdr = strstr((const char *)s->rx, "Sec-WebSocket-Key:");
   if (!key_hdr || key_hdr >= end) {
-    close(s->client_fd);
-    s->client_fd = -1;
+    ng_socket_close(s->client_fd);
+    s->client_fd = NG_INVALID_SOCKET;
     s->rx_len = 0;
     return false;
   }
@@ -173,14 +171,16 @@ NgWsServer *ng_ws_server_create(uint16_t port) {
   if (!s) {
     return NULL;
   }
-  s->client_fd = -1;
+  s->client_fd = NG_INVALID_SOCKET;
+  if (!ng_socket_startup()) { free(s); return NULL; }
   s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (s->listen_fd < 0) {
+  if (s->listen_fd == NG_INVALID_SOCKET) {
+    ng_socket_cleanup();
     free(s);
     return NULL;
   }
   const int yes = 1;
-  setsockopt(s->listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  setsockopt(s->listen_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
   ng_ws_set_nonblock(s->listen_fd);
 
   struct sockaddr_in addr;
@@ -189,11 +189,17 @@ NgWsServer *ng_ws_server_create(uint16_t port) {
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(port);
   if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    close(s->listen_fd);
+    ng_socket_close(s->listen_fd);
+    ng_socket_cleanup();
     free(s);
     return NULL;
   }
-  listen(s->listen_fd, 4);
+  if (listen(s->listen_fd, 4) < 0) {
+    ng_socket_close(s->listen_fd);
+    ng_socket_cleanup();
+    free(s);
+    return NULL;
+  }
   NG_LOG_INFO("websocket server :%u", port);
   return s;
 }
@@ -202,12 +208,13 @@ void ng_ws_server_destroy(NgWsServer *s) {
   if (!s) {
     return;
   }
-  if (s->client_fd >= 0) {
-    close(s->client_fd);
+  if (s->client_fd != NG_INVALID_SOCKET) {
+    ng_socket_close(s->client_fd);
   }
-  if (s->listen_fd >= 0) {
-    close(s->listen_fd);
+  if (s->listen_fd != NG_INVALID_SOCKET) {
+    ng_socket_close(s->listen_fd);
   }
+  ng_socket_cleanup();
   free(s);
 }
 
@@ -217,11 +224,11 @@ static bool ng_ws_read_frames(NgWsServer *s, NgWsPacketFn fn, void *ctx) {
   char tmp[4096];
   const ssize_t n = recv(s->client_fd, tmp, sizeof(tmp), 0);
   if (n <= 0) {
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    if (n < 0 && ng_socket_would_block()) {
       return true;
     }
-    close(s->client_fd);
-    s->client_fd = -1;
+    ng_socket_close(s->client_fd);
+    s->client_fd = NG_INVALID_SOCKET;
     s->handshaked = false;
     s->rx_len = 0;
     return false;
@@ -287,17 +294,17 @@ bool ng_ws_server_poll(NgWsServer *s, NgWsPacketFn fn, void *ctx) {
   if (!s) {
     return false;
   }
-  if (s->client_fd < 0) {
+  if (s->client_fd == NG_INVALID_SOCKET) {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
-    const int fd = accept(s->listen_fd, (struct sockaddr *)&addr, &len);
-    if (fd >= 0) {
+    const NgSocket fd = accept(s->listen_fd, (struct sockaddr *)&addr, &len);
+    if (fd != NG_INVALID_SOCKET) {
       ng_ws_set_nonblock(fd);
       s->client_fd = fd;
       s->handshaked = false;
       s->rx_len = 0;
     }
-    if (s->client_fd < 0) {
+    if (s->client_fd == NG_INVALID_SOCKET) {
       return true;
     }
   }

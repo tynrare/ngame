@@ -13,6 +13,13 @@ static NgWorld g_smoke_world;
 
 NgWorld *mod_sim_world(void) { return &g_smoke_world; }
 
+// This isolated physics test has no simulation command router.
+bool mod_sim_load_scene(const char *id, char *reply, size_t reply_cap) {
+  (void)id;
+  if (reply && reply_cap) reply[0] = '\0';
+  return false;
+}
+
 void mod_net_flush_scene_updates(void) {}
 
 static void smoke_fail(const char *msg) {

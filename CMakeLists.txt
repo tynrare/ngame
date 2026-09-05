@@ -1,8 +1,15 @@
 # agent: composer-2.5 | 2026-07-25 | embedded compile defs | 904b5b
 # agent: composer-2.5 | 2026-07-25 | emscripten websocket link | a7c19d
 # agent: composer-2.5 | 2026-07-25 | enet ipv4 only compile def | d821f1
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.22)
 project(ngame C)
+
+if(MSVC)
+  message(FATAL_ERROR
+    "ngame currently requires a GNU-compatible C toolchain. On Windows use MinGW-w64: "
+    "cmake --preset windows -DRAYLIB_DIR=C:/raylib/raylib-6.0. "
+    "The preset uses a separate build/windows directory from Visual Studio builds.")
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -17,11 +24,11 @@ if(EMSCRIPTEN)
   set(GRAPHICS GRAPHICS_API_OPENGL_ES3 CACHE STRING "raylib graphics API" FORCE)
 endif()
 
-set(RAYLIB_DIR /home/x/code/raylib)
+include(cmake/Dependencies.cmake)
 # agent: composer-2.5 | 2026-08-10 | raise raylib shader tex units | 4a43ea
 # RC compose binds 5 samplers; raylib default batch max is 4 (5th bind is a no-op).
 add_compile_definitions(RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS=8)
-add_subdirectory(${RAYLIB_DIR} ${CMAKE_BINARY_DIR}/raylib EXCLUDE_FROM_ALL)
+ng_add_raylib()
 
 set(NG_CORE_SOURCES
   src/engine/ng_bus.c
@@ -47,9 +54,11 @@ set(NG_SCENE_SOURCES
 
 # agent: composer-2.5 | 2026-07-29 | lockstep ffp contract cmake | 78f312
 # Cross-platform determinism: no FMA contraction / fast-math on ngame (matches box3d).
-add_compile_options($<$<COMPILE_LANGUAGE:C>:-ffp-contract=off>)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options($<$<COMPILE_LANGUAGE:C>:-ffp-contract=off>)
   add_compile_options($<$<COMPILE_LANGUAGE:C>:-fno-fast-math>)
+elseif(MSVC)
+  add_compile_options(/fp:strict)
 endif()
 
 # agent: composer-2.5 | 2026-07-29 | link local box3d library | 32efd8
@@ -58,7 +67,7 @@ set(BOX3D_SAMPLES OFF CACHE BOOL "" FORCE)
 set(BOX3D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(BOX3D_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(BOX3D_DOCS OFF CACHE BOOL "" FORCE)
-add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/box3d ${CMAKE_BINARY_DIR}/box3d EXCLUDE_FROM_ALL)
+add_subdirectory("${BOX3D_DIR}" "${CMAKE_BINARY_DIR}/box3d" EXCLUDE_FROM_ALL)
 
 set(NG_SIM_SOURCES
   src/server/sim.c
@@ -125,7 +134,7 @@ endif()
 add_executable(ngame ${NG_CORE_SOURCES} ${NG_CLIENT_SOURCES})
 target_link_libraries(ngame PRIVATE raylib m box3d)
 # agent: grok-4.6 | 2026-08-28 | link font_msdf client | 23a97d
-target_include_directories(ngame PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include
+target_include_directories(ngame PRIVATE src src/vendor ${BOX3D_DIR}/include
                            ${RAYLIB_DIR}/src/external)
 target_compile_definitions(ngame PRIVATE ${NG_RES_ROOT_DEF} ${NG_NET_DEFS} ${NG_ENET_DEFS})
 
@@ -152,7 +161,7 @@ endif()
 if(NOT EMSCRIPTEN)
   add_executable(ngame_server ${NG_CORE_SOURCES} ${NG_SERVER_SOURCES})
   target_link_libraries(ngame_server PRIVATE m box3d)
-  target_include_directories(ngame_server PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
+  target_include_directories(ngame_server PRIVATE src src/vendor ${BOX3D_DIR}/include)
   target_compile_definitions(ngame_server PRIVATE NG_SERVER NG_RES_ROOT=\"res/\" ${NG_ENET_DEFS})
   add_custom_command(TARGET ngame_server POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -188,7 +197,7 @@ if(NOT EMSCRIPTEN)
                  src/client/input.c src/engine/ng_session.c src/engine/ng_sync.c
                  src/engine/ng_mod.c src/engine/ng_bus.c src/engine/ng_proto.c
                  src/world/ng_world.c ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
+  target_include_directories(ng_scene_js_smoke PRIVATE src src/vendor ${BOX3D_DIR}/include)
   target_compile_definitions(ng_scene_js_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
   add_custom_command(TARGET ng_scene_js_smoke POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -204,7 +213,7 @@ if(NOT EMSCRIPTEN)
                  src/client/input.c src/engine/ng_session.c src/engine/ng_sync.c
                  src/engine/ng_mod.c src/engine/ng_bus.c src/engine/ng_proto.c
                  src/world/ng_world.c ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_phys_save_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include)
+  target_include_directories(ng_phys_save_smoke PRIVATE src src/vendor ${BOX3D_DIR}/include)
   target_compile_definitions(ng_phys_save_smoke PRIVATE NG_SERVER NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_phys_save_smoke PRIVATE m box3d)
 
@@ -215,7 +224,7 @@ if(NOT EMSCRIPTEN)
                  src/client/font_msdf.c
                  ${NG_SCENE_SOURCES} src/ng_shader.c src/ng_viewport.c
                  src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include
+  target_include_directories(ng_cmd_loopback_latency PRIVATE src src/vendor ${BOX3D_DIR}/include
                              ${RAYLIB_DIR}/src/external)
   target_compile_definitions(ng_cmd_loopback_latency PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_cmd_loopback_latency PRIVATE raylib m box3d)
@@ -228,10 +237,35 @@ if(NOT EMSCRIPTEN)
                  ${NG_SCENE_SOURCES}
                  src/ng_shader.c src/ng_viewport.c src/server/script.c
                  src/net/ng_net_enet.c src/net/ng_ws_server.c ${NG_SIM_SOURCES} ${NG_VENDOR_SOURCES})
-  target_include_directories(ng_embed_smoke PRIVATE src src/vendor ${CMAKE_SOURCE_DIR}/third_party/box3d/include
+  target_include_directories(ng_embed_smoke PRIVATE src src/vendor ${BOX3D_DIR}/include
                              ${RAYLIB_DIR}/src/external)
   target_compile_definitions(ng_embed_smoke PRIVATE NG_HAS_EMBEDDED NG_RES_ROOT=\"res/\")
   target_link_libraries(ng_embed_smoke PRIVATE raylib m box3d)
+endif()
+
+if(NOT EMSCRIPTEN)
+  add_custom_target(run
+    COMMAND $<TARGET_FILE:ngame> --local
+    DEPENDS ngame ngame_server
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:ngame>"
+    USES_TERMINAL
+    COMMENT "Starting ngame with its local server")
+  set_property(TARGET ngame PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:ngame>")
+  include(CTest)
+  if(BUILD_TESTING)
+    add_custom_target(smoke DEPENDS ng_scene_js_smoke ng_phys_save_smoke ng_test_net ngame_server)
+    add_test(NAME scene_js COMMAND ng_scene_js_smoke)
+    add_test(NAME physics_save COMMAND ng_phys_save_smoke)
+    set_tests_properties(scene_js physics_save PROPERTIES
+      WORKING_DIRECTORY "$<TARGET_FILE_DIR:ngame>" TIMEOUT 30)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+      add_test(NAME native_network COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/tests/native_network_smoke.py"
+        "$<TARGET_FILE:ngame_server>" "$<TARGET_FILE:ng_test_net>")
+      set_tests_properties(native_network PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+    endif()
+  endif()
 endif()
 
 # agent: grok-4.6 | 2026-08-21 | remove probe smoke cmake target | 5f8a09
@@ -254,3 +288,15 @@ endif()
 # agent: grok-4.6 | 2026-08-28 | link font_msdf client | 23a97d
 # agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a
 # agent: grok-4.6 | 2026-08-31 | link proto js phys smoke | ee9330
+
+# Native ENet and TCP bridges use Winsock on Windows.
+if(WIN32)
+  get_property(ng_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(ng_target IN LISTS ng_targets)
+    get_target_property(ng_target_type ${ng_target} TYPE)
+    if(ng_target_type STREQUAL "EXECUTABLE")
+      target_compile_definitions(${ng_target} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX NOGDI NOUSER)
+      target_link_libraries(${ng_target} PRIVATE ws2_32 winmm)
+    endif()
+  endforeach()
+endif()
