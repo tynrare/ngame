@@ -3,3 +3,4 @@
 /build-web/
 /compile_commands.json
 *.o
+/CMakeUserPresets.json
