@@ -6,6 +6,8 @@ in vec2 vertexTexCoord;
 in vec3 vertexNormal;
 in vec4 vertexColor;
 in mat4 instanceTransform;
+in vec3 instanceColor;
+in vec4 instanceUv;
 
 uniform mat4 mvp;
 
@@ -19,8 +21,8 @@ void main() {
   mat4 M = mat4(instanceTransform[0], instanceTransform[1], instanceTransform[2],
                 vec4(instanceTransform[3].xyz, 1.0));
   fragPosition = vec3(M * vec4(vertexPosition, 1.0));
-  fragTexCoord = vertexTexCoord;
-  fragColor = vertexColor;
+  fragTexCoord = mix(instanceUv.xy,instanceUv.zw,vertexTexCoord);
+  fragColor = vec4(instanceColor,1.0);
   fragNormal = normalize(mat3(M) * vertexNormal);
   gl_Position = mvp * M * vec4(vertexPosition, 1.0);
 }

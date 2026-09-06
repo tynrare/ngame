@@ -12,6 +12,6 @@ out vec4 finalColor;
 
 void main() {
   float stripe = step(0.5, fract(fragPosition.x * 3.0 + fragPosition.y * 2.0 + ng_time * 0.5));
-  vec3 col = mix(ng_tint * 0.35, ng_tint, stripe);
+  vec3 col = mix((ng_tint * fragColor.rgb) * 0.35, (ng_tint * fragColor.rgb), stripe);
   finalColor = vec4(col, 1.0);
 }

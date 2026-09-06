@@ -15,7 +15,9 @@ global.register("rc", "scenes/rc.js");
 global.register("example", "scenes/example.js");
 global.register("fonts", "scenes/fonts.js");
 global.register("syncstats", "scenes/syncstats.js");
+// agent: gpt-6-astra | 2026-09-05 | register shared draw API demo | 005756
 global.register("crawler", "scenes/crawler.js");
+global.register("draw", "scenes/draw.js");
 
 function Boot() {}
 
@@ -44,6 +46,7 @@ Boot.prototype.stop = function () {};
 Boot.prototype.dispose = function () {};
 
 global.module(Boot);
+// agent: gpt-6-astra | 2026-09-05 | register shared draw API demo | 005756
 // agent: composer-2.5 | 2026-08-01 | boot registers scene modules | f6ec11
 // agent: composer-2.5 | 2026-08-02 | register stress_spawn scene | adb274
 // agent: composer-2.5 | 2026-08-09 | register rc scene | fbdaa0

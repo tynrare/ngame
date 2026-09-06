@@ -1,3 +1,11 @@
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+/* Flow ID: material-recipe (canonical owner).
+ * 1) describe/lookup → copy shader/texture/state recipe → process-unique typed ID.
+ * 2) draw submission → validate ID in active runtime → immutable frame command.
+ * 3) renderer → cache GPU resources by ID → assignments reuse loaded resources.
+ * 4) assets reset → erase registry → stale handles rejected, including across runtimes.
+ * Invariants: zero means omitted; IDs are never reused; exhaustion rejects registration.
+ */
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-07-29 | assets use active runtime | ce9266
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | c86521
@@ -162,6 +170,8 @@ bool mod_scene_assets_describe_shader(const char *name, const char *fragment, co
   return true;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+/** @param name const char* model. @param mesh const char* geometry. @param shader const char* shader. @param albedo const char* texture. @return bool registered with default material. */
 bool mod_scene_assets_describe_model(const char *name, const char *mesh, const char *shader,
                                      const char *albedo) {
   if (!name || !mesh) {
@@ -185,6 +195,8 @@ bool mod_scene_assets_describe_model(const char *name, const char *mesh, const c
     if (albedo && albedo[0]) {
       mod_scene_assets_normalize_res_path(existing->albedo, sizeof(existing->albedo), albedo);
     }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+    ng_material_lookup(name);
     return true;
   }
   if (GASSETS().model_count >= NG_SCENE_ASSET_MAX) {
@@ -203,10 +215,14 @@ bool mod_scene_assets_describe_model(const char *name, const char *mesh, const c
   if (albedo && albedo[0]) {
     mod_scene_assets_normalize_res_path(m->albedo, sizeof(m->albedo), albedo);
   }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+  ng_material_lookup(name);
   return true;
 }
 
 // agent: grok-4.6 | 2026-08-30 | describe font without mesh | 3b5e0c
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+/** @param name const char* font. @param src const char* TTF. @return bool registered with automatic MSDF material. */
 bool mod_scene_assets_describe_font(const char *name, const char *src) {
   if (!name) {
     return false;
@@ -220,6 +236,8 @@ bool mod_scene_assets_describe_font(const char *name, const char *src) {
     existing->mesh[0] = '\0';
     existing->shader[0] = '\0';
     strncpy(existing->font_src, src, sizeof(existing->font_src) - 1);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+    ng_material_lookup(name);
     return true;
   }
   if (GASSETS().model_count >= NG_SCENE_ASSET_MAX) {
@@ -231,6 +249,8 @@ bool mod_scene_assets_describe_font(const char *name, const char *src) {
   strncpy(m->name, name, sizeof(m->name) - 1);
   m->draw = NG_SCENE_DRAW_MSDF;
   strncpy(m->font_src, src, sizeof(m->font_src) - 1);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+  ng_material_lookup(name);
   return true;
 }
 
@@ -430,7 +450,17 @@ const NgSceneViewMeta *mod_scene_assets_view(void) {
   return GASSETS().view.valid ? &GASSETS().view : NULL;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+/** @param kind const char* recipe kind. @param name const char* name. @return bool disposed, invalidating related material handles. */
 bool mod_scene_assets_dispose(const char *kind, const char *name) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+  if(!strcmp(kind,"material") || !strcmp(kind,"model") || !strcmp(kind,"font")) {
+    for(int i=0;i<GASSETS().material_count;i++) if(!strcmp(name,GASSETS().materials[i].name)) {
+      GASSETS().materials[i].handle.id=0; GASSETS().materials[i].name[0]=0;
+      if(!strcmp(kind,"material")) return true;
+    }
+  }
+
   if (!kind || !name) {
     return false;
   }
@@ -523,6 +553,51 @@ bool mod_scene_assets_resolve_model_for_mesh_kind(NgSceneMeshKind kind, NgSceneR
   }
   return false;
 }
+
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
+static uint32_t material_serial;
+/** @param handle NgMaterialHandle candidate. @return const NgSceneMaterialDesc* active recipe or NULL. */
+const NgSceneMaterialDesc *ng_material_get(NgMaterialHandle handle) {
+  if(!handle.id) return NULL;
+  for(int i=0;i<GASSETS().material_count;i++)
+    if(GASSETS().materials[i].handle.id==handle.id) return &GASSETS().materials[i];
+  return NULL;
+}
+/** @param name const char* name. @param recipe const NgSceneResolvedModel* values. @return NgSceneMaterialDesc* new stable slot or NULL. */
+static NgSceneMaterialDesc *material_add(const char *name, const NgSceneResolvedModel *recipe) {
+  if(!name || !name[0] || strlen(name)>=32 || GASSETS().material_count>=NG_SCENE_ASSET_MAX*2 || material_serial==UINT32_MAX) return NULL;
+  NgSceneMaterialDesc *m=&GASSETS().materials[GASSETS().material_count++];
+  *m=(NgSceneMaterialDesc){.handle={++material_serial},.recipe=*recipe,.depth_test=true,.depth_write=true};
+  strcpy(m->name,name); return m;
+}
+/** @param name const char* recipe/default model. @return NgMaterialHandle resolved once. */
+NgMaterialHandle ng_material_lookup(const char *name) {
+  if(!name) return (NgMaterialHandle){0};
+  for(int i=0;i<GASSETS().material_count;i++)
+    if(!strcmp(name,GASSETS().materials[i].name)) return GASSETS().materials[i].handle;
+  const NgSceneModelDesc *model=mod_scene_assets_get_model(name);
+  NgSceneResolvedModel recipe={0};
+  if(!model || (model->draw!=NG_SCENE_DRAW_MSDF && !mod_scene_assets_resolve_model(name,&recipe))) return (NgMaterialHandle){0};
+  NgSceneMaterialDesc *m=material_add(name,&recipe); if(!m) return (NgMaterialHandle){0};
+  if(model->draw==NG_SCENE_DRAW_MSDF) {
+    strcpy(m->font_src,model->font_src); strcpy(m->recipe.vertex,"shaders/msdf_inst.vs");
+    strcpy(m->recipe.fragment,"shaders/msdf_font.fs"); m->blend=true; m->depth_write=false;
+  }
+  return m->handle;
+}
+/** @param name const char* name. @param shader const char* recipe. @param albedo const char* texture. @param blend bool blend. @param depth_test bool test. @param depth_write bool write. @return bool registered. */
+bool ng_material_describe(const char *name,const char *shader,const char *albedo,bool blend,bool depth_test,bool depth_write) {
+  if(!name || !name[0]) return false;
+  const NgSceneShaderDesc *s=mod_scene_assets_find_shader(shader); if(!s) return false;
+  for(int i=0;i<GASSETS().material_count;i++) if(!strcmp(name,GASSETS().materials[i].name)) return false;
+  NgSceneResolvedModel r={.ok=true,.have_tint=s->have_tint,.tint_r=s->tint_r,.tint_g=s->tint_g,.tint_b=s->tint_b,
+    .have_glow=s->have_glow,.glow_r=s->glow_r,.glow_g=s->glow_g,.glow_b=s->glow_b,.roughness=s->roughness,.metalness=s->metalness};
+  strcpy(r.vertex,s->vertex); strcpy(r.fragment,s->fragment);
+  if(albedo) snprintf(r.albedo,sizeof(r.albedo),"%s",albedo);
+  NgSceneMaterialDesc *m=material_add(name,&r); if(!m) return false;
+  m->blend=blend; m->depth_test=depth_test; m->depth_write=depth_write; return true;
+}
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 6ffedb
 
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-07-28 | parse mesh shape from js field | a4b5c6

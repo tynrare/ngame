@@ -17,9 +17,11 @@ typedef struct NgMsdfText {
   bool dirty;
 } NgMsdfText;
 
-/** Load TTF, generate MSDF atlas, TF + instanced shader. */
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 75b362
+/** @return bool selected TTF metrics and atlas ready. */
 bool mod_font_msdf_ensure(void);
-/** Release atlas, TF buffers, shaders. */
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 75b362
+/** @return void; release atlases and shared instance resources. */
 void mod_font_msdf_shutdown(void);
 /** Init empty label (dirty). */
 void ng_msdf_text_init(NgMsdfText *t);
@@ -33,5 +35,6 @@ void mod_font_msdf_draw_world(const Camera3D *cam, uint8_t scope_id);
 void mod_font_msdf_draw_screen(uint8_t scope_id);
 
 #endif
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 75b362
 // agent: grok-4.6 | 2026-08-30 | graph MSDF draw API | 1514a2
 // agent: grok-4.6 | 2026-08-30 | draw MSDF by scope_id | a3a680

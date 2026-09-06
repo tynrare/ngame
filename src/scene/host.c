@@ -379,6 +379,9 @@ static bool mod_scene_spawn_creates_local(NgSyncMode sync, bool on_server, bool 
   return false;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+// agent: gpt-6-astra | 2026-09-05 | allow collider only entity recipes | 61b1e0
+/** @param ctx duk_context* (kind, name, recipe). @return duk_ret_t acceptance value. */
 static duk_ret_t bind_describe(duk_context *ctx) {
   const char *kind = duk_require_string(ctx, 0);
   const char *name = duk_require_string(ctx, 1);
@@ -404,7 +407,16 @@ static duk_ret_t bind_describe(duk_context *ctx) {
       sync = ng_sync_mode_parse(duk_get_string(ctx, -1));
     }
     duk_pop(ctx);
-    if (strcmp(kind, "mesh") == 0) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+    if (strcmp(kind,"material")==0) {
+      duk_get_prop_string(ctx,2,"shader"); const char *shader=duk_require_string(ctx,-1);
+      duk_get_prop_string(ctx,2,"albedo"); const char *albedo=duk_get_string(ctx,-1);
+      duk_get_prop_string(ctx,2,"blend"); bool blend=duk_get_boolean_default(ctx,-1,false);
+      duk_get_prop_string(ctx,2,"depth_test"); bool test=duk_get_boolean_default(ctx,-1,true);
+      duk_get_prop_string(ctx,2,"depth_write"); bool write=duk_get_boolean_default(ctx,-1,!blend);
+      bool ok=ng_material_describe(name,shader,albedo,blend,test,write);
+      duk_pop_n(ctx,5); duk_push_boolean(ctx,ok); return 1;
+    } else if (strcmp(kind, "mesh") == 0) {
       float w = 1.0f, h = 1.0f, d = 1.0f;
       const char *shape = "cube";
       duk_get_prop_string(ctx, 2, "width");
@@ -640,8 +652,11 @@ static duk_ret_t bind_describe(duk_context *ctx) {
     }
   }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+// agent: gpt-6-astra | 2026-09-05 | accept bodies without redundant visual models | c654e3
   if (strcmp(kind, "entity") == 0) {
-    if (!model) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+    if (!model && !body) {
       duk_push_int(ctx, 0);
       return 1;
     }
@@ -1957,7 +1972,12 @@ static duk_ret_t bind_despawn_id(duk_context *ctx) {
   return 1;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+// agent: gpt-6-astra | 2026-09-05 | register shared draw bindings | dfee60
+/** @param ctx duk_context* new scene heap. @return void. */
 static void mod_scene_bind_global(duk_context *ctx) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+  ng_draw_bind(ctx);
   duk_push_global_object(ctx);
 
 #define BIND(name, fn, nargs)                                                                                          \
@@ -2318,6 +2338,23 @@ static void mod_scene_drain_pending_change(ModSceneCtx *ctx) {
   char reply[256];
   mod_sim_load_scene(next_scene, reply, sizeof(reply));
 #endif
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+}
+
+// agent: gpt-6-astra | 2026-09-05 | dispatch view draw callbacks once | a3638f
+/** @return void; frame-draw step 1 runs on view only, once per rendered frame. */
+void mod_scene_draw(void) {
+  mod_scene_runtime_use_view();
+  ModSceneCtx *ctx = mod_scene_runtime_scene();
+  if (!ctx->loaded || !ctx->ctx || !ctx->started || ctx->native) return;
+  mod_scene_call_method(ctx, "draw", 0);
+  mod_scene_call_all_wired(ctx, "draw", false);
+  const int n = mod_scene_graph_inst_count();
+  for (int i = 0; i < n; i++) {
+    NgSceneInst *inst = (NgSceneInst *)mod_scene_graph_inst_at(i);
+    if (inst) mod_scene_call_entity_method(ctx, inst, "draw");
+  }
+  mod_scene_drain_pending_change(ctx);
 }
 
 static void mod_scene_call_lifecycle(ModSceneCtx *ctx, const char *method) {
@@ -2739,6 +2776,9 @@ static void mod_scene_set_active_for(ModSceneCtx *ctx) {
   }
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+// agent: gpt-6-astra | 2026-09-05 | document scene unload lifetime | 5df793
+/** @param ctx ModSceneCtx* runtime to unload. @return void. */
 static void mod_scene_unload(ModSceneCtx *ctx) {
   if (!ctx) {
     return;
@@ -2756,6 +2796,9 @@ static void mod_scene_unload(ModSceneCtx *ctx) {
     duk_destroy_heap(ctx->ctx);
     ctx->ctx = NULL;
   }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+// agent: gpt-6-astra | 2026-09-05 | clear transient draws on unload | b5c3c3
+  ng_draw_reset(); /* frame-draw step 5: scene-owned transients cannot leak. */
   mod_scene_graph_reset();
   mod_scene_assets_reset();
   // agent: composer-2.5 | 2026-07-29 | lockstep scene sim flag | b3f626
@@ -4085,7 +4128,34 @@ static bool mod_scene_fixed_step_spawn_smoke(void) {
   return ok;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+// agent: gpt-6-astra | 2026-09-05 | test JavaScript draw frame lifecycle | 3e8bb2
+/** @return bool draw callback, collider-only JS entity and scene-unload lifetime work together. */
+static bool mod_scene_draw_smoke(void) {
+  mod_scene_runtime_use_view();
+  if (!mod_scene_begin("draw", false, true)) return false;
+  ModSceneCtx *ctx = mod_scene_runtime_scene();
+  NgSessionState session = {0};
+  strcpy(session.scene_id, "draw");
+  mod_scene_push_session_obj(ctx, &session);
+  bool ok = mod_scene_call_start(ctx);
+  ctx->started = true;
+  mod_scene_draw();
+  ok = ok && ng_draw_queue()->count == 5;
+  ng_draw_collect_graph(0);
+  ok = ok && ng_draw_queue()->count == 5 + mod_scene_graph_inst_count();
+  ok = ok && mod_scene_graph_entity_desc("draw_body") != NULL;
+  mod_scene_unload(ctx);
+  return ok && ng_draw_queue()->count == 0;
+}
+
+/** @return bool scene, simulation and rendering submission smoke suite passed. */
 bool mod_scene_smoke_test(void) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+  if (!mod_scene_draw_smoke()) {
+    fprintf(stderr, "smoke fail: draw\n");
+    return false;
+  }
   // agent: composer-2.5 | 2026-07-30 | lockstep dual channel flush smoke | 26e91c
   if (!mod_scene_smoke_one("cube", "cube_a_e", false)) {
     fprintf(stderr, "smoke fail: cube\n");
@@ -4138,6 +4208,14 @@ bool mod_scene_smoke_test(void) {
   }
   return true;
 }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | dfa6d1
+// agent: gpt-6-astra | 2026-09-05 | register shared draw bindings | dfee60
+// agent: gpt-6-astra | 2026-09-05 | document scene unload lifetime | 5df793
+// agent: gpt-6-astra | 2026-09-05 | clear transient draws on unload | b5c3c3
+// agent: gpt-6-astra | 2026-09-05 | dispatch view draw callbacks once | a3638f
+// agent: gpt-6-astra | 2026-09-05 | allow collider only entity recipes | 61b1e0
+// agent: gpt-6-astra | 2026-09-05 | accept bodies without redundant visual models | c654e3
+// agent: gpt-6-astra | 2026-09-05 | test JavaScript draw frame lifecycle | 3e8bb2
 
 // agent: composer-2.5 | 2026-07-29 | spawn opts key ordinal match | 701175
 // agent: composer-2.5 | 2026-07-29 | view status text helper | d2e790

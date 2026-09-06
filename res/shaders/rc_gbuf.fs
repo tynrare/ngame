@@ -34,7 +34,7 @@ void main() {
     finalColor = vec4(0.0);
   } else {
     /* RGB = albedo, A = roughness */
-    finalColor = vec4(ng_tint, clamp(ng_roughness, 0.04, 1.0));
+    finalColor = vec4((ng_tint * fragColor.rgb), clamp(ng_roughness, 0.04, 1.0));
   }
 }
 // agent: grok-4.6 | 2026-08-21 | gbuf drop unused clip uniforms | e11a5a

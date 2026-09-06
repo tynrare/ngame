@@ -50,8 +50,20 @@ static char *ng_shader_read(const char *path) {
   return text;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | e813e1
+typedef struct ShaderCache { char vs[160],fs[160]; NgShader shader; int refs; } ShaderCache;
+static ShaderCache shader_cache[128];
+/** @param vs_path const char* vertex path. @param fs_path const char* fragment path. @return NgShader shared compiled program. */
 NgShader ng_shader_load(const char *vs_path, const char *fs_path) {
   NgShader out = {0};
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | e813e1
+  int slot=-1;
+  for(int i=0;i<128;i++) {
+    ShaderCache *c=&shader_cache[i];
+    if(c->refs && !strcmp(c->vs,vs_path) && !strcmp(c->fs,fs_path)) { c->refs++; return c->shader; }
+    if(!c->refs && slot<0) slot=i;
+  }
+  if(slot<0) return out;
 
   char *vs_src = ng_shader_read(vs_path);
   char *fs_src = ng_shader_read(fs_path);
@@ -94,12 +106,22 @@ NgShader ng_shader_load(const char *vs_path, const char *fs_path) {
   // agent: composer-2.5 | 2026-08-09 | loc cam pos gbuf | e5620a
   out.loc_cam_pos = GetShaderLocation(out.handle, "ng_cam_pos");
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | e813e1
+  shader_cache[slot].shader=out; shader_cache[slot].refs=1;
+  snprintf(shader_cache[slot].vs,160,"%s",vs_path); snprintf(shader_cache[slot].fs,160,"%s",fs_path);
   return out;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | e813e1
+/** @param shader NgShader* owned reference. @return void; last reference deletes program. */
 void ng_shader_unload(NgShader *shader) {
   if (!shader || shader->handle.id == 0) {
     return;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | e813e1
+  }
+  for(int i=0;i<128;i++) if(shader_cache[i].refs && shader_cache[i].shader.handle.id==shader->handle.id) {
+    if(--shader_cache[i].refs) { *shader=(NgShader){0}; return; }
+    break;
   }
   UnloadShader(shader->handle);
   *shader = (NgShader){0};
@@ -122,6 +144,7 @@ void ng_shader_set_common(NgShader *shader, float time) {
 void ng_shader_poll(void) {
   /* hot-reload hook for later */
 }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | e813e1
 // agent: composer-2.5 | 2026-07-25 | shader load and uniforms | 2d8f6b
 // agent: composer-2.5 | 2026-07-25 | ES3 shader path detection | 4a9a01
 // agent: composer-2.5 | 2026-07-25 | use equilized viewport size | e1f2a3

@@ -7,7 +7,7 @@ layout(location = 14) in vec4 instanceUv;
 layout(location = 15) in float instanceOutline;
 
 uniform mat4 mvp;
-uniform mat4 ng_label;
+
 
 out vec2 fragTexCoord;
 out vec3 v_color;
@@ -18,6 +18,6 @@ void main() {
   v_color = instanceColor;
   v_outline = instanceOutline;
   vec4 p = instanceTransform * vec4(vertexPosition, 1.0);
-  gl_Position = mvp * ng_label * p;
+  gl_Position = mvp * p;
 }
 // agent: grok-4.6 | 2026-08-30 | MSDF instanced glyph VS | 481d49

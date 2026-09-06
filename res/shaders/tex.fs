@@ -18,7 +18,7 @@ void main() {
   }
   vec3 n = normalize(fragNormal);
   float ndl = clamp(dot(n, normalize(vec3(0.35, 1.0, 0.25))), 0.0, 1.0);
-  vec3 col = tex.rgb * ng_tint * (0.45 + 0.55 * ndl);
+  vec3 col = tex.rgb * (ng_tint * fragColor.rgb) * (0.45 + 0.55 * ndl);
   finalColor = vec4(col, tex.a);
 }
 // agent: grok-4.6 | 2026-08-31 | sample albedo magenta discard | 4eb915

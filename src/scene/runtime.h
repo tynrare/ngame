@@ -3,6 +3,9 @@
 #ifndef NG_SCENE_RUNTIME_H
 #define NG_SCENE_RUNTIME_H
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 5c9fb7
+// agent: gpt-6-astra | 2026-09-05 | include frame draw types | 52a5a2
+#include "scene/draw.h"
 #include "scene/assets.h"
 #include "scene/graph.h"
 #include "scene/physics.h"
@@ -19,6 +22,9 @@ typedef struct ModSceneAssetsCtx {
   int shader_count;
   NgSceneModelDesc models[NG_SCENE_ASSET_MAX];
   int model_count;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 5c9fb7
+  NgSceneMaterialDesc materials[NG_SCENE_ASSET_MAX*2];
+  int material_count;
   NgSceneViewMeta view;
   // agent: grok-4.6 | 2026-08-30 | scopes in assets ctx | 667845
   NgSceneScopeDesc scopes[NG_SCENE_ASSET_MAX];
@@ -49,7 +55,11 @@ typedef struct NgSceneRuntime {
   ModSceneCtx scene;
   ModSceneGraphCtx graph;
   ModSceneAssetsCtx assets;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 5c9fb7
+// agent: gpt-6-astra | 2026-09-05 | isolate draw queues per runtime | 44ee7b
   ModScenePhysicsCtx physics;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 5c9fb7
+  NgDrawQueue draw;
 } NgSceneRuntime;
 
 extern NgSceneRuntime g_scene_server;
@@ -64,6 +74,9 @@ ModSceneAssetsCtx *mod_scene_runtime_assets(void);
 ModScenePhysicsCtx *mod_scene_runtime_physics(void);
 
 #endif
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 5c9fb7
+// agent: gpt-6-astra | 2026-09-05 | include frame draw types | 52a5a2
+// agent: gpt-6-astra | 2026-09-05 | isolate draw queues per runtime | 44ee7b
 // agent: composer-2.5 | 2026-07-29 | deferred js scene route support | 149fdb
 // agent: composer-2.5 | 2026-07-29 | physics runtime ctx | d535f0
 // agent: composer-2.5 | 2026-08-01 | wired module instance slots | 44dab2

@@ -15,6 +15,6 @@ void main() {
   vec3 viewDir = normalize(-fragPosition);
   float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0);
   float pulse = 0.5 + 0.5 * sin(ng_time * 2.0);
-  vec3 col = ng_tint * (0.25 + rim * pulse);
+  vec3 col = (ng_tint * fragColor.rgb) * (0.25 + rim * pulse);
   finalColor = vec4(col, 1.0);
 }

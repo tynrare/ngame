@@ -1,8 +1,11 @@
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | route shared queue through font engine | e40c88
 /* Runtime MSDF atlas from TTF; overlay + world quad draw.
  * Scope in: view-side font gen/draw, JS label/font entities. Scope out: sim, console.
  * Flow id: font-msdf
  * Related: src/client/render.c, src/scene/assets.c, src/scene/host.c,
- *          res/shaders/msdf_tf.vs, res/shaders/msdf_inst.vs,
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+ *          res/shaders/msdf_inst.vs,
  *          res/shaders/msdf_font.fs, res/fonts/
  * Gateway role: pattern | Scope id: font-msdf | Flow id: font-msdf
  *
@@ -11,34 +14,30 @@
  * 2) client → load TTF + stbtt_InitFont → font metrics
  * 3) client → flatten glyph outlines → colored edges
  * 4) client → raster MSDF cell → packed RGB atlas
- * 5) client → upload atlas + TF + instanced shader → ready
- * 6) dirty graph inst text → compact glyphs into screen/world pool
- * 7) TF POINTS → instance mat4
- * 8) one instanced unit-quad draw per space pass
- * Branches: empty glyphs skip raster; ensure is once; draw no-ops if !ready.
- * Invariant: no malloc on draw; generate only on first ensure.
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+ * 5) client → upload atlas → cached font material ready
+ * 6) frame-draw step 4 → select cached font → transformed plane instances
+ * 7) layout → adjacent atlas runs → preserve transparent submission order
+ * 8) shape-submit step 2 → shared backend → text after composition, depth writes off
+ * Branches: empty labels skip; each font initializes once; failed fonts skip until shutdown.
+ * Invariant: reuse glyph scratch; allocate/generate only on first use of each font.
  */
 // agent: grok-4.6 | 2026-08-28 | runtime MSDF atlas generate | 930b5e
 #include "font_msdf.h"
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+#include "shape.h"
 #include "ng_shader.h"
 #include "scene/assets.h"
-#include "scene/graph.h"
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | read labels from shared frame queue | 7b8118
+#include "scene/draw.h"
+#include <stdlib.h>
 #include <math.h>
 #include <raymath.h>
 #include <rlgl.h>
 #include <stdio.h>
 #include <string.h>
-#if defined(__EMSCRIPTEN__)
-#include <GLES3/gl3.h>
-#elif defined(_WIN32)
-// raylib initializes these function pointers when it creates the GL context.
-// Windows opengl32 only exports OpenGL 1.1 entry points directly.
-#include "glad.h"
-#else
-#define GL_GLEXT_PROTOTYPES
-#include <GL/glcorearb.h>
-#endif
-
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
 #include "stb_truetype.h"
@@ -55,7 +54,7 @@
 #define FONT_MSDF_ATLAS_H (FONT_MSDF_ROWS * FONT_MSDF_SLOT)
 #define FONT_MSDF_MAX_EDGES 1024
 #define FONT_MSDF_FLAT 8
-#define FONT_MSDF_POOL 1024
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
 
 typedef struct {
   float ax, ay, bx, by;
@@ -70,35 +69,43 @@ typedef struct {
 } MsdfGlyph;
 
 typedef struct {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | cache fonts by source path | 2b6b40
   bool ready;
   bool failed;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  char src[64];
   Texture2D atlas;
-  NgShader inst;
-  int loc_mvp;
-  int loc_label;
-  Mesh quad;
-  unsigned int tf_program;
-  unsigned int tf_vao;
-  unsigned int tf_input;
-  unsigned int tf_color;
-  unsigned int tf_uv;
-  unsigned int tf_outline;
-  unsigned int tf_output;
-  unsigned int tf_tfbo;
-  int tf_cap;
-  float pack_xywh[FONT_MSDF_POOL * 4];
-  float pack_rgb[FONT_MSDF_POOL * 3];
-  float pack_uv[FONT_MSDF_POOL * 4];
-  float pack_ol[FONT_MSDF_POOL];
-  int pool_n;
-  bool pool_dirty;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
   float em;
   unsigned char atlas_rgb[FONT_MSDF_ATLAS_W * FONT_MSDF_ATLAS_H * 3];
   unsigned char cell_rgb[FONT_MSDF_CELL * FONT_MSDF_CELL * 3];
   MsdfGlyph glyphs[FONT_MSDF_COUNT];
 } MsdfFont;
 
-static MsdfFont g_msdf;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | reuse font resources for queued labels | 5765c6
+static MsdfFont *g_msdf_fonts[NG_SCENE_ASSET_MAX];
+static MsdfFont *g_msdf_active;
+#define g_msdf (*g_msdf_active)
+
+/** @param src const char* TTF source. @return bool selected cached font; allocation only on first use. */
+static bool msdf_select(const char *src) {
+  if (!src || !src[0]) src = "fonts/LiberationSans-Regular.ttf";
+  for (int i = 0; i < NG_SCENE_ASSET_MAX; i++) {
+    MsdfFont *f = g_msdf_fonts[i];
+    if (f && strcmp(f->src, src)) continue;
+    if (!f) {
+      f = calloc(1, sizeof(*f));
+      if (!f) return false;
+      snprintf(f->src, sizeof(f->src), "%s", src);
+      g_msdf_fonts[i] = f;
+    }
+    g_msdf_active = f;
+    return true;
+  }
+  return false;
+}
 
 static float msdf_clampf(float v, float lo, float hi) {
   if (v < lo) {
@@ -268,11 +275,15 @@ static int msdf_flatten_glyph(stbtt_fontinfo *info, int glyph, MsdfEdge *ed, flo
   return n;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | generate the requested font source | b93cb8
+/** @param f MsdfFont* selected source and atlas storage. @return bool generated. */
 static bool msdf_generate(MsdfFont *f) {
   int ttf_sz = 0;
   // agent: grok-4.6 | 2026-08-30 | graph MSDF screen entity draw | 4a12c8
   char ttf_path[160];
-  const char *src = mod_scene_assets_first_font_src();
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  const char *src = f->src;
   if (!src || src[0] == '\0') {
     src = "fonts/LiberationSans-Regular.ttf";
   }
@@ -394,237 +405,59 @@ static const MsdfGlyph *msdf_glyph(int cp) {
   return &g_msdf.glyphs[i];
 }
 
-static char *msdf_prepend_version(const char *source, bool fragment) {
-  const char *header;
-#if defined(PLATFORM_DESKTOP) && !defined(GRAPHICS_API_OPENGL_ES2)
-  (void)fragment;
-  header = "#version 330\n";
-#elif defined(GRAPHICS_API_OPENGL_ES3) || defined(__EMSCRIPTEN__)
-  if (fragment) {
-    header = "#version 300 es\n"
-             "precision mediump float;\n";
-  } else {
-    header = "#version 300 es\n";
-  }
-#else
-  (void)fragment;
-  header = "#version 100\n";
-#endif
-  const size_t header_len = strlen(header);
-  const size_t source_len = strlen(source);
-  char *out = (char *)MemAlloc(header_len + source_len + 1);
-  if (!out) {
-    return NULL;
-  }
-  strcpy(out, header);
-  strcat(out, source);
-  return out;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+static NgShader glyph_shader;
+static NgShapeInstance *glyph_instances;
+static int glyph_count, glyph_capacity;
+/** @param need int glyph count. @return bool retained scratch capacity available. */
+static bool msdf_reserve(int need) {
+  if (need <= glyph_capacity) return true;
+  int cap=glyph_capacity?glyph_capacity:64; while(cap<need) cap*=2;
+  void *next=realloc(glyph_instances,(size_t)cap*sizeof(*glyph_instances));
+  if(!next) return false;
+  glyph_instances=next; glyph_capacity=cap; return true;
 }
 
-static unsigned int msdf_compile_gl(unsigned int type, const char *source) {
-  unsigned int shader = glCreateShader(type);
-  glShaderSource(shader, 1, &source, NULL);
-  glCompileShader(shader);
-  int ok = 0;
-  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-  if (!ok) {
-    char log[1024];
-    glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-    TraceLog(LOG_ERROR, "NG: MSDF TF compile failed:\n%s", log);
-    glDeleteShader(shader);
-    return 0;
-  }
-  return shader;
-}
-
-/** Load rasterizer-discard TF program (compact glyph → mat4). */
-static unsigned int msdf_load_tf_program(const char *vs_path) {
-  char *vs_src = LoadFileText(vs_path);
-  if (!vs_src) {
-    TraceLog(LOG_ERROR, "NG: MSDF TF vs missing: %s", vs_path);
-    return 0;
-  }
-  char *vs_full = msdf_prepend_version(vs_src, false);
-  UnloadFileText(vs_src);
-  if (!vs_full) {
-    return 0;
-  }
-  unsigned int vs = msdf_compile_gl(GL_VERTEX_SHADER, vs_full);
-  MemFree(vs_full);
-  if (!vs) {
-    return 0;
-  }
-  const char *fs_body = "void main(){}\n";
-  char *fs_full = msdf_prepend_version(fs_body, true);
-  if (!fs_full) {
-    glDeleteShader(vs);
-    return 0;
-  }
-  unsigned int fs = msdf_compile_gl(GL_FRAGMENT_SHADER, fs_full);
-  MemFree(fs_full);
-  if (!fs) {
-    glDeleteShader(vs);
-    return 0;
-  }
-  unsigned int program = glCreateProgram();
-  glAttachShader(program, vs);
-  glAttachShader(program, fs);
-  const char *varyings[] = {"out_col0", "out_col1", "out_col2", "out_col3"};
-  glTransformFeedbackVaryings(program, 4, varyings, GL_INTERLEAVED_ATTRIBS);
-  glLinkProgram(program);
-  glDeleteShader(vs);
-  glDeleteShader(fs);
-  int ok = 0;
-  glGetProgramiv(program, GL_LINK_STATUS, &ok);
-  if (!ok) {
-    char log[1024];
-    glGetProgramInfoLog(program, sizeof(log), NULL, log);
-    TraceLog(LOG_ERROR, "NG: MSDF TF link failed:\n%s", log);
-    glDeleteProgram(program);
-    return 0;
-  }
-  return program;
-}
-
-static void msdf_tf_dispose(MsdfFont *f) {
-  if (f->tf_program) {
-    glDeleteProgram(f->tf_program);
-  }
-  if (f->tf_vao) {
-    glDeleteVertexArrays(1, &f->tf_vao);
-  }
-  if (f->tf_input) {
-    glDeleteBuffers(1, &f->tf_input);
-  }
-  if (f->tf_color) {
-    glDeleteBuffers(1, &f->tf_color);
-  }
-  if (f->tf_uv) {
-    glDeleteBuffers(1, &f->tf_uv);
-  }
-  if (f->tf_outline) {
-    glDeleteBuffers(1, &f->tf_outline);
-  }
-  if (f->tf_output) {
-    glDeleteBuffers(1, &f->tf_output);
-  }
-#if defined(__EMSCRIPTEN__)
-  if (f->tf_tfbo) {
-    glDeleteTransformFeedbacks(1, &f->tf_tfbo);
-  }
-#endif
-  f->tf_program = 0;
-  f->tf_vao = 0;
-  f->tf_input = 0;
-  f->tf_color = 0;
-  f->tf_uv = 0;
-  f->tf_outline = 0;
-  f->tf_output = 0;
-  f->tf_tfbo = 0;
-  f->tf_cap = 0;
-}
-
-static bool msdf_make_quad(Mesh *mesh) {
-  *mesh = (Mesh){0};
-  mesh->vertexCount = 4;
-  mesh->triangleCount = 2;
-  mesh->vertices = (float *)MemAlloc(12 * sizeof(float));
-  mesh->texcoords = (float *)MemAlloc(8 * sizeof(float));
-  mesh->indices = (unsigned short *)MemAlloc(6 * sizeof(unsigned short));
-  if (!mesh->vertices || !mesh->texcoords || !mesh->indices) {
-    return false;
-  }
-  const float verts[] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
-  const float uvs[] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
-  const unsigned short idx[] = {0, 1, 2, 0, 2, 3};
-  memcpy(mesh->vertices, verts, sizeof(verts));
-  memcpy(mesh->texcoords, uvs, sizeof(uvs));
-  memcpy(mesh->indices, idx, sizeof(idx));
-  UploadMesh(mesh, false);
-  return mesh->vaoId != 0;
-}
-
-// agent: grok-4.6 | 2026-08-30 | MSDF TF instanced draw path | a4f57c
-static bool msdf_load_gpu(MsdfFont *f) {
-  f->inst = ng_shader_load(NG_RES_ROOT "shaders/msdf_inst.vs", NG_RES_ROOT "shaders/msdf_font.fs");
-  if (f->inst.handle.id == 0) {
-    return false;
-  }
-  f->loc_mvp = GetShaderLocation(f->inst.handle, "mvp");
-  f->loc_label = GetShaderLocation(f->inst.handle, "ng_label");
-  if (!msdf_make_quad(&f->quad)) {
-    return false;
-  }
-  f->tf_program = msdf_load_tf_program(NG_RES_ROOT "shaders/msdf_tf.vs");
-  if (!f->tf_program) {
-    return false;
-  }
-  f->tf_cap = FONT_MSDF_POOL;
-  glGenVertexArrays(1, &f->tf_vao);
-  glGenBuffers(1, &f->tf_input);
-  glGenBuffers(1, &f->tf_color);
-  glGenBuffers(1, &f->tf_uv);
-  glGenBuffers(1, &f->tf_outline);
-  glBindVertexArray(f->tf_vao);
-  glBindBuffer(GL_ARRAY_BUFFER, f->tf_input);
-  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(FONT_MSDF_POOL * 4 * (int)sizeof(float)), NULL,
-               GL_DYNAMIC_DRAW);
-  glEnableVertexAttribArray(0);
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * (int)sizeof(float), (void *)0);
-  glEnableVertexAttribArray(1);
-  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * (int)sizeof(float),
-                        (void *)(2 * sizeof(float)));
-  glBindVertexArray(0);
-  glBindBuffer(GL_ARRAY_BUFFER, f->tf_color);
-  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(FONT_MSDF_POOL * 3 * (int)sizeof(float)), NULL,
-               GL_DYNAMIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, f->tf_uv);
-  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(FONT_MSDF_POOL * 4 * (int)sizeof(float)), NULL,
-               GL_DYNAMIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, f->tf_outline);
-  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(FONT_MSDF_POOL * (int)sizeof(float)), NULL,
-               GL_DYNAMIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-  glGenBuffers(1, &f->tf_output);
-  glBindBuffer(GL_ARRAY_BUFFER, f->tf_output);
-  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(FONT_MSDF_POOL * 16 * (int)sizeof(float)), NULL,
-               GL_DYNAMIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-#if defined(__EMSCRIPTEN__)
-  glGenTransformFeedbacks(1, &f->tf_tfbo);
-  glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, f->tf_tfbo);
-  glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, f->tf_output);
-  glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
-#endif
-  return true;
-}
-
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | initialize selected font only once | 9b0afb
+/** @return bool selected font initialized; retries wait for scene shutdown. */
 bool mod_font_msdf_ensure(void) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  if (!g_msdf_active && !msdf_select(mod_scene_assets_first_font_src())) return false;
   if (g_msdf.ready) {
     return true;
   }
   if (g_msdf.failed) {
     return false;
   }
-  if (!msdf_generate(&g_msdf) || !msdf_load_gpu(&g_msdf)) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  if (!msdf_generate(&g_msdf)) {
     g_msdf.failed = true;
-    mod_font_msdf_shutdown();
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+
     return false;
   }
   g_msdf.ready = true;
   return true;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | release all cached label font resources | e68a58
+/** @return void; release every lazily created font and its GPU resources. */
 void mod_font_msdf_shutdown(void) {
-  if (g_msdf.quad.vaoId) {
-    UnloadMesh(g_msdf.quad);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  for (int i = 0; i < NG_SCENE_ASSET_MAX; i++) {
+    MsdfFont *f = g_msdf_fonts[i];
+    if (!f) continue;
+    if (f->atlas.id) UnloadTexture(f->atlas);
+    free(f);
+    g_msdf_fonts[i] = NULL;
   }
-  msdf_tf_dispose(&g_msdf);
-  if (g_msdf.atlas.id) {
-    UnloadTexture(g_msdf.atlas);
-  }
-  ng_shader_unload(&g_msdf.inst);
-  memset(&g_msdf, 0, sizeof(g_msdf));
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  g_msdf_active = NULL;
+  ng_shader_unload(&glyph_shader);
+  free(glyph_instances); glyph_instances=NULL; glyph_count=glyph_capacity=0;
+  ng_shape_shutdown();
 }
 
 void ng_msdf_text_init(NgMsdfText *t) {
@@ -653,235 +486,101 @@ void ng_msdf_text_unload(NgMsdfText *t) {
   ng_msdf_text_init(t);
 }
 
-static void msdf_pool_reset(void) {
-  g_msdf.pool_n = 0;
-  g_msdf.pool_dirty = true;
-}
-
-/** Append label glyphs into the shared compact pool. */
-static void msdf_text_append(NgMsdfText *t, float ox, float oy, bool y_down) {
-  if (!t || !mod_font_msdf_ensure()) {
-    return;
-  }
-  t->dirty = false;
-  const float k = t->size / g_msdf.em;
-  const float cr = (float)t->tint.r / 255.0f;
-  const float cg = (float)t->tint.g / 255.0f;
-  const float cb = (float)t->tint.b / 255.0f;
-  const float inv_w = 1.0f / (float)FONT_MSDF_ATLAS_W;
-  const float inv_h = 1.0f / (float)FONT_MSDF_ATLAS_H;
-  float pen = 0.0f;
-  for (const char *p = t->text; *p && g_msdf.pool_n < FONT_MSDF_POOL; p++) {
-    const MsdfGlyph *g = msdf_glyph((unsigned char)*p);
-    if (!g) {
-      continue;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+/** @param c const NgDrawCommand* label. @param label Matrix pose. @param y_down bool screen orientation. @return void; append full plane instances (font-msdf step 6). */
+static void msdf_text_append(const NgDrawCommand *c, Matrix label, bool y_down) {
+  const NgDrawOptions *o=&c->options;
+  if(!msdf_reserve(glyph_count+(int)strlen(c->text))) return;
+  const float k=o->size/g_msdf.em, iw=1.0f/FONT_MSDF_ATLAS_W, ih=1.0f/FONT_MSDF_ATLAS_H;
+  float pen=0;
+  for(const unsigned char *p=(const unsigned char *)c->text;*p;p++) {
+    const MsdfGlyph *g=msdf_glyph(*p); if(!g) continue;
+    if(g->qw>0) {
+      float x=pen+g->qx0*k, y=y_down?-(g->qy0+g->qh)*k:g->qy0*k;
+      Matrix local=MatrixMultiply(MatrixScale(g->qw*k,g->qh*k,1),MatrixTranslate(x,y,0));
+      NgShapeInstance *v=&glyph_instances[glyph_count++];
+      *v=ng_shape_instance(MatrixMultiply(local,label),o->tint);
+      v->uv[0]=g->ax*iw; v->uv[2]=(g->ax+g->aw)*iw;
+      v->uv[1]=(y_down?g->ay:g->ay+g->ah)*ih;
+      v->uv[3]=(y_down?g->ay+g->ah:g->ay)*ih; v->outline=o->outline;
     }
-    if (g->qw > 0.0f) {
-      const int i = g_msdf.pool_n;
-      const float w = g->qw * k;
-      const float h = g->qh * k;
-      const float gx = ox + pen + g->qx0 * k;
-      const float gy = y_down ? (oy - (g->qy0 + g->qh) * k) : (oy + g->qy0 * k);
-      g_msdf.pack_xywh[i * 4 + 0] = gx;
-      g_msdf.pack_xywh[i * 4 + 1] = gy;
-      g_msdf.pack_xywh[i * 4 + 2] = w;
-      g_msdf.pack_xywh[i * 4 + 3] = h;
-      g_msdf.pack_rgb[i * 3 + 0] = cr;
-      g_msdf.pack_rgb[i * 3 + 1] = cg;
-      g_msdf.pack_rgb[i * 3 + 2] = cb;
-      g_msdf.pack_uv[i * 4 + 0] = (float)g->ax * inv_w;
-      g_msdf.pack_uv[i * 4 + 2] = (float)(g->ax + g->aw) * inv_w;
-      // agent: grok-4.6 | 2026-08-30 | overlay ortho flip world UV | a8fb3d
-      if (y_down) {
-        g_msdf.pack_uv[i * 4 + 1] = (float)g->ay * inv_h;
-        g_msdf.pack_uv[i * 4 + 3] = (float)(g->ay + g->ah) * inv_h;
-      } else {
-        g_msdf.pack_uv[i * 4 + 1] = (float)(g->ay + g->ah) * inv_h;
-        g_msdf.pack_uv[i * 4 + 3] = (float)g->ay * inv_h;
-      }
-      g_msdf.pack_ol[i] = t->outline;
-      g_msdf.pool_n++;
-      g_msdf.pool_dirty = true;
-    }
-    pen += g->advance * k;
+    pen+=g->advance*k;
   }
 }
-
-static void msdf_tf_update(int n) {
-  if (n <= 0 || !g_msdf.tf_program) {
-    return;
-  }
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_input);
-  glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(n * 4 * (int)sizeof(float)), g_msdf.pack_xywh);
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_color);
-  glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(n * 3 * (int)sizeof(float)), g_msdf.pack_rgb);
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_uv);
-  glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(n * 4 * (int)sizeof(float)), g_msdf.pack_uv);
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_outline);
-  glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(n * (int)sizeof(float)), g_msdf.pack_ol);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-  glEnable(GL_RASTERIZER_DISCARD);
-  glUseProgram(g_msdf.tf_program);
-  glBindVertexArray(g_msdf.tf_vao);
-#if defined(__EMSCRIPTEN__)
-  glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, g_msdf.tf_tfbo);
-#endif
-  // Desktop targets OpenGL 3.3: use its default transform-feedback state.
-  // Named transform-feedback objects require OpenGL 4.0 (or WebGL 2).
-  glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, g_msdf.tf_output);
-  glBeginTransformFeedback(GL_POINTS);
-  glDrawArrays(GL_POINTS, 0, n);
-  glEndTransformFeedback();
-  glDisable(GL_RASTERIZER_DISCARD);
-#if defined(__EMSCRIPTEN__)
-  glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
-#else
-  glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
-#endif
-  glBindVertexArray(0);
-  glUseProgram(0);
-  g_msdf.pool_dirty = false;
+/** @param atlas Texture2D binding. @param mvp Matrix camera. @return void; adjacent transparent run through shape-submit step 2. */
+static void msdf_flush(Texture2D atlas, Matrix mvp) {
+  if(!glyph_count) return;
+  if(!glyph_shader.handle.id) glyph_shader=ng_shader_load(NG_RES_ROOT "shaders/msdf_inst.vs",NG_RES_ROOT "shaders/msdf_font.fs");
+  MaterialMap maps[MATERIAL_MAP_BRDF+1]={0}; maps[MATERIAL_MAP_ALBEDO].texture=atlas;
+  Material material={.shader=glyph_shader.handle,.maps=maps};
+  ng_shape_draw(ng_shape_plane(),material,glyph_instances,glyph_count,mvp);
+  glyph_count=0;
 }
 
-static void msdf_flush(const Matrix *label, const Matrix *mvp, bool overlay) {
-  const int n = g_msdf.pool_n;
-  if (n <= 0 || g_msdf.inst.handle.id == 0 || g_msdf.quad.vaoId == 0) {
-    return;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | render persistent and immediate labels identically | 5f06b7
+
+
+/** @param cam const Camera3D* world camera, NULL for pixels. @param scope_id uint8_t pass scope. @return void; frame-draw step 4 and font-msdf steps 6–8. */
+static void msdf_draw_queue(const Camera3D *cam, uint8_t scope_id) {
+  const NgDrawQueue *q = ng_draw_queue();
+  const Matrix mvp = cam ? MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()) :
+    MatrixOrtho(0, GetScreenWidth(), GetScreenHeight(), 0, -1, 1);
+  Vector3 fwd = {0, 0, 1}, right = {1, 0, 0}, up = {0, 1, 0};
+  if (cam) {
+    fwd = Vector3Normalize(Vector3Subtract(cam->target, cam->position));
+    right = Vector3Normalize(Vector3CrossProduct(fwd, cam->up));
+    up = Vector3CrossProduct(right, fwd);
   }
-  if (g_msdf.pool_dirty) {
-    msdf_tf_update(n);
-  }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  Texture2D atlas={0}; uint32_t material_id=0; glyph_count=0;
   rlDrawRenderBatchActive();
-  rlEnableShader(g_msdf.inst.handle.id);
-  rlEnableColorBlend();
-  // agent: grok-4.6 | 2026-08-30 | disable cull on overlay pass | 389ef2
-  if (overlay) {
-    rlDisableBackfaceCulling();
-    rlDisableDepthTest();
-  }
-  // agent: grok-4.6 | 2026-08-30 | overlay ortho flip world UV | a8fb3d
-  int loc_mvp = g_msdf.loc_mvp;
-  if (loc_mvp < 0) {
-    loc_mvp = g_msdf.inst.handle.locs[SHADER_LOC_MATRIX_MVP];
-  }
-  if (loc_mvp >= 0) {
-    SetShaderValueMatrix(g_msdf.inst.handle, loc_mvp, *mvp);
-  }
-  if (g_msdf.loc_label >= 0) {
-    SetShaderValueMatrix(g_msdf.inst.handle, g_msdf.loc_label, *label);
-  }
-  rlActiveTextureSlot(0);
-  rlEnableTexture(g_msdf.atlas.id);
-  rlEnableVertexArray(g_msdf.quad.vaoId);
-
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_output);
-  for (int i = 0; i < 4; i++) {
-    const unsigned int loc = 9 + (unsigned int)i;
-    glEnableVertexAttribArray(loc);
-    glVertexAttribPointer(loc, 4, GL_FLOAT, GL_FALSE, 16 * (int)sizeof(float),
-                          (void *)(i * 4 * sizeof(float)));
-    glVertexAttribDivisor(loc, 1);
-  }
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_color);
-  glEnableVertexAttribArray(13);
-  glVertexAttribPointer(13, 3, GL_FLOAT, GL_FALSE, 3 * (int)sizeof(float), (void *)0);
-  glVertexAttribDivisor(13, 1);
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_uv);
-  glEnableVertexAttribArray(14);
-  glVertexAttribPointer(14, 4, GL_FLOAT, GL_FALSE, 4 * (int)sizeof(float), (void *)0);
-  glVertexAttribDivisor(14, 1);
-  glBindBuffer(GL_ARRAY_BUFFER, g_msdf.tf_outline);
-  glEnableVertexAttribArray(15);
-  glVertexAttribPointer(15, 1, GL_FLOAT, GL_FALSE, (int)sizeof(float), (void *)0);
-  glVertexAttribDivisor(15, 1);
-
-  rlDrawVertexArrayElementsInstanced(0, g_msdf.quad.triangleCount * 3, 0, n);
-
-  for (int i = 0; i < 4; i++) {
-    const unsigned int loc = 9 + (unsigned int)i;
-    glDisableVertexAttribArray(loc);
-    glVertexAttribDivisor(loc, 0);
-  }
-  glDisableVertexAttribArray(13);
-  glVertexAttribDivisor(13, 0);
-  glDisableVertexAttribArray(14);
-  glVertexAttribDivisor(14, 0);
-  glDisableVertexAttribArray(15);
-  glVertexAttribDivisor(15, 0);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-  rlDisableVertexArray();
-  rlDisableShader();
-  if (overlay) {
-    rlEnableBackfaceCulling();
-    rlEnableDepthTest();
-  }
-}
-
-static NgMsdfText g_scratch;
-
-// agent: grok-4.6 | 2026-08-30 | graph MSDF screen entity draw | 4a12c8
-static void msdf_fill_from_inst(NgMsdfText *t, const NgSceneInst *inst) {
-  ng_msdf_text_init(t);
-  t->size = inst->text_size > 0.0f ? inst->text_size : 16.0f;
-  t->outline = inst->text_outline;
-  t->tint = (Color){inst->tint_r, inst->tint_g, inst->tint_b, 255};
-  ng_msdf_text_set(t, inst->text);
-}
-
-static bool msdf_inst_is_font(const NgSceneInst *inst) {
-  const NgSceneModelDesc *m = inst ? mod_scene_assets_get_model(inst->model) : NULL;
-  return m && m->draw == NG_SCENE_DRAW_MSDF;
-}
-
-void mod_font_msdf_draw_world(const Camera3D *cam, uint8_t scope_id) {
-  // font-msdf step 6
-  if (!cam || !mod_font_msdf_ensure()) {
-    return;
-  }
-  Vector3 fwd = Vector3Normalize(Vector3Subtract(cam->target, cam->position));
-  Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, cam->up));
-  Vector3 up = Vector3CrossProduct(right, fwd);
-  const Matrix mvp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
-  const int n = mod_scene_graph_inst_count();
-  for (int i = 0; i < n; i++) {
-    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    // agent: grok-4.6 | 2026-08-30 | draw MSDF by scope_id | 19de26
-    if (!inst || inst->scope_id != scope_id || !msdf_inst_is_font(inst) || !inst->text[0]) {
-      continue;
-    }
-    msdf_fill_from_inst(&g_scratch, inst);
-    msdf_pool_reset();
-    msdf_text_append(&g_scratch, 0.0f, 0.0f, false);
-    const Vector3 origin = {inst->pos[0], inst->pos[1], inst->pos[2]};
-    Matrix label = {
-        right.x, up.x, fwd.x, origin.x, right.y, up.y, fwd.y, origin.y,
-        right.z, up.z, fwd.z, origin.z, 0.0f,    0.0f, 0.0f,  1.0f,
+  rlDisableDepthMask(); rlEnableColorBlend();
+  if(!cam) { rlDisableDepthTest(); rlDisableBackfaceCulling(); }
+  for (int i = 0; i < q->count; i++) {
+    const NgDrawCommand *c = &q->commands[i];
+    const NgDrawOptions *o = &c->options;
+    if (c->kind != NG_DRAW_LABEL || o->scope_id != scope_id || !c->text[0]) continue;
+    const NgSceneMaterialDesc *font = ng_material_get(o->material);
+    if (!font || !msdf_select(font->font_src) || !mod_font_msdf_ensure()) continue;
+    if(atlas.id && material_id!=o->material.id) msdf_flush(atlas,mvp);
+    material_id=o->material.id;
+    atlas=g_msdf.atlas;
+    Matrix basis = {
+      right.x, up.x, fwd.x, o->position[0], right.y, up.y, fwd.y, o->position[1],
+      right.z, up.z, fwd.z, o->position[2], 0, 0, 0, 1,
     };
-    msdf_flush(&label, &mvp, false);
+    Quaternion rotation = QuaternionFromEuler(o->rotation[0], o->rotation[1], o->rotation[2]);
+    Matrix label = MatrixMultiply(MatrixMultiply(MatrixScale(o->scale[0], o->scale[1], o->scale[2]),
+      QuaternionToMatrix(rotation)), basis);
+    msdf_text_append(c,label,!cam);
   }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+  msdf_flush(atlas,mvp);
+  rlEnableDepthMask();
+  if(!cam) { rlEnableDepthTest(); rlEnableBackfaceCulling(); }
 }
 
-void mod_font_msdf_draw_screen(uint8_t scope_id) {
-  // font-msdf step 6
-  if (!mod_font_msdf_ensure()) {
-    return;
-  }
-  msdf_pool_reset();
-  const int n = mod_scene_graph_inst_count();
-  for (int i = 0; i < n; i++) {
-    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    // agent: grok-4.6 | 2026-08-30 | draw MSDF by scope_id | 19de26
-    if (!inst || inst->scope_id != scope_id || !msdf_inst_is_font(inst) || !inst->text[0]) {
-      continue;
-    }
-    msdf_fill_from_inst(&g_scratch, inst);
-    msdf_text_append(&g_scratch, inst->pos[0], inst->pos[1], true);
-  }
-  const Matrix ident = MatrixIdentity();
-  const Matrix mvp = MatrixOrtho(0.0, (double)GetScreenWidth(), (double)GetScreenHeight(), 0.0, -1.0, 1.0);
-  msdf_flush(&ident, &mvp, true);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+/** @param cam const Camera3D* camera. @param scope_id uint8_t world scope. @return void. */
+void mod_font_msdf_draw_world(const Camera3D *cam, uint8_t scope_id) {
+  if (cam) msdf_draw_queue(cam, scope_id);
 }
+
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+/** @param scope_id uint8_t screen scope. @return void. */
+void mod_font_msdf_draw_screen(uint8_t scope_id) {
+  msdf_draw_queue(NULL, scope_id);
+}
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 7e5d4d
+// agent: gpt-6-astra | 2026-09-05 | route shared queue through font engine | e40c88
+// agent: gpt-6-astra | 2026-09-05 | read labels from shared frame queue | 7b8118
+// agent: gpt-6-astra | 2026-09-05 | cache fonts by source path | 2b6b40
+// agent: gpt-6-astra | 2026-09-05 | reuse font resources for queued labels | 5765c6
+// agent: gpt-6-astra | 2026-09-05 | generate the requested font source | b93cb8
+// agent: gpt-6-astra | 2026-09-05 | initialize selected font only once | 9b0afb
+// agent: gpt-6-astra | 2026-09-05 | release all cached label font resources | e68a58
+// agent: gpt-6-astra | 2026-09-05 | render persistent and immediate labels identically | 5f06b7
 
 // agent: grok-4.6 | 2026-08-28 | runtime MSDF atlas generate | 930b5e
 // agent: grok-4.6 | 2026-08-28 | winding sign MSDF raster | 6381c9
@@ -893,4 +592,3 @@ void mod_font_msdf_draw_screen(uint8_t scope_id) {
 // agent: grok-4.6 | 2026-08-30 | graph MSDF screen entity draw | 4a12c8
 // agent: grok-4.6 | 2026-08-30 | graph MSDF screen entity draw | 4a12c8
 // agent: grok-4.6 | 2026-08-30 | draw MSDF by scope_id | 19de26
-

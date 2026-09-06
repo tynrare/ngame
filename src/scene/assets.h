@@ -118,6 +118,22 @@ typedef struct NgSceneResolvedModel {
   char albedo[64];
 } NgSceneResolvedModel;
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 642722
+typedef struct NgMaterialHandle { uint32_t id; } NgMaterialHandle;
+typedef struct NgSceneMaterialDesc {
+  NgMaterialHandle handle;
+  char name[32];
+  NgSceneResolvedModel recipe;
+  char font_src[64];
+  bool blend, depth_test, depth_write;
+} NgSceneMaterialDesc;
+/** @param name const char* material or default model/font name. @return NgMaterialHandle cached ID, zero if missing. */
+NgMaterialHandle ng_material_lookup(const char *name);
+/** @param handle NgMaterialHandle cached ID. @return const NgSceneMaterialDesc* current recipe or NULL for stale IDs. */
+const NgSceneMaterialDesc *ng_material_get(NgMaterialHandle handle);
+/** @param name const char* name. @param shader const char* shader recipe. @param albedo const char* texture or NULL. @param blend bool alpha blend. @param depth_test bool test depth. @param depth_write bool write depth. @return bool registered. */
+bool ng_material_describe(const char *name, const char *shader, const char *albedo, bool blend, bool depth_test, bool depth_write);
+
 void mod_scene_assets_reset(void);
 bool mod_scene_assets_describe_mesh(const char *name, const char *shape, float w, float h,
                                     float d);
@@ -153,6 +169,7 @@ const NgSceneViewMeta *mod_scene_assets_view(void);
 NgEntityType mod_scene_assets_entity_type_for_kind(NgSceneMeshKind kind);
 
 #endif
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 642722
 
 // agent: composer-2.5 | 2026-07-28 | js-driven scene asset registry | c1d2e3
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 9bd320

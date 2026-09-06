@@ -13,11 +13,16 @@
 #include <stdio.h>
 #include <string.h>
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 2abee8
+extern bool ng_shape_smoke_test(void);
+
 int main(void) {
   SetTraceLogLevel(LOG_NONE);
   InitWindow(8, 8, "embed_smoke");
   SetTargetFPS(0);
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 2abee8
+  if(!ng_shape_smoke_test()) { CloseWindow(); return 1; }
   ng_bus_init();
   mod_net_set_gateway(true);
   ng_mod_register(mod_net_ops(), mod_net_ctx());
@@ -84,6 +89,7 @@ int main(void) {
 // agent: grok-4.6 | 2026-08-31 | link font_msdf smoke bins | dfc12a
 uint16_t mod_agent_listening_port(void) { return 0; }
 const char *ng_app_client_mode_text(void) { return "embedded"; }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 2abee8
 
 // agent: composer-2.5 | 2026-07-25 | headless embedded smoke test | 69db60
 // agent: composer-2.5 | 2026-07-28 | gateway loopback smoke test | 2eb821

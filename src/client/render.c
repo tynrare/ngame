@@ -1,3 +1,12 @@
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+/* Shared rendering scope index: frame-draw (scene/draw.c) owns command lifetimes;
+ * material-recipe (scene/assets.c) owns handles/resources; font-msdf (font_msdf.c)
+ * owns glyph layout; shape-submit (shape.c) owns GPU submission.
+ * Ordering: frame-draw steps 1–2, material-recipe step 2, scoped opaque batches,
+ * adjacent transparent shape runs, then font-msdf steps 6–8 after composition.
+ * Scope/pass are implicit in each collection; retained slots do not cross passes.
+ * Shared invariant: transient commands and labels never enter the GI registry.
+ */
 // agent: composer-2.5 | 2026-07-25 | client render module | g0j28e
 // agent: composer-2.5 | 2026-07-28 | render drop embedded path | f42f1c
 // agent: composer-2.5 | 2026-08-09 | shader glow rough metal uniforms | 7e0b28
@@ -49,6 +58,8 @@
 #include "render.h"
 #include "render_rc_ws.h"
 #include "font_msdf.h"
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+#include "shape.h"
 #include "engine/ng_action.h"
 #include "engine/ng_bus.h"
 #include "client/input.h"
@@ -102,12 +113,20 @@ typedef struct RenderAsset {
   bool have_albedo;
 } RenderAsset;
 
-#define NG_RENDER_CACHE_MAX 16
-#define NG_RENDER_BATCH_MAX 16
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | size draw caches for shared queue | 2614ef
+#define NG_RENDER_CACHE_MAX (NG_SCENE_ASSET_MAX + 2)
+#define NG_RENDER_BATCH_MAX NG_DRAW_MAX
 
 typedef struct NgInstanceBatch {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | batch shape material tint | eeba45
   char model[32];
-  Matrix *mats;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  uint8_t tint[3];
+  NgMaterialHandle material;
+  bool transparent;
+  NgShapeInstance *mats;
   int count;
   int capacity;
 } NgInstanceBatch;
@@ -146,6 +165,10 @@ typedef struct NgRcPassShader {
 typedef struct ModRenderCtx {
   RenderAssetCacheEntry cache[NG_RENDER_CACHE_MAX];
   int cache_count;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  RenderAsset material_cache[NG_SCENE_ASSET_MAX*2];
+  uint32_t material_ids[NG_SCENE_ASSET_MAX*2];
+  int material_count;
   NgInstanceBatch batches[NG_RENDER_BATCH_MAX];
   int batch_count;
   NgSnapshot prev;
@@ -325,13 +348,39 @@ static bool mod_render_pass_from_name(const char *name, NgRenderDebugPass *out) 
   return false;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+typedef struct NgTextureCache { char path[160]; Texture2D texture; int refs; } NgTextureCache;
+static NgTextureCache textures[NG_SCENE_ASSET_MAX*3];
+/** @param path const char* texture path. @return Texture2D shared upload, zero on failure. */
+static Texture2D render_texture_load(const char *path) {
+  int slot=-1;
+  for(int i=0;i<NG_SCENE_ASSET_MAX*3;i++) {
+    if(textures[i].refs && !strcmp(textures[i].path,path)) { textures[i].refs++; return textures[i].texture; }
+    if(!textures[i].refs && slot<0) slot=i;
+  }
+  if(slot<0) return (Texture2D){0};
+  Image image=LoadImage(path); if(!image.data) return (Texture2D){0};
+  ImageFlipVertical(&image); Texture2D t=LoadTextureFromImage(image); UnloadImage(image);
+  if(t.id) { textures[slot].texture=t; textures[slot].refs=1; snprintf(textures[slot].path,160,"%s",path); }
+  return t;
+}
+/** @param t Texture2D reference. @return void; last owner releases upload. */
+static void render_texture_unload(Texture2D t) {
+  for(int i=0;i<NG_SCENE_ASSET_MAX*3;i++) if(textures[i].refs && textures[i].texture.id==t.id) {
+    if(!--textures[i].refs) UnloadTexture(t); return;
+  }
+}
+/** @param a RenderAsset* output. @param resolved const NgSceneResolvedModel* recipe. @param fs_path const char* fragment. @param vs_path const char* vertex. @param geometry bool mesh ownership. @return void. */
 static void mod_render_load_asset_mesh(RenderAsset *a, const NgSceneResolvedModel *resolved,
-                                       const char *fs_path, const char *vs_path) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+                                       const char *fs_path, const char *vs_path, bool geometry) {
   if (a->ready) {
     return;
   }
-  Mesh mesh;
-  if (resolved->mesh_kind == NG_SCENE_MESH_SPHERE) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  Mesh mesh={0};
+  if (!geometry) { /* Material cache owns no geometry. */
+  } else if (resolved->mesh_kind == NG_SCENE_MESH_SPHERE) {
     mesh = GenMeshSphere(resolved->mesh_w, 32, 32);
   } else {
     mesh = GenMeshCube(resolved->mesh_w * 1.5f, resolved->mesh_h * 1.5f, resolved->mesh_d * 1.5f);
@@ -352,7 +401,12 @@ static void mod_render_load_asset_mesh(RenderAsset *a, const NgSceneResolvedMode
   a->bg = BLACK;
   a->have_albedo = false;
   a->albedo = (Texture2D){0};
-  a->model = LoadModelFromMesh(mesh);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  if(geometry) a->model=LoadModelFromMesh(mesh);
+  else {
+    a->model.materialCount=1; a->model.materials=MemAlloc(sizeof(Material));
+    a->model.materials[0]=LoadMaterialDefault();
+  }
   a->shader = ng_shader_load(vs_path, fs_path);
   if (a->shader.handle.id == 0) {
     UnloadModel(a->model);
@@ -365,12 +419,8 @@ static void mod_render_load_asset_mesh(RenderAsset *a, const NgSceneResolvedMode
     char tex_path[160];
     snprintf(tex_path, sizeof(tex_path), NG_RES_ROOT "%s",
              resolved->albedo[0] == '/' ? resolved->albedo + 1 : resolved->albedo);
-    Image img = LoadImage(tex_path);
-    if (img.data) {
-      ImageFlipVertical(&img);
-      a->albedo = LoadTextureFromImage(img);
-      UnloadImage(img);
-    }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+    a->albedo=render_texture_load(tex_path);
     if (a->albedo.id != 0) {
       SetTextureFilter(a->albedo, TEXTURE_FILTER_POINT);
       SetMaterialTexture(&a->model.materials[0], MATERIAL_MAP_ALBEDO, a->albedo);
@@ -386,7 +436,8 @@ static void mod_render_unload_asset(RenderAsset *a) {
   }
   ng_shader_unload(&a->shader);
   if (a->have_albedo && a->albedo.id != 0) {
-    UnloadTexture(a->albedo);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+    render_texture_unload(a->albedo);
     a->albedo = (Texture2D){0};
     a->have_albedo = false;
   }
@@ -394,9 +445,13 @@ static void mod_render_unload_asset(RenderAsset *a) {
   a->ready = false;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | free retained batch scratch slots | 5cef5e
+/** @param ctx ModRenderCtx* renderer. @return void; free all retained scope batch slots. */
 static void mod_render_clear_batches(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
-  for (int i = 0; i < ctx->batch_count; i++) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  for (int i = 0; i < NG_RENDER_BATCH_MAX; i++) {
     free(ctx->batches[i].mats);
     ctx->batches[i].mats = NULL;
     ctx->batches[i].count = 0;
@@ -406,7 +461,14 @@ static void mod_render_clear_batches(ModRenderCtx *ctx) {
   ctx->batch_count = 0;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | release scene font cache with meshes | 624d9e
+/** @param ctx ModRenderCtx* renderer. @return void; release scene GPU resources. */
 static void mod_render_clear_cache(ModRenderCtx *ctx) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  mod_font_msdf_shutdown();
+  for(int i=0;i<ctx->material_count;i++) mod_render_unload_asset(&ctx->material_cache[i]);
+  ctx->material_count=0;
   for (int i = 0; i < ctx->cache_count; i++) {
     mod_render_unload_asset(&ctx->cache[i].asset);
   }
@@ -414,13 +476,16 @@ static void mod_render_clear_cache(ModRenderCtx *ctx) {
   mod_render_clear_batches(ctx);
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | reuse batch slots across animated tints | 59630c
+/** @param ctx ModRenderCtx* renderer. @return void; reassign keys each pass, retaining matrix storage. */
 static void mod_render_batches_reset_counts(ModRenderCtx *ctx) {
-  for (int i = 0; i < ctx->batch_count; i++) {
-    ctx->batches[i].count = 0;
-  }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  ctx->batch_count = 0;
 }
 
-/** Grow batch capacity to at least need (start 1, double). */
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+/** @param b NgInstanceBatch* storage. @param need int minimum capacity. @return bool storage available. */
 static bool mod_render_batch_ensure(NgInstanceBatch *b, int need) {
   if (!b || need <= 0) {
     return false;
@@ -435,7 +500,8 @@ static bool mod_render_batch_ensure(NgInstanceBatch *b, int need) {
     }
     cap *= 2;
   }
-  Matrix *next = (Matrix *)realloc(b->mats, (size_t)cap * sizeof(Matrix));
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  NgShapeInstance *next = realloc(b->mats, (size_t)cap * sizeof(*next));
   if (!next) {
     return false;
   }
@@ -444,12 +510,24 @@ static bool mod_render_batch_ensure(NgInstanceBatch *b, int need) {
   return true;
 }
 
-static NgInstanceBatch *mod_render_batch_get(ModRenderCtx *ctx, const char *key) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | key shape batches by tint | 544c59
+/** @param ctx ModRenderCtx* renderer. @param key const char* mesh/material. @param tint const uint8_t[3] multiplier or NULL white. @param material NgMaterialHandle batch recipe. @return NgInstanceBatch* reusable batch or NULL. */
+static NgInstanceBatch *mod_render_batch_get(ModRenderCtx *ctx, const char *key, const uint8_t *tint, NgMaterialHandle material) {
+  const uint8_t white[3] = {255, 255, 255};
+  if (!tint) tint = white;
   if (!ctx || !key || key[0] == '\0') {
     return NULL;
   }
-  for (int i = 0; i < ctx->batch_count; i++) {
-    if (strcmp(ctx->batches[i].model, key) == 0) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  const NgSceneMaterialDesc *recipe=ng_material_get(material);
+  bool transparent=recipe && recipe->blend;
+  const NgSceneModelDesc *geometry=mod_scene_assets_get_model(key);
+  for (int i = transparent ? ctx->batch_count-1 : 0; i >= 0 && i < ctx->batch_count; i++) {
+    const NgSceneModelDesc *other=mod_scene_assets_get_model(ctx->batches[i].model);
+    bool same=!strcmp(ctx->batches[i].model,key) || (geometry && other && !strcmp(geometry->mesh,other->mesh));
+    if (same && ctx->batches[i].material.id==material.id) {
+      memcpy(ctx->batches[i].tint,tint,3);
       return &ctx->batches[i];
     }
   }
@@ -457,12 +535,17 @@ static NgInstanceBatch *mod_render_batch_get(ModRenderCtx *ctx, const char *key)
     return NULL;
   }
   NgInstanceBatch *b = &ctx->batches[ctx->batch_count++];
-  memset(b, 0, sizeof(*b));
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  b->count = 0;
   strncpy(b->model, key, sizeof(b->model) - 1);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  memcpy(b->tint, tint, 3);
+  b->material=material; b->transparent=transparent;
   return b;
 }
 
-/** Append one instance matrix; false on OOM or full batch table. */
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+/** @param b NgInstanceBatch* storage. @param m Matrix pose. @return bool appended or allocation failed. */
 static bool mod_render_batch_push(NgInstanceBatch *b, Matrix m) {
   if (!b) {
     return false;
@@ -470,7 +553,8 @@ static bool mod_render_batch_push(NgInstanceBatch *b, Matrix m) {
   if (!mod_render_batch_ensure(b, b->count + 1)) {
     return false;
   }
-  b->mats[b->count++] = m;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  b->mats[b->count++] = ng_shape_instance(m,b->tint);
   return true;
 }
 
@@ -504,10 +588,14 @@ static RenderAsset *mod_render_cache_put(ModRenderCtx *ctx, const char *key,
            resolved->vertex[0] == '/' ? resolved->vertex + 1 : resolved->vertex);
   RenderAssetCacheEntry *entry = &ctx->cache[ctx->cache_count++];
   strncpy(entry->key, key, sizeof(entry->key) - 1);
-  mod_render_load_asset_mesh(&entry->asset, resolved, fs_path, vs_path);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  mod_render_load_asset_mesh(&entry->asset, resolved, fs_path, vs_path,true);
   return entry->asset.ready ? &entry->asset : NULL;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | resolve shared unit physics meshes | 57e026
+/** @param ctx ModRenderCtx* renderer. @param model_name const char* model/unit primitive key. @return RenderAsset* cached GPU resource or NULL. */
 static RenderAsset *mod_render_asset_for_model(ModRenderCtx *ctx, const char *model_name) {
   mod_scene_runtime_use_view();
   if (!model_name || model_name[0] == '\0') {
@@ -517,7 +605,21 @@ static RenderAsset *mod_render_asset_for_model(ModRenderCtx *ctx, const char *mo
   if (cached) {
     return cached;
   }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | load unit geometry for physics draws | 845554
   NgSceneResolvedModel resolved;
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  if (!strcmp(model_name, "@draw_box") || !strcmp(model_name, "@draw_sphere")) {
+    bool sphere = !strcmp(model_name, "@draw_sphere");
+    /* Legacy model cubes apply 1.5 in the loader; cancel it for unit physics geometry. */
+    float unit = sphere ? 1.0f : 1.0f / 1.5f;
+    resolved = (NgSceneResolvedModel){.ok = true,
+      .mesh_kind = sphere ? NG_SCENE_MESH_SPHERE : NG_SCENE_MESH_CUBE,
+      .mesh_w = unit, .mesh_h = unit, .mesh_d = unit, .roughness = 1};
+    strcpy(resolved.fragment, "shaders/flat.fs");
+    strcpy(resolved.vertex, "shaders/mesh.vs");
+    return mod_render_cache_put(ctx, model_name, &resolved);
+  }
   if (!mod_scene_assets_resolve_model(model_name, &resolved) || !resolved.ok) {
     return NULL;
   }
@@ -1612,6 +1714,27 @@ static bool mod_render_ensure_gbuf(ModRenderCtx *ctx) {
   return true;
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+/** @param ctx ModRenderCtx* cache. @param base const RenderAsset* geometry. @param id NgMaterialHandle override/default. @return RenderAsset cached material combined with geometry. */
+static RenderAsset mod_render_material_asset(ModRenderCtx *ctx,const RenderAsset *base,NgMaterialHandle id) {
+  const NgSceneMaterialDesc *recipe=ng_material_get(id);
+  if(!recipe || recipe->font_src[0]) return *base;
+  int i=0; while(i<ctx->material_count && ctx->material_ids[i]!=id.id) i++;
+  if(i==ctx->material_count) {
+    if(i>=NG_SCENE_ASSET_MAX*2) return *base;
+    NgSceneResolvedModel r=recipe->recipe;
+    r.mesh_kind=NG_SCENE_MESH_CUBE; r.mesh_w=r.mesh_h=r.mesh_d=1;
+    char vs[160],fs[160]; snprintf(vs,sizeof(vs),NG_RES_ROOT "%s",r.vertex);
+    snprintf(fs,sizeof(fs),NG_RES_ROOT "%s",r.fragment);
+    mod_render_load_asset_mesh(&ctx->material_cache[i],&r,fs,vs,false);
+    ctx->material_ids[i]=id.id; ctx->material_count++;
+  }
+  RenderAsset out=ctx->material_cache[i];
+  out.model.meshes=base->model.meshes; out.model.meshCount=base->model.meshCount;
+  return out;
+}
+
+/** @param a const RenderAsset* material/geometry. @param b NgInstanceBatch* instances. @return void. */
 static void mod_render_draw_batch(const RenderAsset *a, NgInstanceBatch *b) {
   // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
   if (!a || !a->ready || a->shader.handle.id == 0 || !b || b->count <= 0 || !b->mats) {
@@ -1622,9 +1745,13 @@ static void mod_render_draw_batch(const RenderAsset *a, NgInstanceBatch *b) {
   }
   ng_shader_set_common((NgShader *)&a->shader, (float)GetTime());
   mod_render_set_material_uniforms(a);
-  DrawMeshInstanced(a->model.meshes[0], a->model.materials[0], b->mats, b->count);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  ng_shape_draw(a->model.meshes[0], a->model.materials[0], b->mats, b->count,
+    MatrixMultiply(rlGetMatrixModelview(),rlGetMatrixProjection()));
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+/** @param ctx ModRenderCtx* renderer. @param a const RenderAsset* geometry/material. @param b NgInstanceBatch* instances. @param mode int gbuffer channel. @return void. */
 static void mod_render_draw_batch_gbuf(ModRenderCtx *ctx, const RenderAsset *a, NgInstanceBatch *b,
                                       int mode) {
   // agent: composer-2.5 | 2026-08-13 | gbuf no VS vis cull | c3f8a1
@@ -1637,73 +1764,76 @@ static void mod_render_draw_batch_gbuf(ModRenderCtx *ctx, const RenderAsset *a, 
   Material mat = a->model.materials[0];
   mat.shader = ctx->gbuf_shader.handle;
   mod_render_set_gbuf_uniforms(ctx, a, mode);
-  DrawMeshInstanced(a->model.meshes[0], mat, b->mats, b->count);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  const NgSceneMaterialDesc *recipe=ng_material_get(b->material);
+  if(recipe) {
+    if(recipe->depth_test) rlEnableDepthTest(); else rlDisableDepthTest();
+    if(recipe->depth_write) rlEnableDepthMask(); else rlDisableDepthMask();
+  }
+  ng_shape_draw(a->model.meshes[0], mat, b->mats, b->count,
+    MatrixMultiply(rlGetMatrixModelview(),rlGetMatrixProjection()));
+  rlEnableDepthTest(); rlEnableDepthMask();
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | collect shared draw commands into batches | 9a9146
+/** @param ctx ModRenderCtx* renderer. @param scope_id uint8_t pass scope. @return void; frame-draw step 3 reuses the immutable queue. */
 static void mod_render_collect_graph_batches(ModRenderCtx *ctx, uint8_t scope_id) {
   mod_render_batches_reset_counts(ctx);
-  // agent: composer-2.5 | 2026-08-09 | expire live draw after idle | fa23e5
-  // agent: composer-2.5 | 2026-08-13 | CPU batch filter from traverse | 4d378d
-  mod_scene_graph_expire_live_draw(GetTime());
-  const int n = mod_scene_graph_inst_count();
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  const NgDrawQueue *q = ng_draw_queue();
   const NgRcWsCtx *ws = &ctx->ws_cpu;
-  // agent: grok-4.6 | 2026-08-21 | grid debug skip cull filter | 590e0e
-  const int skip_cull_filter = ctx->debug_pass == NG_RENDER_PASS_CULLING ||
-                               ctx->debug_pass == NG_RENDER_PASS_GRID ||
-                               ctx->debug_pass == NG_RENDER_PASS_UVW ||
-                               ctx->debug_pass == NG_RENDER_PASS_PROBES ||
-                               ctx->debug_pass == NG_RENDER_PASS_PROBES_LOD;
-  for (int i = 0; i < n; i++) {
-    const NgSceneInst *inst = mod_scene_graph_inst_at(i);
-    if (!inst || !inst->model[0] || inst->scope_id != scope_id) {
-      continue;
-    }
-    // agent: grok-4.6 | 2026-08-30 | drop fonts scene C branch | 347d96
-    const NgSceneModelDesc *md = mod_scene_assets_get_model(inst->model);
-    if (md && md->draw == NG_SCENE_DRAW_MSDF) {
-      continue;
-    }
-    if (!mod_render_asset_for_model(ctx, inst->model)) {
-      continue;
-    }
-    if (!skip_cull_filter && ws->cull_valid && !ng_rc_ws_inst_visible(ws, i)) {
-      continue;
-    }
-    NgInstanceBatch *b = mod_render_batch_get(ctx, inst->model);
-    if (!b) {
-      continue;
-    }
-    float pos[3];
-    float rot[3];
-    if (!mod_scene_graph_sample_draw_pose(inst, GetTime(), mod_scene_graph_interp_delay_s(), pos,
-                                          rot)) {
-      pos[0] = inst->pos[0];
-      pos[1] = inst->pos[1];
-      pos[2] = inst->pos[2];
-      rot[0] = inst->rot[0];
-      rot[1] = inst->rot[1];
-      rot[2] = inst->rot[2];
-    }
-    Matrix m = mod_render_pose_matrix(pos[0], pos[1], pos[2], rot, inst->scale);
-    /* Pack graph inst_i in gbuf VS (col3.w). */
-    m.m15 = (float)i;
-    (void)mod_render_batch_push(b, m);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  const bool skip_cull = ctx->debug_pass == NG_RENDER_PASS_CULLING ||
+    ctx->debug_pass == NG_RENDER_PASS_GRID || ctx->debug_pass == NG_RENDER_PASS_UVW ||
+    ctx->debug_pass == NG_RENDER_PASS_PROBES || ctx->debug_pass == NG_RENDER_PASS_PROBES_LOD;
+  for (int i = 0; i < q->count; i++) {
+    const NgDrawCommand *c = &q->commands[i];
+    const NgDrawOptions *o = &c->options;
+    if (c->kind != NG_DRAW_SHAPE || o->scope_id != scope_id) continue;
+    if (!skip_cull && c->graph_index >= 0 && ws->cull_valid &&
+        !ng_rc_ws_inst_visible(ws, c->graph_index)) continue;
+    if (!mod_render_asset_for_model(ctx, c->model)) continue;
+    NgInstanceBatch *b = mod_render_batch_get(ctx, c->model, o->tint, o->material);
+    Quaternion rotation = QuaternionFromEuler(o->rotation[0], o->rotation[1], o->rotation[2]);
+    Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(o->scale[0], o->scale[1], o->scale[2]),
+      QuaternionToMatrix(rotation)), MatrixTranslate(o->position[0], o->position[1], o->position[2]));
+    m.m15 = (float)c->graph_index;
+    mod_render_batch_push(b, m);
   }
 }
 
-static void mod_render_flush_batches(ModRenderCtx *ctx) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | apply tint in forward shape batches | c821ae
+/** @param ctx ModRenderCtx* renderer. @param alpha_only bool post-composition pass. @return void; flush material batches. */
+static void mod_render_flush_batches(ModRenderCtx *ctx, bool alpha_only) {
+  for(int transparent=alpha_only?1:0;transparent<2;transparent++)
   for (int i = 0; i < ctx->batch_count; i++) {
     NgInstanceBatch *b = &ctx->batches[i];
     if (b->count <= 0) {
       continue;
     }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+    if(b->transparent != (bool)transparent) continue;
     RenderAsset *a = mod_render_cache_get(ctx, b->model);
     if (a) {
-      mod_render_draw_batch(a, b);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+      RenderAsset styled=mod_render_material_asset(ctx,a,b->material);
+      const NgSceneMaterialDesc *recipe=ng_material_get(b->material);
+      if(recipe) {
+        if(recipe->blend) rlEnableColorBlend(); else rlDisableColorBlend();
+        if(recipe->depth_test) rlEnableDepthTest(); else rlDisableDepthTest();
+        if(recipe->depth_write) rlEnableDepthMask(); else rlDisableDepthMask();
+      }
+      mod_render_draw_batch(&styled, b);
+      rlEnableColorBlend(); rlEnableDepthTest(); rlEnableDepthMask();
     }
   }
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | apply tint in gbuffer shape batches | 6097fb
+/** @param ctx ModRenderCtx* renderer. @param mode int gbuffer channel. @return void. */
 static void mod_render_flush_batches_gbuf(ModRenderCtx *ctx, int mode) {
   for (int i = 0; i < ctx->batch_count; i++) {
     NgInstanceBatch *b = &ctx->batches[i];
@@ -1712,7 +1842,10 @@ static void mod_render_flush_batches_gbuf(ModRenderCtx *ctx, int mode) {
     }
     RenderAsset *a = mod_render_cache_get(ctx, b->model);
     if (a) {
-      mod_render_draw_batch_gbuf(ctx, a, b, mode);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+      if(b->transparent) continue;
+      RenderAsset styled=mod_render_material_asset(ctx,a,b->material);
+      mod_render_draw_batch_gbuf(ctx, &styled, b, mode);
     }
   }
 }
@@ -1754,13 +1887,16 @@ static void mod_render_blit_rt_opaque(ModRenderCtx *ctx, const RenderTexture2D *
   rlEnableColorBlend();
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+/** @param ctx ModRenderCtx* renderer. @return void; scoped opaque, transparent and label passes. */
 static void mod_render_draw_scene_graph(ModRenderCtx *ctx) {
   // agent: composer-2.5 | 2026-08-09 | instanced draw batch pools | 8837bc
   mod_scene_runtime_use_view();
   const uint8_t world_id = (uint8_t)mod_scene_assets_world_scope_id();
   mod_render_collect_graph_batches(ctx, world_id);
   BeginMode3D(ctx->camera);
-  mod_render_flush_batches(ctx);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  mod_render_flush_batches(ctx,false);
   // agent: grok-4.6 | 2026-08-30 | batch draw by scope_id | 43b1e0
   // font-msdf step 8
   mod_font_msdf_draw_world(&ctx->camera, world_id);
@@ -1782,6 +1918,8 @@ static void mod_render_draw_waiting(ModRenderCtx *ctx) {
   DrawText(line, 20, 20, 18, RAYWHITE);
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+/** @param ctx ModRenderCtx* renderer. @return void; collect legacy snapshots with default materials. */
 static void mod_render_collect_snapshot_batches(ModRenderCtx *ctx) {
   mod_render_batches_reset_counts(ctx);
   for (int i = 0; i < ctx->curr.entity_count; i++) {
@@ -1802,7 +1940,8 @@ static void mod_render_collect_snapshot_batches(ModRenderCtx *ctx) {
     if (!mod_render_asset_for_mesh_kind(ctx, kind)) {
       continue;
     }
-    NgInstanceBatch *b = mod_render_batch_get(ctx, key);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+    NgInstanceBatch *b = mod_render_batch_get(ctx, key, NULL, (NgMaterialHandle){0});
     if (!b) {
       continue;
     }
@@ -1831,17 +1970,30 @@ static void mod_render_draw_snapshot(ModRenderCtx *ctx) {
   EndMode3D();
 }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | build one queue per rendered frame | 9c7346
+/** @param ctx ModRenderCtx* renderer. @return void; owns frame-draw steps 1–5. */
+/** @param ctx ModRenderCtx* renderer. @return void; frame-draw steps 1–5 with post-composition labels. */
 static void mod_render_draw_scene(ModRenderCtx *ctx) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  mod_scene_draw();
+  ng_draw_collect_graph(GetTime());
   ClearBackground(BLACK);
   mod_render_update_camera(ctx);
 
   if (!mod_render_ensure_present(ctx)) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | discard frame when render target unavailable | 761a13
     mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+    ng_draw_reset();
     return;
   }
 
   mod_scene_runtime_use_view();
-  const bool graph = mod_scene_view_graph_active() ||
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | include immediate only scenes in render passes | 9906db
+  const bool graph = ng_draw_queue()->count > 0 || mod_scene_view_graph_active() ||
                      (mod_scene_view_is_loaded() && mod_scene_graph_inst_count() > 0) ||
                      (mod_net_is_authoritative() && mod_scene_is_loaded());
 
@@ -1949,7 +2101,9 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
   if (!composed) {
     BeginTextureMode(ctx->rt_present);
     ClearBackground(mod_render_bg_color());
-    if (mod_scene_view_graph_active()) {
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | render queued visuals without graph entities | d60cec
+    if (ng_draw_queue()->count > 0 || mod_scene_view_graph_active()) {
       mod_render_draw_scene_graph(ctx);
     } else if (ctx->have_curr && ctx->curr.entity_count > 0) {
       mod_render_draw_snapshot(ctx);
@@ -1964,6 +2118,16 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
     EndTextureMode();
   }
 
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | include queued labels after RC composition | f04457
+  if (composed && ctx->debug_pass == NG_RENDER_PASS_FINAL) {
+    BeginTextureMode(ctx->rt_present);
+    BeginMode3D(ctx->camera);
+    mod_render_flush_batches(ctx,true);
+    mod_font_msdf_draw_world(&ctx->camera, (uint8_t)mod_scene_assets_world_scope_id());
+    EndMode3D();
+    EndTextureMode();
+  }
   mod_render_present_to_screen(ctx);
   mod_render_draw_overlay(mod_render_authoritative_label(ctx), 10);
   DrawText(TextFormat("scale=%.2f %dx%d", ctx->render_scale, ctx->present_w, ctx->present_h), 10,
@@ -1977,11 +2141,17 @@ static void mod_render_draw_scene(ModRenderCtx *ctx) {
                                       0.0, -1.0, 1.0));
     rlSetMatrixModelview(MatrixIdentity());
     mod_render_collect_graph_batches(ctx, ortho_id);
-    mod_render_flush_batches(ctx);
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+    mod_render_flush_batches(ctx,false);
     mod_font_msdf_draw_screen(ortho_id);
     rlEnableBackfaceCulling();
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | consume transient queue after all passes | fac703
     rlEnableDepthTest();
   }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+  mod_scene_runtime_use_view();
+  ng_draw_reset(); /* frame-draw step 5 */
 }
 // agent: composer-2.5 | 2026-07-26 | session bootstrap render state | d8e9f0
 void mod_render_apply_session(const NgSessionState *session) {
@@ -2259,6 +2429,24 @@ void mod_render_flush_screenshot(void) {
   TakeScreenshot(g_screenshot_path);
   g_screenshot_path[0] = '\0';
 }
+// agent: gpt-6 | 2026-09-06 | share shape rendering and material recipes | 0ddae0
+// agent: gpt-6-astra | 2026-09-05 | size draw caches for shared queue | 2614ef
+// agent: gpt-6-astra | 2026-09-05 | batch shape material tint | eeba45
+// agent: gpt-6-astra | 2026-09-05 | key shape batches by tint | 544c59
+// agent: gpt-6-astra | 2026-09-05 | resolve shared unit physics meshes | 57e026
+// agent: gpt-6-astra | 2026-09-05 | load unit geometry for physics draws | 845554
+// agent: gpt-6-astra | 2026-09-05 | collect shared draw commands into batches | 9a9146
+// agent: gpt-6-astra | 2026-09-05 | apply tint in forward shape batches | c821ae
+// agent: gpt-6-astra | 2026-09-05 | apply tint in gbuffer shape batches | 6097fb
+// agent: gpt-6-astra | 2026-09-05 | build one queue per rendered frame | 9c7346
+// agent: gpt-6-astra | 2026-09-05 | discard frame when render target unavailable | 761a13
+// agent: gpt-6-astra | 2026-09-05 | include queued labels after RC composition | f04457
+// agent: gpt-6-astra | 2026-09-05 | consume transient queue after all passes | fac703
+// agent: gpt-6-astra | 2026-09-05 | include immediate only scenes in render passes | 9906db
+// agent: gpt-6-astra | 2026-09-05 | render queued visuals without graph entities | d60cec
+// agent: gpt-6-astra | 2026-09-05 | free retained batch scratch slots | 5cef5e
+// agent: gpt-6-astra | 2026-09-05 | reuse batch slots across animated tints | 59630c
+// agent: gpt-6-astra | 2026-09-05 | release scene font cache with meshes | 624d9e
 
 // agent: composer-2.5 | 2026-07-29 | snapshot before empty graph | 57ca7b
 // agent: composer-2.5 | 2026-07-29 | overlay label view authority | 6d7863
